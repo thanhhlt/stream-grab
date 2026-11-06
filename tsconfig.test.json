@@ -1,0 +1,17 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "composite": false,
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "jsx": "react-jsx",
+    // Tests run in Node: they load the FFmpeg.wasm core from node_modules with node:fs.
+    "types": ["chrome", "vite/client", "node"],
+    // tests/fixtures is also run by Node (scripts/fixture-server.ts), which needs explicit .ts imports.
+    "allowImportingTsExtensions": true,
+    "paths": {
+      "@/*": ["./src/*"],
+      "@tests/*": ["./tests/*"]
+    }
+  },
+  "include": ["src", "tests"]
+}

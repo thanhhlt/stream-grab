@@ -1,0 +1,10 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["ES2023"],
+    "types": ["node"],
+    "allowImportingTsExtensions": true,
+    "erasableSyntaxOnly": true
+  },
+  "include": ["vite.config.ts", "vite.content.config.ts", "vitest.config.ts", "vitest.e2e.config.ts", "build", "scripts"]
+}

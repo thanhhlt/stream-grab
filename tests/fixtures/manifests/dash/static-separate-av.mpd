@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Generated for StreamGrab tests: static VOD with separate video and audio adaptation sets. -->
+<MPD xmlns="urn:mpeg:dash:schema:mpd:2011" type="static" profiles="urn:mpeg:dash:profile:isoff-live:2011"
+     mediaPresentationDuration="PT10M34.567S" minBufferTime="PT2S">
+  <BaseURL>https://cdn.example.com/vod/movie/</BaseURL>
+  <Period id="p0" start="PT0S">
+    <AdaptationSet id="1" contentType="video" mimeType="video/mp4" segmentAlignment="true" startWithSAP="1">
+      <SegmentTemplate timescale="90000" initialization="video/$RepresentationID$/init.mp4"
+                       media="video/$RepresentationID$/seg-$Time$.m4s">
+        <SegmentTimeline>
+          <S t="0" d="360000" r="157"/>
+          <S d="185103"/>
+        </SegmentTimeline>
+      </SegmentTemplate>
+      <Representation id="1080p" bandwidth="5000000" codecs="avc1.640028" width="1920" height="1080" frameRate="30"/>
+      <Representation id="720p" bandwidth="2800000" codecs="avc1.64001f" width="1280" height="720" frameRate="30"/>
+      <Representation id="360p" bandwidth="800000" codecs="avc1.4d401e" width="640" height="360" frameRate="30"/>
+    </AdaptationSet>
+    <AdaptationSet id="2" contentType="audio" mimeType="audio/mp4" lang="en">
+      <AudioChannelConfiguration schemeIdUri="urn:mpeg:dash:23003:3:audio_channel_configuration:2011" value="2"/>
+      <SegmentTemplate timescale="48000" initialization="audio/en/init.mp4" media="audio/en/seg-$Number$.m4s"
+                       startNumber="1" duration="192000"/>
+      <Representation id="audio-en" bandwidth="128000" codecs="mp4a.40.2" audioSamplingRate="48000"/>
+    </AdaptationSet>
+  </Period>
+</MPD>

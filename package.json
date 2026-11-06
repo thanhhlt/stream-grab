@@ -1,0 +1,56 @@
+{
+  "name": "streamgrab",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Chrome MV3 extension that detects, downloads and merges HLS and MPEG-DASH streams entirely in the browser.",
+  "type": "module",
+  "engines": {
+    "node": ">=22.18.0"
+  },
+  "scripts": {
+    "dev": "node scripts/build.ts --watch",
+    "build": "npm run typecheck && node scripts/build.ts",
+    "build:fast": "node scripts/build.ts",
+    "verify:dist": "node scripts/verify-dist.ts",
+    "typecheck": "tsc -p tsconfig.app.json --noEmit && tsc -p tsconfig.test.json --noEmit && tsc -p tsconfig.node.json --noEmit",
+    "lint": "eslint .",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "coverage": "vitest run --coverage",
+    "test:e2e": "node scripts/build.ts && vitest run --config vitest.e2e.config.ts",
+    "e2e:install": "npx @puppeteer/browsers install chrome@stable --path .cache/chrome",
+    "check": "npm run typecheck && npm run lint && npm run test",
+    "icons": "node scripts/generate-icons.ts",
+    "fixtures": "node scripts/fixture-server.ts"
+  },
+  "dependencies": {
+    "@ffmpeg/core": "0.12.10",
+    "m3u8-parser": "^7.2.1",
+    "mpd-parser": "^1.4.1",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@puppeteer/browsers": "3.2.6",
+    "@tailwindcss/vite": "^4.3.4",
+    "@types/chrome": "^0.3.7",
+    "@types/m3u8-parser": "^7.2.6",
+    "@types/node": "^24.19.2",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.2.1",
+    "@vitest/coverage-v8": "5.1.0",
+    "eslint": "^10.14.0",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "fake-indexeddb": "^6.2.7",
+    "globals": "^17.14.0",
+    "happy-dom": "^21.0.4",
+    "puppeteer-core": "25.16.0",
+    "tailwindcss": "^4.3.4",
+    "typescript": "~6.0.3",
+    "typescript-eslint": "^8.72.1",
+    "vite": "^8.3.6",
+    "vitest": "^5.1.0"
+  }
+}

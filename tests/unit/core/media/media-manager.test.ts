@@ -1,0 +1,298 @@
+import 'fake-indexeddb/auto';
+import { IDBFactory } from 'fake-indexeddb';
+import { beforeAll, describe, expect, it } from 'vitest';
+import { IndexedDbSegmentStorage } from '@/core/download/download-storage';
+import { FfmpegError, type FfmpegJob, type FfmpegResult, type FfmpegRunner, type FfmpegRunOptions } from '@/core/media/ffmpeg-job';
+import { NO_DATA_MESSAGE, OLD_LAYOUT_MESSAGE } from '@/core/media/media-analysis';
+import { MediaManager, type MediaManagerDeps } from '@/core/media/media-manager';
+import { parseProbeOutput, probeJob } from '@/core/media/probe';
+import type { MediaReport, MediaTaskSpec, SaveRequest } from '@/core/models/download-task';
+import type { OutputFormat } from '@/shared/settings/settings';
+import { probeResult, ScriptedRunner } from '@tests/fakes/fake-ffmpeg';
+import { NodeFfmpegRunner } from '@tests/fakes/ffmpeg-node';
+import { storeDownloadedTask } from '@tests/fakes/stored-media';
+import { syntheticMedia, type Rendition, type SyntheticMedia } from '@tests/fixtures/media/synthetic-media';
+
+/**
+ * Media jobs of the engine: analyse, merge, hand the file over for saving.
+ * The first group runs the real FFmpeg core on synthetic H.264/AAC media
+ * stored in IndexedDB the way downloads leave it; the second scripts FFmpeg's
+ * answers to reach every outcome.
+ */
+
+let media: SyntheticMedia;
+const ffmpeg = new NodeFfmpegRunner();
+
+beforeAll(async () => {
+  media = await syntheticMedia();
+}, 60_000);
+
+function setup(runner: FfmpegRunner = ffmpeg, overrides: Partial<MediaManagerDeps> = {}) {
+  const storage = new IndexedDbSegmentStorage(new IDBFactory());
+  const reports: MediaReport[] = [];
+  const saves: SaveRequest[] = [];
+  const urls = new Map<string, Blob>();
+  const revoked: string[] = [];
+  let clock = 1000;
+  let nextUrl = 0;
+  const manager = new MediaManager({
+    storage,
+    ffmpeg: runner,
+    report: (report) => reports.push(report),
+    save: (request) => {
+      saves.push(request);
+      return Promise.resolve(true);
+    },
+    createUrl: (blob) => {
+      const url = `blob:test/${++nextUrl}`;
+      urls.set(url, blob);
+      return url;
+    },
+    revokeUrl: (url) => {
+      revoked.push(url);
+      urls.delete(url);
+    },
+    now: () => (clock += 10),
+    reportIntervalMs: 0,
+    ...overrides,
+  });
+  const process = async (taskId: string, format: OutputFormat = 'auto') => {
+    const spec: MediaTaskSpec = { taskId, job: 'process', format, title: `Video ${taskId}` };
+    manager.sync([spec]);
+    await manager.idle();
+    return reports.filter((report) => report.taskId === taskId);
+  };
+  /** Reads the handed-over file back with FFmpeg. */
+  const probeSaved = async (request: SaveRequest | undefined) => {
+    const blob = request ? urls.get(request.url) : undefined;
+    if (!blob) return null;
+    return parseProbeOutput((await ffmpeg.run(probeJob(`check.${request?.container ?? 'mp4'}`, blob))).stdout);
+  };
+  return { storage, manager, reports, saves, urls, revoked, process, probeSaved };
+}
+
+const video = (rendition: Rendition) => ({ trackId: 'main', trackType: 'main' as const, rendition });
+const english = (rendition: Rendition) => ({ trackId: 'audio-0', trackType: 'audio' as const, rendition, name: 'English' });
+
+describe('MediaManager · process (real FFmpeg)', () => {
+  it('scenario 1/HLS MPEG-TS: analyses, merges separate video and audio, and hands the file over', async () => {
+    const { storage, manager, saves, urls, revoked, process, probeSaved, reports } = setup();
+    await storeDownloadedTask(storage, 't', [video(media.ts.video['v180'] as Rendition), english(media.ts.audio)]);
+    await process('t');
+    expect(reports.some((report) => report.outcome)).toBe(false); // success is the save, not a report
+    expect(saves).toHaveLength(1);
+    const request = saves[0];
+    expect(request).toMatchObject({ taskId: 't', container: 'mp4' });
+    expect(request?.media).toMatchObject({
+      container: 'mp4',
+      tracks: [
+        { trackId: 'main', trackType: 'main', format: 'mpegts', segments: 4, streams: [{ kind: 'video', codec: 'h264', width: 320, height: 180, frameRate: 10 }] },
+        { trackId: 'audio-0', trackType: 'audio', name: 'English', format: 'mpegts', segments: 4, streams: [{ kind: 'audio', codec: 'aac', channels: 2, sampleRate: 48000 }] },
+      ],
+    });
+    const merged = await probeSaved(request);
+    expect(merged?.format).toContain('mp4');
+    expect(merged?.streams.map((stream) => stream.codec)).toEqual(['h264', 'aac']);
+    expect(merged?.durationSec).toBeCloseTo(8, 0);
+    expect(request?.size).toBeGreaterThan(0);
+    // Typed, so Chrome keeps the .mp4 extension (an untyped blob is saved as .txt).
+    expect(request ? urls.get(request.url)?.type : undefined).toBe('video/mp4');
+    // Every stage the Queue tab shows, in order.
+    const stages = reports.map((report) => report.progress.stage).filter((stage, i, all) => stage !== all[i - 1]);
+    expect(stages).toEqual(['preparing', 'loading', 'analysing', 'merging', 'verifying', 'saving']);
+    expect(reports.at(-1)?.progress.percent).toBe(97);
+
+    // Held while Chrome saves it; released (never deleted by the engine) when the service worker is done.
+    expect(manager.running).toEqual(['t']);
+    expect(manager.sync([{ taskId: 't', job: 'process', format: 'auto', title: '' }])).toEqual(['t']);
+    expect(revoked).toEqual([]);
+    manager.sync([]);
+    expect(revoked).toEqual([request?.url]);
+    expect(manager.running).toEqual([]);
+    expect(await storage.taskIds()).toEqual(['t']);
+  });
+
+  it('scenario 2/3: fragmented MP4 tracks with init segments (HLS EXT-X-MAP, DASH)', async () => {
+    const { storage, saves, process, probeSaved } = setup();
+    await storeDownloadedTask(storage, 'd', [video(media.fmp4.video['v90'] as Rendition), english(media.fmp4.audio)]);
+    await process('d');
+    expect(saves[0]?.media.tracks.map((track) => [track.format.includes('mp4'), track.segments])).toEqual([
+      [true, 5],
+      [true, 5],
+    ]);
+    const merged = await probeSaved(saves[0]);
+    expect(merged?.streams.map((stream) => `${stream.kind}:${stream.codec}:${stream.width ?? ''}`)).toEqual(['video:h264:160', 'audio:aac:']);
+    expect(merged?.durationSec).toBeCloseTo(8, 0);
+  });
+
+  it('merges muxed audio and video from one track into a forced MKV', async () => {
+    const { storage, saves, urls, process, probeSaved } = setup();
+    await storeDownloadedTask(storage, 'm', [video(media.ts.muxed)]);
+    await process('m', 'mkv');
+    expect(saves[0]?.container).toBe('mkv');
+    expect(urls.get(saves[0]?.url ?? '')?.type).toBe('video/x-matroska');
+    const merged = await probeSaved(saves[0]);
+    expect(merged?.format).toContain('matroska');
+    expect(merged?.streams.map((stream) => stream.kind)).toEqual(['video', 'audio']);
+  });
+
+  it('fails on data that is not media and discards it, so Retry downloads it again', async () => {
+    const { storage, saves, process } = setup();
+    const html = new TextEncoder().encode('<html><body>Access denied</body></html>'.repeat(50));
+    await storeDownloadedTask(storage, 'junk', [video({ segments: [html, html], durations: [4, 4] })]);
+    expect((await process('junk')).at(-1)?.outcome).toEqual({
+      status: 'failed',
+      discardedData: true,
+      message:
+        'FFmpeg cannot read the video track as media (Invalid data found when processing input). The server may have sent something other than video segments; press Retry to download it again.',
+    });
+    expect(await storage.taskIds()).toEqual([]);
+    expect(saves).toEqual([]);
+  });
+
+  it('fails without discarding when segments are missing, or the plan predates Phase 8', async () => {
+    const { storage, process } = setup();
+    await storeDownloadedTask(storage, 'gap', [video(media.ts.video['v90'] as Rendition)]);
+    await storage.deleteSegment('gap', 'main', 2);
+    expect((await process('gap')).at(-1)?.outcome).toEqual({
+      status: 'failed',
+      message: '1 of 4 segments are missing from storage. Press Retry to download them again.',
+    });
+    expect(await storage.taskIds()).toEqual(['gap']);
+
+    await storeDownloadedTask(storage, 'old', [video(media.ts.video['v90'] as Rendition)]);
+    const plan = await storage.getPlan('old');
+    const { layout: _layout, ...phase7 } = plan ?? { taskId: 'old', signature: 'x', segmentsTotal: 4, updatedAt: 1 };
+    await storage.savePlan(phase7);
+    expect((await process('old')).at(-1)?.outcome).toEqual({ status: 'failed', message: OLD_LAYOUT_MESSAGE });
+    expect((await process('nothing')).at(-1)?.outcome).toEqual({ status: 'failed', message: NO_DATA_MESSAGE });
+  });
+});
+
+const VIDEO = { codec_type: 'video', codec_name: 'h264', width: 320, height: 180 };
+const AUDIO = { codec_type: 'audio', codec_name: 'aac', channels: 2 };
+const merged = (job: FfmpegJob): FfmpegResult => ({ ...probeResult([]), exitCode: 0, stdout: '', outputs: [{ name: job.outputs[0] ?? '', data: new Blob(['merged']) }] });
+
+/** FFmpeg answers: tracks hold video, the merged file `output` streams; the merge may be replaced. */
+function scripted(options: { output?: object[]; merge?: (job: FfmpegJob, run: FfmpegRunOptions) => Promise<FfmpegResult> } = {}): ScriptedRunner {
+  return new ScriptedRunner((job, run) => {
+    if (job.tool === 'ffmpeg') return options.merge ? options.merge(job, run) : Promise.resolve(merged(job));
+    if (job.inputs[0]?.name.startsWith('output.')) return Promise.resolve(probeResult(options.output ?? [VIDEO, AUDIO]));
+    run.signal?.throwIfAborted();
+    return Promise.resolve(probeResult([VIDEO, AUDIO]));
+  });
+}
+
+/** A merge that runs until it is aborted. */
+const endless = (_job: FfmpegJob, run: FfmpegRunOptions): Promise<FfmpegResult> =>
+  new Promise((_, reject) => {
+    run.signal?.addEventListener('abort', () => {
+      reject(new DOMException('FFmpeg job aborted', 'AbortError'));
+    });
+  });
+
+describe('MediaManager · outcomes', () => {
+  it('refuses a forced MP4 for codecs MP4 cannot hold, keeping the data', async () => {
+    const runner = new ScriptedRunner(() => Promise.resolve(probeResult([{ codec_type: 'video', codec_name: 'vp8' }, { codec_type: 'audio', codec_name: 'vorbis' }])));
+    const { storage, saves, process } = setup(runner);
+    await storeDownloadedTask(storage, 'w', [video(media.ts.video['v90'] as Rendition)]);
+    expect((await process('w', 'mp4')).at(-1)?.outcome).toMatchObject({ status: 'failed', message: expect.stringContaining('VP8 and Vorbis cannot be stored in MP4') as string });
+    expect(await storage.taskIds()).toEqual(['w']);
+    expect(saves).toEqual([]);
+  });
+
+  it('words FFmpeg failures and keeps the data', async () => {
+    const runner = new ScriptedRunner(() => Promise.reject(new FfmpegError('FFmpeg could not be loaded: CompileError', 'load')));
+    const { storage, process } = setup(runner);
+    await storeDownloadedTask(storage, 'l', [video(media.ts.video['v90'] as Rendition)]);
+    expect((await process('l')).at(-1)?.outcome).toEqual({ status: 'failed', message: 'FFmpeg could not be loaded: CompileError Press Retry to try again.' });
+    expect(await storage.taskIds()).toEqual(['l']);
+  });
+
+  it('reports a failed merge with FFmpeg’s reason, and a merged file that lacks streams', async () => {
+    const failing = scripted({
+      merge: () => Promise.resolve({ ...probeResult([]), exitCode: 1, stdout: '', stderrTail: ['[mp4 @ 0x1] Could not write header: Invalid argument', 'Aborted()'] }),
+    });
+    const first = setup(failing);
+    await storeDownloadedTask(first.storage, 'f', [video(media.ts.muxed)]);
+    expect((await first.process('f')).at(-1)?.outcome).toEqual({
+      status: 'failed',
+      message: 'FFmpeg could not merge the tracks ([mp4 @ 0x1] Could not write header: Invalid argument). Press Retry to try again; the downloaded segments are kept.',
+    });
+    expect(await first.storage.taskIds()).toEqual(['f']);
+
+    const short = setup(scripted({ output: [VIDEO] }));
+    await storeDownloadedTask(short.storage, 's', [video(media.ts.muxed)]);
+    expect((await short.process('s')).at(-1)?.outcome).toMatchObject({
+      status: 'failed',
+      message: expect.stringContaining('does not contain the expected 1 video and 1 audio streams') as string,
+    });
+    expect(short.saves).toEqual([]);
+    expect(short.revoked).toEqual([]); // nothing was handed out
+  });
+
+  it('does not start a merge the disk cannot hold, keeping the segments', async () => {
+    const runner = scripted();
+    const { storage, saves, process } = setup(runner, { estimateStorage: () => Promise.resolve({ usage: 0, quota: 300 * 1024 * 1024 }) });
+    const segments = [new Uint8Array(30 * 1024 * 1024).fill(0x47), new Uint8Array(30 * 1024 * 1024).fill(0x47)];
+    await storeDownloadedTask(storage, 'big', [video({ segments, durations: [4, 4] })]);
+    expect((await process('big')).at(-1)?.outcome).toEqual({
+      status: 'failed',
+      message:
+        'Not enough disk space to merge this video: about 376 MB is needed for the merged file and its saved copy, 300 MB is free. Free up disk space, then press Retry; the downloaded segments are kept.',
+    });
+    expect(runner.jobs.some((job) => job.tool === 'ffmpeg')).toBe(false);
+    expect(saves).toEqual([]);
+    expect(await storage.taskIds()).toEqual(['big']);
+  });
+
+  it('cancels a running merge: FFmpeg is stopped and the data deleted', async () => {
+    const runner = scripted({ merge: endless });
+    const { storage, manager, reports, saves } = setup(runner);
+    await storeDownloadedTask(storage, 'c', [video(media.ts.muxed)]);
+    manager.sync([{ taskId: 'c', job: 'process', format: 'auto', title: '' }]);
+    await waitFor(() => reports.some((report) => report.progress.stage === 'merging'));
+    await manager.cancel(['c']);
+    expect(reports.at(-1)?.outcome).toEqual({ status: 'cancelled' });
+    expect(await storage.taskIds()).toEqual([]);
+    expect(saves).toEqual([]);
+    expect(manager.running).toEqual([]);
+  });
+
+  it('cancels while Chrome saves the file: the URL is released and the data deleted', async () => {
+    const { storage, manager, reports, revoked, saves, process } = setup(scripted());
+    await storeDownloadedTask(storage, 'h', [video(media.ts.muxed)]);
+    await process('h');
+    expect(manager.running).toEqual(['h']);
+    await manager.cancel(['h']);
+    expect(revoked).toEqual([saves[0]?.url]);
+    expect(reports.at(-1)?.outcome).toEqual({ status: 'cancelled' });
+    expect(await storage.taskIds()).toEqual([]);
+  });
+
+  it('lets go of the file when the service worker no longer wants it, keeping the data', async () => {
+    const { storage, manager, reports, revoked, saves, process } = setup(scripted(), { save: () => Promise.resolve(false) });
+    await storeDownloadedTask(storage, 'n', [video(media.ts.muxed)]);
+    await process('n');
+    expect(saves).toEqual([]); // the override did not record it
+    expect(revoked).toHaveLength(1);
+    expect(reports.at(-1)?.outcome).toEqual({ status: 'cancelled' });
+    expect(manager.running).toEqual([]);
+    expect(await storage.taskIds()).toEqual(['n']);
+  });
+
+  it('converges on the job list: an unlisted job is stopped before syncSettled answers', async () => {
+    const runner = scripted({ merge: endless });
+    const { storage, manager, reports } = setup(runner);
+    await storeDownloadedTask(storage, 'a', [video(media.ts.muxed)]);
+    expect(manager.sync([{ taskId: 'a', job: 'process', format: 'auto', title: '' }])).toEqual(['a']);
+    await waitFor(() => reports.some((report) => report.progress.stage === 'merging'));
+    await expect(manager.syncSettled([])).resolves.toEqual([]);
+    expect(reports.at(-1)).toMatchObject({ taskId: 'a', outcome: { status: 'cancelled' } });
+  });
+});
+
+async function waitFor(condition: () => boolean): Promise<void> {
+  for (let i = 0; i < 200 && !condition(); i++) await new Promise((resolve) => setTimeout(resolve, 5));
+  if (!condition()) throw new Error('condition not met');
+}

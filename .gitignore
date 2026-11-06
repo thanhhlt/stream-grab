@@ -1,0 +1,30 @@
+# Dependencies
+node_modules/
+
+# Build output and release artifacts
+# (build/ is NOT ignored: it holds the Vite plugins and output paths used by the build)
+dist/
+releases/
+*.zip
+*.crx
+*.pem
+
+# Test output and caches
+coverage/
+.cache/
+*.tsbuildinfo
+
+# Logs and temporary files
+*.log
+*.tmp
+tmp/
+temp/
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+
+# OS files
+.DS_Store
+Thumbs.db

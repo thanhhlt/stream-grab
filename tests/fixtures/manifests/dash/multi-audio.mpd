@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<MPD xmlns="urn:mpeg:dash:schema:mpd:2011" type="static" mediaPresentationDuration="PT8S" minBufferTime="PT2S"
+     profiles="urn:mpeg:dash:profile:isoff-live:2011">
+  <Period>
+    <AdaptationSet contentType="video" mimeType="video/mp4">
+      <SegmentTemplate timescale="1000" duration="4000" startNumber="1"
+                       initialization="v/$RepresentationID$/$Bandwidth$/init.mp4" media="v/$RepresentationID$/$Number%03d$.m4s"/>
+      <Representation id="hd" bandwidth="3000000" width="1920" height="1080" frameRate="25" codecs="hvc1.1.6.L120.90"/>
+      <Representation id="sd" bandwidth="900000" width="960" height="540" frameRate="25" codecs="hvc1.1.6.L93.90"/>
+    </AdaptationSet>
+    <AdaptationSet contentType="audio" mimeType="audio/mp4" lang="fr" id="fr">
+      <Role schemeIdUri="urn:mpeg:dash:role:2011" value="dub"/>
+      <SegmentTemplate timescale="1000" duration="4000" startNumber="1"
+                       initialization="a/$RepresentationID$/init.mp4" media="a/$RepresentationID$/$Number$.m4s"/>
+      <Representation id="fr-64" bandwidth="64000" codecs="mp4a.40.5"/>
+      <Representation id="fr-128" bandwidth="128000" codecs="mp4a.40.2"/>
+    </AdaptationSet>
+    <AdaptationSet contentType="audio" mimeType="audio/mp4" lang="en" id="en">
+      <Role schemeIdUri="urn:mpeg:dash:role:2011" value="main"/>
+      <Label>English (original)</Label>
+      <SegmentTemplate timescale="1000" duration="4000" startNumber="1"
+                       initialization="a/$RepresentationID$/init.mp4" media="a/$RepresentationID$/$Number$.m4s"/>
+      <Representation id="en-128" bandwidth="128000" codecs="ec-3"/>
+    </AdaptationSet>
+    <AdaptationSet contentType="text" mimeType="text/vtt" lang="en">
+      <Representation id="subs-en" bandwidth="1000"><BaseURL>subs/en.vtt</BaseURL></Representation>
+    </AdaptationSet>
+  </Period>
+</MPD>

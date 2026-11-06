@@ -1,0 +1,10 @@
+#EXTM3U
+#EXT-X-VERSION:6
+#EXT-X-TARGETDURATION:6
+#EXT-X-MAP:URI="init.mp4"
+#EXT-X-KEY:METHOD=SAMPLE-AES-CTR,URI="data:text/plain;base64,AAAANHBzc2gAAAAA7e+LqXnWSs6jyCfc1R0h7QAAABQIARIQabcdefabcdefabcdefabcdefab==",KEYID=0x69b7cdefabcdefabcdefabcdefabcdef,KEYFORMAT="urn:uuid:edef8ba9-79d6-4ace-a3c8-27dcd51d21ed",KEYFORMATVERSIONS="1"
+#EXTINF:6.0,
+seg1.m4s
+#EXTINF:6.0,
+seg2.m4s
+#EXT-X-ENDLIST
