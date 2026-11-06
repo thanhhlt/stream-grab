@@ -10,6 +10,7 @@ import { probeJob, parseProbeOutput } from '@/core/media/probe';
 import type { DetectedStream } from '@/core/models/detected-stream';
 import type { DownloadTask } from '@/core/models/download-task';
 import { STORAGE_KEYS } from '@/shared/constants';
+import { formatBytes } from '@/shared/utils/bytes';
 import { NodeFfmpegRunner } from '@tests/fakes/ffmpeg-node';
 import { DEMO_MEDIA } from '@tests/fixtures/download-routes';
 import { startFixtureSite, type FixtureSite } from './fixture-site';
@@ -27,7 +28,8 @@ import { startFixtureSite, type FixtureSite } from './fixture-site';
  */
 
 const root = resolve(import.meta.dirname, '../..');
-const dist = resolve(root, 'dist');
+// STREAMGRAB_EXTENSION_DIR: thư mục extension khác dist/ (vd. một file ZIP release đã giải nén) — kiểm tra đúng gói phát hành.
+const dist = resolve(process.env['STREAMGRAB_EXTENSION_DIR'] ?? resolve(root, 'dist'));
 const DEMO_SECONDS = DEMO_MEDIA.segments * DEMO_MEDIA.segmentSeconds;
 
 let browser: Browser;
@@ -177,6 +179,20 @@ describe('StreamGrab in Chrome (Chrome for Testing, unpacked dist/)', () => {
     const protectedSegments = site.requests.filter((entry) => entry.path.startsWith('/download/protected/v360/seg-'));
     expect(protectedSegments.length).toBeGreaterThan(0);
     expect(protectedSegments.every((entry) => entry.referer?.startsWith(`${site.origin}/download`))).toBe(true);
+
+    // Tab Completed của popup thật: dung lượng thật của file đã lưu, codec và thời lượng từ phân tích FFmpeg.
+    await ext.evaluate(() => {
+      [...document.querySelectorAll<HTMLElement>('[role="tab"]')].find((tab) => tab.textContent?.startsWith('Completed'))?.click();
+    });
+    const rows = await waitFor('the Completed tab', async () => {
+      const texts = await ext.evaluate(() => [...document.querySelectorAll('li')].map((row) => row.textContent ?? ''));
+      return texts.length === 3 ? texts : undefined;
+    });
+    for (const task of finished) {
+      const size = formatBytes(task.output.saved?.bytes ?? 0);
+      expect(rows.some((row) => row.includes(`360p · 8:00 · ${size}`) && row.includes('H.264 · AAC Stereo · MP4') && row.includes('Show in folder'))).toBe(true);
+    }
+    expect(await ext.evaluate(() => document.body.innerText)).toMatch(/3 videos/);
     await demo.close();
     await ext.close();
   });

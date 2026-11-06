@@ -3,7 +3,7 @@
 Living design notes. Requirements are in [SPEC.md](SPEC.md); this file records how they map onto
 Manifest V3 and why.
 
-StreamGrab is meant to handle several streaming formats and protocols. Version 0.1.0 supports HLS
+StreamGrab is meant to handle several streaming formats and protocols. Version 0.2.0 supports HLS
 and MPEG-DASH; everything protocol-specific sits behind `StreamingProtocolAdapter`, so further
 formats are added as adapters (see [Adding a streaming format](#adding-a-streaming-format)).
 
@@ -294,7 +294,7 @@ core/models/                         StreamingManifest, VideoVariant, AudioTrack
 
 ## Adding a streaming format
 
-HLS and DASH are the two formats in 0.1.0; the rest of the pipeline is written against the
+HLS and DASH are the two formats in 0.2.0; the rest of the pipeline is written against the
 protocol-independent model (`StreamingManifest`, `VideoVariant`, `MediaSegment`). A new format
 or protocol touches these places:
 
@@ -336,11 +336,11 @@ popup ◀── storage change events ── Queue tab, tab count
 - **Detected tab.** Each stream has a checkbox; it is enabled only when the stream can be
   downloaded (ready, not live, not DRM, parsed media), otherwise its tooltip says why.
   "Select all" is tri-state over the downloadable streams; selections of streams that vanish or
-  become unavailable drop out by themselves. Each card shows the current choice
-  ("720p · English ▾") and expands into options: quality (with bitrate), the audio tracks
-  offered for that quality (several may be ticked), and the file name with the extension that
-  the output format implies. "Download this video" queues one; "Download (n)" queues the
-  selection, each with its own choice.
+  become unavailable drop out by themselves. Each card has a quality selector, an
+  "Audio: English ▾" toggle that expands into the audio tracks offered for that quality
+  (several may be ticked) and the file name with the extension that the output format implies,
+  and its own Download button; "Download selected (n)" queues the selection, each with its own
+  choice (layout since 0.2.0, see [Popup progress, estimates and layout](#popup-progress-estimates-and-layout-v020)).
 - **Defaults** (`core/download/variant-choice.ts`): the preferred resolution from Settings, or
   the nearest lower one (the smallest when all are taller); audio-only variants only when
   nothing else exists. Audio: the quality's default track, none for a DASH representation that
@@ -861,8 +861,20 @@ assembled across a browser restart.
      of the protected stream carried the page as Referer (the DNR rule).
   2. Chrome is closed while a download is under way and started again on the same profile: the
      task resumes (≥ 30 segments reused, not downloaded again) and its file is saved.
+  Scenario 1 also opens the real popup's Completed tab and checks each saved video's line
+  (resolution · duration · the saved file's real size, codecs · container, *Show in folder*).
+  `STREAMGRAB_EXTENSION_DIR=<folder>` runs the suite against another extension folder, e.g. an
+  extracted release ZIP (`npx vitest run --config vitest.e2e.config.ts` skips the build).
   Not covered there: notifications (headless Chrome has no notification center to inspect), the
-  popup's own rendering (covered by component tests), and real sites.
+  Queue tab's live progress (component tests), and real sites.
+- **Estimates** (`tests/unit/core/download/estimate.test.ts`, `progress.test.ts`,
+  `tests/unit/popup/task-view.test.ts`): known and extrapolated totals, per-track extrapolation,
+  lower bounds, zero speed, too few samples, fluctuating speeds, live streams (no segment count),
+  stalls, stale progress, completed downloads, the real final size and missing files, and the
+  status mapping from download to processing to completed.
+- **Detected tab** (`tests/unit/popup/detected-page.test.ts`, happy-dom): title and secondary
+  line, manifest names only for repeated titles, quality selector, audio toggle, per-video and
+  bulk download with the selected count.
 - **Popup components** (`tests/unit/popup/pages.test.ts`, happy-dom): the Queue tab's stages,
   progress bars, Finished section and its Settings switch, and the messages its buttons send; the
   Completed tab's list, sizes, missing files, *Show in folder* and *Remove*.
@@ -891,6 +903,71 @@ download scheduling (`download-queue`), retry logic (`retry-policy`), cancellati
 (`download-manager`, `media-manager`, `ffmpeg-service`), progress calculation (`progress`,
 `format`), FFmpeg processing workflows (`ffmpeg-session`, `merge-plan`, `media-manager`,
 `output-sink`, `input-fs`).
+
+## Popup progress, estimates and layout (v0.2.0)
+
+Version 0.2.0 changes what the popup shows, not how videos are detected, downloaded or merged.
+
+**Data sources.** Everything shown comes from data the extension already measures:
+
+| Shown | Source |
+| ----- | ------ |
+| Percentage, completed / total segments | `progress.segmentsDone` / `segmentsTotal` (engine, per completed segment) |
+| Downloaded size | `progress.bytes`: bytes stored in IndexedDB (reused segments included) |
+| Current speed | `progress.bytesPerSecond`: received bytes over the last 5 s (`ProgressTracker`) |
+| Average speed (for ETA) | `progress.averageBytesPerSecond`: time-based exponential moving average (τ = 10 s) of the current speed |
+| Per-track figures (for size estimates) | `progress.tracks[]`: media segments total / done and their stored bytes per track, plus `declaredBytes` when every segment of the track has a byte range and is not encrypted |
+| FFmpeg stage and percentage | `task.processing` (`MediaProgress`, unchanged) |
+| Resolution, duration, codecs, channels, container (Completed) | `task.media` (FFmpeg's analysis of the downloaded data) |
+| Final file size (Completed) | `task.output.saved.bytes`: the size Chrome reports for the saved file (`DownloadItem.fileSize`) |
+| File missing (Completed) | `chrome.downloads.search({ id }).exists` |
+
+`tracks` and `averageBytesPerSecond` are optional fields of `TaskProgress`: progress stored by
+0.1.0 has neither and is still read (the parsers in `engine-messages.ts` and `task-store.ts`
+drop malformed values instead of the whole progress). Without `tracks` the task is estimated as
+one track.
+
+**Estimates** (`core/download/estimate.ts`, pure functions; the engine uses `averageSpeed`, the
+popup `estimateDownload`):
+
+- *Known size*: a track whose every segment declares its byte range (HLS `EXT-X-BYTERANGE`, DASH
+  SegmentList/SegmentBase, single files split into ranged chunks) contributes its exact size.
+  When all tracks are known (or done), sizes are shown without `~`.
+- *Unknown size*: each track is extrapolated from its own completed media segments
+  (stored bytes ÷ segments done × segments left), from at least 3 segments. Per track because
+  the plan lists the main track before the audio tracks and the worker pool takes positions in
+  order: a per-task average taken during the video phase applies video-sized segments to the
+  audio ones and overestimates by up to 2×. Init segments are not counted (a few KB).
+- A track without enough samples is left out and the total is marked as a lower bound
+  (`partial`, shown with `+` and a tooltip). If no track has samples, no estimate is shown.
+- *ETA* = remaining bytes ÷ average speed, only when a size estimate exists, the run is at least
+  3 s old (`progress.startedAt` to the latest report, `task.updatedAt`), the speed is above 0,
+  and the progress is not carried over from an earlier run (`stale`).
+- *Stalled*: the current speed is 0, or no report arrived for 8 s while downloading (the engine
+  reports at most twice a second, but only when data arrives; `useNow` re-renders the Queue tab
+  every second while something downloads). A run that has not completed a segment of its own
+  yet (just planned, or just resumed) is not called stalled.
+- Live streams never reach the engine (refused when queued and when planned); a progress without
+  a segment count has no estimate and no ETA.
+
+**Popup view model** (`popup/format.ts`): `downloadStats` turns a progress into the strings of a
+Queue item; `taskPhase` maps the seven stored statuses onto the six the user sees (Pending,
+Downloading, Processing — `downloaded` and `processing` —, Completed, Failed, Cancelled);
+`processingStageLabel` names FFmpeg's stage; `completedFacts` and `completedSummary` build the
+Completed tab; `qualityOptions` labels the quality selector (bitrate only to tell equal labels
+apart); `fileNameAddsInfo` decides whether a file name says more than the title (a generated name
+is the title plus the quality).
+
+**Layout.** Queue items: title (tooltip: title and file name), protocol · quality · audio ·
+duration, then per state: network progress (bar, segments, sizes, speed, remaining, ETA,
+retries) or FFmpeg progress (a "Downloaded · n segments · size" line, then a violet bar with the
+stage) or a status line; actions at the bottom right. Completed items: title, file name only when
+it adds something, protocol · resolution · duration · size, codecs · audio layout · container,
+date, *Show in folder* and a ⋯ menu with *Remove from list*. Detected cards: checkbox, title,
+protocol · site · duration (manifest file name only when titles repeat), badges for status other
+than ready and for Live/encryption, then quality selector, audio/options toggle and Download;
+options hold audio tracks, file name and codecs. Shared pieces live in `popup/components/`
+(`Badge`/`ProtocolBadge`, `ProgressBar`, `Menu`, `buttons.ts`, `EmptyState`).
 
 ## Known limitations
 
@@ -922,8 +999,15 @@ download scheduling (`download-queue`), retry logic (`retry-policy`), cancellati
   package, which is why StreamGrab itself is licensed GPL-3.0-or-later (compatible with both
   FFmpeg's GPL-2.0-or-later and the Apache-2.0 manifest parsers). It adds 32 MB to the extension.
 - The end-to-end tests run the installed extension in Chrome for Testing, headless, against the
-  local fixture site: notifications are not inspected, the Detected and Settings tabs are only
-  checked by hand, and real sites are not part of any automated test.
+  local fixture site: notifications are not inspected, the Settings tab is only checked by hand
+  (the Detected tab by component tests), and real sites are not part of any automated test.
+- Size estimates are lower bounds (`+`) while a track has no samples: the audio tracks start
+  after the video track, so for most of a download with separate audio its size is not
+  included. Audio is usually a few percent of a video, but for low-bitrate video it can be a
+  large share (about 40 % in the fixture site's demo). The download order is unchanged from 0.1.0.
+- Estimates describe the downloaded data; the merged file is usually smaller (MPEG-TS overhead
+  is dropped by the remux). The Completed tab shows the saved file's real size.
+- A stall is noticed 8 s after the last report; a retry waiting in backoff shows as *Stalled*.
 - Tasks downloaded before Phase 8 have no track layout: their processing fails asking for Retry,
   which reuses all their segments and then merges them.
 - Orphaned data (a cancel cleanup that exceeded 15 s, a task removed while the engine was gone)

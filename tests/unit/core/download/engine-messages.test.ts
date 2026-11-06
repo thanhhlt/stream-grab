@@ -70,6 +70,18 @@ describe('engine messages', () => {
     expect(parseEngineReport({ taskId: 't', progress: { ...progress, resumedSegments: -3 } })?.progress.resumedSegments).toBeUndefined();
   });
 
+  it('carries the per-track figures and the average speed (v0.2.0), dropping malformed ones', () => {
+    const tracks = [{ trackId: 'main', segmentsTotal: 5, segmentsDone: 2, bytes: 200, declaredBytes: 500 }];
+    expect(parseEngineReport({ taskId: 't', progress: { ...progress, averageBytesPerSecond: 12, tracks } })?.progress).toEqual({
+      ...progress,
+      averageBytesPerSecond: 12,
+      tracks,
+    });
+    const damaged = parseEngineReport({ taskId: 't', progress: { ...progress, averageBytesPerSecond: Number.NaN, tracks: [{ trackId: '', segmentsTotal: 1 }] } });
+    expect(damaged?.progress).toEqual(progress);
+    expect(parseEngineReport({ taskId: 't', progress: { ...progress, tracks: 'many' } })?.progress.tracks).toBeUndefined();
+  });
+
   it('validates task ID lists', () => {
     expect(parseTaskIds({ taskIds: ['a', 7, '', 'b'] })).toEqual(['a', 'b']);
     expect(parseTaskIds(null)).toEqual([]);

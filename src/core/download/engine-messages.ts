@@ -11,6 +11,7 @@ import {
   type MediaTaskSpec,
   type SaveRequest,
   type TaskProgress,
+  type TrackProgress,
 } from '@/core/models/download-task';
 import {
   OUTPUT_CONTAINERS,
@@ -119,8 +120,36 @@ function parseProgress(raw: unknown): TaskProgress | null {
   }
   const resumed = nonNegative(raw['resumedSegments']);
   if (resumed !== undefined && resumed > 0) progress.resumedSegments = resumed;
+  const average = nonNegative(raw['averageBytesPerSecond']);
+  if (average !== undefined && average >= 0) progress.averageBytesPerSecond = average;
+  const tracks = parseTrackProgress(raw['tracks']);
+  if (tracks) progress.tracks = tracks;
   // `stale` is the service worker's own marker; the engine's reports are current by definition.
   return progress as TaskProgress;
+}
+
+const MAX_PROGRESS_TRACKS = 32;
+
+/**
+ * Số liệu theo track của một progress (từ v0.2.0). Thiếu hoặc sai dạng →
+ * undefined: popup quay về ước lượng trên toàn task, như dữ liệu của v0.1.0.
+ */
+export function parseTrackProgress(raw: unknown): TrackProgress[] | undefined {
+  if (!Array.isArray(raw) || raw.length === 0 || raw.length > MAX_PROGRESS_TRACKS) return undefined;
+  const tracks: TrackProgress[] = [];
+  for (const entry of raw) {
+    if (!isRecord(entry)) return undefined;
+    const trackId = str(entry['trackId'], 256);
+    const segmentsTotal = nonNegative(entry['segmentsTotal']);
+    const segmentsDone = nonNegative(entry['segmentsDone']);
+    const bytes = nonNegative(entry['bytes']);
+    if (trackId === undefined || segmentsTotal === undefined || segmentsDone === undefined || bytes === undefined) return undefined;
+    const track: TrackProgress = { trackId, segmentsTotal, segmentsDone, bytes };
+    const declared = nonNegative(entry['declaredBytes']);
+    if (declared !== undefined) track.declaredBytes = declared;
+    tracks.push(track);
+  }
+  return tracks;
 }
 
 export function parseEngineReport(raw: unknown): EngineReport | null {

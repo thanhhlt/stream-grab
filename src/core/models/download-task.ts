@@ -51,6 +51,8 @@ export interface TaskProgress {
   bytes: number;
   /** Current speed over the last few seconds; 0 when idle. */
   bytesPerSecond: number;
+  /** Tốc độ trung bình trượt (hàm mũ, ~10 s) để tính ETA ổn định (từ v0.2.0). */
+  averageBytesPerSecond?: number;
   /** 0–100, by completed segments. */
   percent: number;
   /** Retried segment requests so far. */
@@ -64,6 +66,26 @@ export interface TaskProgress {
    * engine. The engine's first report replaces it.
    */
   stale?: boolean;
+  /**
+   * Số liệu theo từng track (từ v0.2.0; progress lưu bởi v0.1.0 không có).
+   * Dùng để ước lượng tổng dung lượng: plan tải hết track chính rồi mới tới
+   * các track audio, nên trung bình bytes/segment của cả task bị lệch.
+   */
+  tracks?: TrackProgress[];
+}
+
+/** Tiến độ của một track: chỉ tính media segment (init segment rất nhỏ, không tính). */
+export interface TrackProgress {
+  trackId: string;
+  segmentsTotal: number;
+  segmentsDone: number;
+  /** Bytes đã lưu của các media segment đã xong. */
+  bytes: number;
+  /**
+   * Tổng dung lượng media segment của track khi manifest khai báo kích thước
+   * của từng segment (byte range, không mã hoá) — kích thước biết chính xác.
+   */
+  declaredBytes?: number;
 }
 
 /**

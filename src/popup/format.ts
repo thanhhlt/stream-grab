@@ -1,9 +1,10 @@
+import { estimateDownload, type SizeEstimate } from '@/core/download/estimate';
 import { extensionFor } from '@/core/download/file-name';
 import { formatBitrate, variantLabel } from '@/core/download/labels';
 import { freeBytesOf, type StorageEstimateLike } from '@/core/download/storage-space';
 import { codecLabel, containerExtension } from '@/core/media/containers';
-import type { DetectedStream, EncryptionKind } from '@/core/models/detected-stream';
-import type { DownloadTask, MediaProgress } from '@/core/models/download-task';
+import type { DetectedStream, EncryptionKind, VariantSummary } from '@/core/models/detected-stream';
+import type { DownloadTask, MediaProgress, TaskProgress, TaskStatus } from '@/core/models/download-task';
 import type { MediaAnalysis, MediaStreamInfo } from '@/core/models/media-info';
 import { codecDisplayName } from '@/core/protocols/codecs';
 import { formatBytes } from '@/shared/utils/bytes';
@@ -180,7 +181,7 @@ export function overallProgress(tasks: readonly DownloadTask[]): OverallProgress
   return { running, percent, bytesPerSecond };
 }
 
-export type Tone = 'neutral' | 'progress' | 'success' | 'warning' | 'danger';
+export type Tone = 'neutral' | 'progress' | 'accent' | 'success' | 'warning' | 'danger';
 
 export interface StatusView {
   label: string;
@@ -260,4 +261,234 @@ export function streamTags(stream: DetectedStream): string[] {
     tags.push(ENCRYPTION_LABELS[manifest.encryption]);
   }
   return tags;
+}
+
+// ---------------------------------------------------------------------------
+// v0.2.0: tiến độ chi tiết trong Queue, mục gọn trong Completed.
+// ---------------------------------------------------------------------------
+
+/** 19 → "~19 seconds", 290 → "~5 min", 4000 → "~1 h 7 min". */
+export function formatEta(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds < 0) return '';
+  if (seconds < 1.5) return '~1 second';
+  if (seconds < 59.5) return `~${Math.round(seconds)} seconds`;
+  const minutes = Math.ceil(seconds / 60);
+  if (minutes < 60) return `~${minutes} min`;
+  const h = Math.floor(minutes / 60);
+  const m = minutes % 60;
+  return m === 0 ? `~${h} h` : `~${h} h ${m} min`;
+}
+
+/** Kích thước kèm dấu hiệu ước lượng: "181 MB", "~181 MB", "~181 MB+" (cận dưới). */
+export function formatEstimatedBytes(bytes: number, estimate: Pick<SizeEstimate, 'exact' | 'partial'>): string {
+  return `${estimate.exact ? '' : '~'}${formatBytes(bytes)}${estimate.partial ? '+' : ''}`;
+}
+
+/** Sáu trạng thái người dùng thấy; `downloaded` (chờ FFmpeg) thuộc giai đoạn xử lý. */
+export type TaskPhase = 'pending' | 'downloading' | 'processing' | 'completed' | 'failed' | 'cancelled';
+
+export function taskPhase(status: TaskStatus): TaskPhase {
+  switch (status) {
+    case 'queued':
+      return 'pending';
+    case 'downloading':
+      return 'downloading';
+    case 'downloaded':
+    case 'processing':
+      return 'processing';
+    case 'completed':
+      return 'completed';
+    case 'failed':
+      return 'failed';
+    case 'cancelled':
+      return 'cancelled';
+  }
+}
+
+export const PHASE_VIEW: Record<TaskPhase, StatusView> = {
+  pending: { label: 'Pending', tone: 'neutral' },
+  downloading: { label: 'Downloading', tone: 'progress' },
+  processing: { label: 'Processing', tone: 'accent' },
+  completed: { label: 'Completed', tone: 'success' },
+  failed: { label: 'Failed', tone: 'danger' },
+  cancelled: { label: 'Cancelled', tone: 'warning' },
+};
+
+export const PARTIAL_ESTIMATE_NOTE = 'A track has not started downloading yet: its size is not included, so the total will be higher.';
+
+/** Các con số hiển thị cho một lượt tải mạng. */
+export interface DownloadStats {
+  /** 0–100 theo số segment (như engine báo). */
+  percent: number;
+  /** "74 / 368 segments". */
+  segments: string;
+  /** "36.4 MB / ~181 MB" — hoặc chỉ "36.4 MB" khi chưa ước lượng được. */
+  size: string;
+  /** "~145 MB"; không có khi chưa ước lượng được hoặc đã xong. */
+  remaining?: string;
+  /** "7.4 MB/s"; "Stalled" khi không nhận được dữ liệu. */
+  speed: string;
+  /** "~19 seconds"; chỉ khi đủ dữ liệu. */
+  eta?: string;
+  retries?: string;
+  /** "40 reused": segment của lần chạy trước được dùng lại. */
+  reused?: string;
+  /** Giải thích khi tổng là cận dưới. */
+  note?: string;
+  stalled: boolean;
+}
+
+/**
+ * Thông số tải của một task đang chạy. `now`: thời điểm hiển thị (popup
+ * cập nhật mỗi giây); `reportedAt`: thời điểm báo cáo cuối (task.updatedAt).
+ */
+export function downloadStats(progress: TaskProgress, timing: { now: number; reportedAt: number }): DownloadStats {
+  const estimate = estimateDownload(progress, timing);
+  const size = estimate.size;
+  const stats: DownloadStats = {
+    percent: progress.percent,
+    segments: `${progress.segmentsDone} / ${progress.segmentsTotal} segments`,
+    size: size && size.remaining > 0 ? `${formatBytes(progress.bytes)} / ${formatEstimatedBytes(size.total, size)}` : formatBytes(progress.bytes),
+    speed: estimate.stalled ? 'Stalled' : formatSpeed(estimate.bytesPerSecond),
+    stalled: estimate.stalled,
+  };
+  if (size && size.remaining > 0) stats.remaining = formatEstimatedBytes(size.remaining, size);
+  if (size?.partial) stats.note = PARTIAL_ESTIMATE_NOTE;
+  if (estimate.etaSec !== undefined) stats.eta = `${formatEta(estimate.etaSec)}${size?.partial ? '+' : ''}`;
+  if (progress.retries > 0) stats.retries = `${progress.retries} ${progress.retries === 1 ? 'retry' : 'retries'}`;
+  if (progress.resumedSegments) stats.reused = `${progress.resumedSegments} reused`;
+  return stats;
+}
+
+/**
+ * Nhãn gọn cho ô chọn chất lượng: "1080p", "720p60"; bitrate chỉ thêm khi
+ * hai chất lượng trùng nhãn (vd. hai bản 720p) để vẫn phân biệt được.
+ */
+export function qualityOptions(variants: readonly VariantSummary[]): { id: string; label: string }[] {
+  const labels = variants.map(variantLabel);
+  return variants.map((variant, index) => {
+    const label = labels[index] ?? '';
+    const shared = labels.filter((other) => other === label).length > 1;
+    return { id: variant.id, label: shared && variant.bandwidth !== undefined && !variant.audioOnly ? `${label} · ${formatBitrate(variant.bandwidth)}` : label };
+  });
+}
+
+/** Tên bước FFmpeg, ngắn gọn, cho nhãn của thanh xử lý. */
+export function processingStageLabel(processing: MediaProgress | undefined): string {
+  switch (processing?.stage) {
+    case undefined:
+    case 'waiting':
+      return 'Waiting for FFmpeg';
+    case 'preparing':
+      return 'Reading segments';
+    case 'loading':
+      return 'Loading FFmpeg';
+    case 'analysing':
+      return processing.steps > 1 ? `Analysing track ${processing.step} of ${processing.steps}` : 'Analysing';
+    case 'merging':
+      return 'Merging tracks';
+    case 'verifying':
+      return 'Verifying output';
+    case 'saving':
+      return 'Saving file';
+  }
+}
+
+/** "1080p · English · 12:14" của một task (đi sau nhãn giao thức). */
+export function taskMeta(task: DownloadTask): string {
+  return [
+    task.selection.variantLabel,
+    ...task.selection.audioTrackNames,
+    task.selection.durationSec ? formatDuration(task.selection.durationSec) : undefined,
+  ]
+    .filter(Boolean)
+    .join(' · ');
+}
+
+/** "Nov 6, 2026" theo locale của trình duyệt. */
+export function formatCompletedDate(epochMs: number, locale?: string): string {
+  return new Date(epochMs).toLocaleDateString(locale, { year: 'numeric', month: 'short', day: 'numeric' });
+}
+
+/** Chuẩn hoá để so sánh tiêu đề với tên file: bỏ phần mở rộng, hậu tố " (1)", ký tự không phải chữ/số. */
+function comparable(text: string): string {
+  return text
+    .replace(/\.[a-z0-9]{2,4}$/i, '')
+    .replace(/\s*\(\d+\)$/, '')
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, '');
+}
+
+/** Tên file có nói thêm điều gì ngoài tiêu đề không (tên tự sinh = tiêu đề + chất lượng). */
+export function fileNameAddsInfo(title: string, fileName: string): boolean {
+  const name = comparable(fileName);
+  const heading = comparable(title);
+  return name.length > 0 && !(heading.length > 0 && name.startsWith(heading));
+}
+
+const CHANNEL_NAMES: Record<number, string> = { 1: 'Mono', 2: 'Stereo', 6: '5.1', 8: '7.1' };
+
+export interface CompletedFacts {
+  /** Dòng chính: độ phân giải · thời lượng · dung lượng file thật. */
+  primary: string[];
+  /** Dòng phụ: codec video · codec audio · container. */
+  secondary: string[];
+  /** Tên file khi nó khác tiêu đề (người dùng đặt tên riêng). */
+  fileName?: string;
+}
+
+/**
+ * Thông tin gọn của một video đã lưu. Độ phân giải, thời lượng và codec lấy
+ * từ phân tích FFmpeg của chính dữ liệu đã tải; dung lượng là kích thước
+ * file Chrome đã ghi (output.saved.bytes), không phải tổng byte segment.
+ */
+export function completedFacts(task: DownloadTask): CompletedFacts {
+  const media = task.media;
+  const streams = media?.tracks.flatMap((track) => track.streams) ?? [];
+  const video = streams.find((stream) => stream.kind === 'video');
+  const audioTracks = media?.tracks.filter((track) => track.streams.some((stream) => stream.kind === 'audio')) ?? [];
+  const audio = audioTracks[0]?.streams.find((stream) => stream.kind === 'audio');
+
+  let resolution = task.selection.variantLabel;
+  if (video?.height !== undefined) resolution = variantLabel({ height: video.height, frameRate: video.frameRate, audioOnly: false });
+  else if (media && !video && audio) resolution = 'Audio only';
+  const durations = media?.tracks.map((track) => track.durationSec ?? 0).filter((value) => value > 0) ?? [];
+  const duration = durations.length > 0 ? Math.max(...durations) : task.selection.durationSec;
+
+  const primary = [resolution];
+  if (duration !== undefined && duration > 0) primary.push(formatDuration(duration));
+  if (task.output.saved) primary.push(formatBytes(task.output.saved.bytes));
+
+  const secondary: string[] = [];
+  if (video) secondary.push(codecLabel(video.codec));
+  if (audio) {
+    const layout = audio.channels !== undefined ? (CHANNEL_NAMES[audio.channels] ?? `${audio.channels} ch`) : undefined;
+    secondary.push([codecLabel(audio.codec), layout].filter(Boolean).join(' '));
+  }
+  if (audioTracks.length > 1) secondary.push(`${audioTracks.length} audio tracks`);
+  secondary.push(outputExtension(task).replace('.', '').toUpperCase());
+
+  const facts: CompletedFacts = { primary, secondary };
+  const fileName = outputFileName(task);
+  if (fileNameAddsInfo(task.source.title, fileName)) facts.fileName = fileName;
+  return facts;
+}
+
+export interface CompletedSummary {
+  count: number;
+  /** Tổng dung lượng các file đã lưu (kích thước thật). */
+  bytes: number;
+  /** File không còn ở chỗ Chrome đã lưu. */
+  missing: number;
+}
+
+/** Tóm tắt tab Completed. `exists`: downloadId → file còn tồn tại (từ chrome.downloads.search). */
+export function completedSummary(tasks: readonly DownloadTask[], exists: ReadonlyMap<number, boolean>): CompletedSummary {
+  let bytes = 0;
+  let missing = 0;
+  for (const task of tasks) {
+    bytes += task.output.saved?.bytes ?? 0;
+    if (task.output.downloadId !== undefined && exists.get(task.output.downloadId) === false) missing += 1;
+  }
+  return { count: tasks.length, bytes, missing };
 }

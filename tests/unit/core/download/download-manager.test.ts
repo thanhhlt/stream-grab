@@ -10,6 +10,7 @@ import {
   type DownloadManagerDeps,
 } from '@/core/download/download-manager';
 import { IndexedDbSegmentStorage, type SegmentStorage } from '@/core/download/download-storage';
+import { estimateSize } from '@/core/download/estimate';
 import { diskFullMessage } from '@/core/download/storage-space';
 import type { MediaSegment } from '@/core/models/media-segment';
 import type { RequestContext } from '@/core/models/detected-stream';
@@ -100,6 +101,12 @@ describe('DownloadManager', () => {
     expect(await stored('main')).toEqual(expected(urls('v720', 10)));
     expect(await stored('audio-0')).toEqual(expected(urls('audio', 10)));
     expect(last()?.progress).toMatchObject({ segmentsTotal: 20, segmentsDone: 20, percent: 100, bytes: 20 * SEGMENT_SIZE });
+    // Theo từng track, để popup ước lượng dung lượng của video và audio riêng rẽ.
+    expect(last()?.progress.tracks).toEqual([
+      { trackId: 'main', segmentsTotal: 10, segmentsDone: 10, bytes: 10 * SEGMENT_SIZE },
+      { trackId: 'audio-0', segmentsTotal: 10, segmentsDone: 10, bytes: 10 * SEGMENT_SIZE },
+    ]);
+    expect(last()?.progress.averageBytesPerSecond).toBeGreaterThanOrEqual(0);
     expect(site.count(`${BASE}v360/seg-0.ts`)).toBe(0);
     expect(released).toEqual(['t1']);
   });
@@ -280,6 +287,7 @@ describe('DownloadManager', () => {
       expect(await stored('main')).toEqual(expected(urls('v720', 6)));
       // The second run starts at 3 of 6, not at 0, and never reports the reused bytes as speed.
       expect(reports[firstRun]?.progress).toMatchObject({ segmentsDone: 3, segmentsTotal: 6, percent: 50, resumedSegments: 3, bytesPerSecond: 0 });
+      expect(reports[firstRun]?.progress.tracks).toEqual([{ trackId: 'main', segmentsTotal: 6, segmentsDone: 3, bytes: 3 * SEGMENT_SIZE }]);
       expect(last()?.progress).toMatchObject({ segmentsDone: 6, bytes: 6 * SEGMENT_SIZE, resumedSegments: 3 });
     });
 
@@ -550,7 +558,7 @@ describe('DownloadManager', () => {
         .serve('https://media.example.org/ondemand/video_720.mp4', video)
         .serve('https://media.example.org/ondemand/audio_en.mp4', audio);
       site.chunkSize = 4096;
-      const { manager, outcome, stored, storage } = setup(site, { chunkSize: 16_000, partSize: 8_000 });
+      const { manager, outcome, stored, storage, reports } = setup(site, { chunkSize: 16_000, partSize: 8_000 });
       manager.sync([spec({ protocol: 'dash', manifestUrl: mpd, variant: { id: 'video-0', height: 720, bandwidth: 2400000 } })]);
       await manager.idle();
       expect(outcome()).toEqual({ status: 'downloaded' });
@@ -560,6 +568,10 @@ describe('DownloadManager', () => {
       expect(new Set(parts.map((part) => part.index)).size).toBe(7); // ceil(100000 / 16000) ranged requests
       expect(Math.max(...parts.map((part) => part.size))).toBeLessThanOrEqual(8_000 + 4096);
       expect(site.requests.filter((r) => r.url.endsWith('video_720.mp4') && r.range?.startsWith('bytes=16000-'))).toHaveLength(1);
+      // Kích thước của các đoạn range được biết trước: tổng dung lượng chính xác ngay từ báo cáo đầu tiên.
+      const first = reports.find((report) => report.progress.segmentsTotal > 0)?.progress;
+      expect(first?.tracks?.map((track) => track.declaredBytes)).toEqual([100_000, 30_000]);
+      expect(first && estimateSize(first)).toMatchObject({ total: 130_000, exact: true });
     });
 
     it('streams a single file in parts when the server has no range support', async () => {

@@ -37,14 +37,57 @@ describe('Queue tab', () => {
     const view = await render(QueuePage, { tasks });
     unmount = () => view.root.unmount();
     const text = view.container.textContent ?? '';
-    expect(text).toContain('Merging the tracks into one file · 63%');
-    expect(text).toContain('Saving to the Downloads folder…');
+    expect(text).toContain('Merging tracks63%');
+    expect(text).toContain('Saving file97%');
     expect(text).toContain('H.264 1280×720 · English: AAC stereo → MP4');
     expect(text).toContain('Finished');
-    expect(text).toContain('Movie (1).mp4');
     expect(text).toContain('Saved · 5.0 MB');
     expect(text).toContain('Not enough disk space to merge this video.');
-    expect(view.container.querySelectorAll('[role="progressbar"]')).toHaveLength(2);
+    // FFmpeg có thanh tiến độ riêng, tách khỏi tiến độ tải.
+    const bars = [...view.container.querySelectorAll('[role="progressbar"]')].map((bar) => bar.getAttribute('aria-label'));
+    expect(bars).toEqual(['Processing progress of Movie', 'Processing progress of Movie']);
+    // Tên file nằm trong tooltip, không lặp lại bên dưới tiêu đề.
+    expect(text).not.toContain('Movie (1).mp4');
+    expect(view.container.querySelector('[title*="Movie (1).mp4"]')).not.toBeNull();
+  });
+
+  it('shows a running download with percentage, segments, sizes, speed and ETA, and notices a stall', async () => {
+    await installPopupChrome();
+    const now = Date.now();
+    const progress = {
+      segmentsTotal: 368,
+      segmentsDone: 74,
+      bytes: 36.4 * 1024 ** 2,
+      bytesPerSecond: 7.4 * 1024 ** 2,
+      averageBytesPerSecond: 7.4 * 1024 ** 2,
+      percent: 20.1,
+      retries: 1,
+      startedAt: now - 10_000,
+    };
+    const running = [
+      makeTask('run', { status: 'downloading', updatedAt: now, progress, source: { ...makeTask('x').source, title: 'Test your own stream' } }),
+      makeTask('stuck', { status: 'downloading', updatedAt: now - 60_000, progress: { ...progress, startedAt: now - 120_000 } }),
+      makeTask('wait', { status: 'queued' }),
+      makeTask('ffmpeg', { status: 'downloaded', progress: { ...progress, segmentsDone: 368, percent: 100, bytes: 181 * 1024 ** 2 } }),
+    ];
+    const view = await render(QueuePage, { tasks: running });
+    unmount = () => view.root.unmount();
+    const [run, stuck, ffmpeg, wait] = [...view.container.querySelectorAll('li')].map((row) => row.textContent ?? '');
+    expect(run).toContain('Test your own stream');
+    expect(run).toContain('Downloading20.1%');
+    expect(run).toContain('74 / 368 segments');
+    expect(run).toContain('36.4 MB / ~181 MB');
+    expect(run).toContain('Remaining ~145 MB');
+    expect(run).toContain('Speed 7.4 MB/s');
+    expect(run).toContain('ETA ~20 seconds');
+    expect(run).toContain('1 retry');
+    expect(stuck).toContain('Stalled');
+    expect(stuck).toContain('ETA —');
+    expect(ffmpeg).toContain('Downloaded · 368 segments · 181 MB');
+    expect(ffmpeg).toContain('ProcessingWaiting for FFmpeg');
+    expect(wait).toContain('Pending');
+    expect(wait).toContain('Waiting for a free download slot');
+    expect(view.container.querySelector('[aria-label="Download progress of Test your own stream"]')?.getAttribute('aria-valuenow')).toBe('20');
   });
 
   it('cancels, retries, shows the saved file and clears it from the queue', async () => {
@@ -73,7 +116,7 @@ describe('Queue tab', () => {
 });
 
 describe('Completed tab', () => {
-  it('lists saved videos with name and size, newest first, and marks files that are gone', async () => {
+  it('lists saved videos compactly, newest first, with the real file size, and marks files that are gone', async () => {
     const { sent, shown } = await installPopupChrome({ missingDownloads: [3] });
     const tasks = [
       saved('older', 3, '/home/me/Downloads/Lecture.mkv', 812_000_000, 1),
@@ -84,18 +127,27 @@ describe('Completed tab', () => {
     unmount = () => view.root.unmount();
     const rows = [...view.container.querySelectorAll('li')].map((row) => row.textContent ?? '');
     expect(rows).toHaveLength(2);
-    expect(rows[0]).toContain('Movie.mp4');
-    expect(rows[0]).toContain('5.0 MB');
-    expect(rows[1]).toContain('Lecture.mkv');
-    expect(rows[1]).toContain('File moved or deleted');
-    expect(view.container.textContent).toContain('2 videos · 779 MB');
+    // Tiêu đề; độ phân giải · thời lượng · dung lượng; codec · container. Không lặp tên file trùng tiêu đề, không URL manifest.
+    expect(rows[0]).toContain('720p · 5.0 MB');
+    expect(rows[0]).toContain('H.264 · AAC Stereo · MP4');
+    expect(rows[0]).not.toContain('Movie.mp4');
+    expect(rows[0]).not.toContain('cdn.example.com');
+    expect(rows[0]).not.toContain('File missing');
+    expect(rows[1]).toContain('Saved as Lecture.mkv');
+    expect(rows[1]).toContain('774 MB');
+    expect(rows[1]).toContain('File missing');
+    expect(view.container.textContent).toContain('2 videos·779 MB1 file missing');
 
     await click(view.container, 'Show Movie.mp4 in its folder');
     expect(shown).toEqual([9]);
-    // The missing file has no "Show in folder"; removing an entry never touches the file.
+    // The missing file has no "Show in folder"; removing an entry (in the overflow menu) never touches the file.
     expect(view.container.querySelector('[aria-label="Show Lecture.mkv in its folder"]')).toBeNull();
-    await click(view.container, 'Remove Movie from the list');
+    expect(view.container.querySelector('[role="menu"]')).toBeNull();
+    await click(view.container, 'More actions for Movie');
+    expect(view.container.querySelector('[role="menu"]')).not.toBeNull();
+    await click(view.container, 'Remove from list');
     expect(sent.at(-1)).toEqual({ type: 'downloads/remove', payload: { taskIds: ['newer'] } });
+    expect(view.container.querySelector('[role="menu"]')).toBeNull();
   });
 
   it('explains where videos will appear when there are none', async () => {

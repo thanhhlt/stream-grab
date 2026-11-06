@@ -1,4 +1,18 @@
-import type { TaskProgress } from '@/core/models/download-task';
+import type { TaskProgress, TrackProgress } from '@/core/models/download-task';
+import type { MediaSegment } from '@/core/models/media-segment';
+import { averageSpeed, type SpeedAverage } from './estimate';
+
+/** Những gì tracker cần biết về một segment của plan. */
+export type PlannedSegment = Pick<MediaSegment, 'trackId' | 'kind' | 'byteRange' | 'encryption'>;
+
+interface TrackTally {
+  segmentsTotal: number;
+  segmentsDone: number;
+  bytes: number;
+  /** Tổng byte range khai báo; chỉ có nghĩa khi `allDeclared`. */
+  declared: number;
+  allDeclared: boolean;
+}
 
 /**
  * Progress of one task: completed segments (the percentage), stored bytes,
@@ -6,6 +20,8 @@ import type { TaskProgress } from '@/core/models/download-task';
  * bytes (so the figure reacts within seconds and drops to 0 when stalled).
  * Segments reused from an earlier run count as done and stored, but never as
  * received, so a resumed download shows its real position and real speed.
+ * Khi biết plan (setPlan), tracker đếm thêm theo từng track để popup ước
+ * lượng tổng dung lượng chính xác hơn (xem core/download/estimate.ts).
  */
 export class ProgressTracker {
   readonly #now: () => number;
@@ -16,6 +32,8 @@ export class ProgressTracker {
   #bytes = 0;
   #retries = 0;
   #resumed = 0;
+  #tracks = new Map<string, TrackTally>();
+  #average: SpeedAverage | undefined;
   /** [time, bytes] samples of received data within the window. */
   readonly #samples: [number, number][] = [];
 
@@ -31,11 +49,24 @@ export class ProgressTracker {
     this.#total = total;
   }
 
+  /** Plan của lần chạy: tổng số segment và, theo từng track, số media segment cùng kích thước khai báo. */
+  setPlan(segments: readonly PlannedSegment[]): void {
+    this.#total = segments.length;
+    this.#tracks = new Map();
+    for (const segment of segments) {
+      if (segment.kind !== 'media') continue;
+      const tally = this.#tally(segment.trackId);
+      tally.segmentsTotal += 1;
+      if (segment.byteRange && !segment.encryption) tally.declared += segment.byteRange.length;
+      else tally.allDeclared = false;
+    }
+  }
+
   /** Segments (and their bytes) already stored by an earlier run, reused instead of downloaded. */
-  resume(segments: number, bytes: number): void {
-    this.#done = segments;
-    this.#bytes = bytes;
-    this.#resumed = segments;
+  resume(reused: readonly { segment?: PlannedSegment; bytes: number }[]): void {
+    this.reset();
+    for (const { segment, bytes } of reused) this.#count(bytes, segment);
+    this.#resumed = reused.length;
   }
 
   /** The stored data was discarded. */
@@ -43,6 +74,10 @@ export class ProgressTracker {
     this.#done = 0;
     this.#bytes = 0;
     this.#resumed = 0;
+    for (const tally of this.#tracks.values()) {
+      tally.segmentsDone = 0;
+      tally.bytes = 0;
+    }
   }
 
   received(bytes: number): void {
@@ -51,9 +86,8 @@ export class ProgressTracker {
     this.#prune();
   }
 
-  segmentDone(storedBytes: number): void {
-    this.#done += 1;
-    this.#bytes += storedBytes;
+  segmentDone(storedBytes: number, segment?: PlannedSegment): void {
+    this.#count(storedBytes, segment);
   }
 
   retried(): void {
@@ -70,17 +104,48 @@ export class ProgressTracker {
     const windowStart = Math.max(this.#startedAt, now - this.#windowMs);
     const span = Math.max(1000, now - windowStart);
     const recent = this.#samples.reduce((sum, [, bytes]) => sum + bytes, 0);
+    const bytesPerSecond = Math.round((recent * 1000) / span);
+    this.#average = averageSpeed(this.#average, bytesPerSecond, now);
     const progress: TaskProgress = {
       segmentsTotal: this.#total,
       segmentsDone: this.#done,
       bytes: this.#bytes,
-      bytesPerSecond: Math.round((recent * 1000) / span),
+      bytesPerSecond,
+      averageBytesPerSecond: Math.round(this.#average.bytesPerSecond),
       percent: percentOf(this.#done, this.#total),
       retries: this.#retries,
       startedAt: this.#startedAt,
     };
     if (this.#resumed > 0) progress.resumedSegments = this.#resumed;
+    if (this.#tracks.size > 0) {
+      progress.tracks = [...this.#tracks].map(([trackId, tally]): TrackProgress => ({
+        trackId,
+        segmentsTotal: tally.segmentsTotal,
+        segmentsDone: tally.segmentsDone,
+        bytes: tally.bytes,
+        ...(tally.allDeclared ? { declaredBytes: tally.declared } : {}),
+      }));
+    }
     return progress;
+  }
+
+  #count(bytes: number, segment: PlannedSegment | undefined): void {
+    this.#done += 1;
+    this.#bytes += bytes;
+    if (segment?.kind !== 'media') return;
+    const tally = this.#tracks.get(segment.trackId);
+    if (!tally) return;
+    tally.segmentsDone += 1;
+    tally.bytes += bytes;
+  }
+
+  #tally(trackId: string): TrackTally {
+    let tally = this.#tracks.get(trackId);
+    if (!tally) {
+      tally = { segmentsTotal: 0, segmentsDone: 0, bytes: 0, declared: 0, allDeclared: true };
+      this.#tracks.set(trackId, tally);
+    }
+    return tally;
   }
 
   #prune(): void {

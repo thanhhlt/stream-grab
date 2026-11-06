@@ -4,7 +4,7 @@ Browser extension (Chrome, Manifest V3) that detects, downloads and merges onlin
 entirely in the browser. No server, no native helper. It is built to support several streaming
 formats and protocols; see [Supported formats](#supported-formats) for what works today.
 
-Current version: **0.1.0** — see [CHANGELOG.md](CHANGELOG.md) and the
+Current version: **0.2.0** — see [CHANGELOG.md](CHANGELOG.md) and the
 [releases](https://github.com/thanhhlt/stream-grab/releases).
 
 Status: **all 10 phases done** (Phase 10: error handling, performance, testing). Streams are
@@ -15,8 +15,11 @@ Retry, a browser restart or an extension reload. Once downloaded, FFmpeg.wasm (b
 demand in a Web Worker) checks the segments and merges video and audio by stream copy into one
 MP4 (or MKV when MP4 cannot hold the codecs), streamed out of FFmpeg without holding the file in
 memory; Chrome saves it to the Downloads folder (never overwriting a file), the temporary
-segments are deleted and a notification says so. The Completed tab lists saved videos with file
-name and size. A 1.5 GB video merges in about 5 seconds. Besides unit and integration tests, an
+segments are deleted and a notification says so. The Queue tab shows each download's
+percentage, segments, downloaded / estimated total and remaining size, speed and ETA, with
+FFmpeg's processing shown separately; the Completed tab lists saved videos compactly (resolution,
+duration, real file size, codecs, container) with *Show in folder*. A 1.5 GB video merges in
+about 5 seconds. Besides unit and integration tests, an
 end-to-end test runs the built extension in Chrome for Testing (detection, Referer rules,
 download, FFmpeg, saving, resume after a browser restart). See
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the design, measurements and known limitations,

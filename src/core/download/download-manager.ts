@@ -248,7 +248,7 @@ export class DownloadManager {
     try {
       await this.#checkSpace(true); // a full disk fails at once, before any request
       ({ segments: run.plan, layout: run.layout } = await this.#initialPlan(run, signal));
-      run.tracker.setTotal(run.plan.length);
+      run.tracker.setPlan(run.plan);
       const pending = await this.#prepareStorage(run);
       this.#report(run, true);
 
@@ -331,18 +331,13 @@ export class DownloadManager {
       await storage.deleteSegments(spec.taskId, incomplete);
       const reusable = new Map(complete.map((segment) => [segmentKey(segment.trackId, segment.index), segment.bytes]));
       const pending: number[] = [];
-      let reused = 0;
-      let bytes = 0;
+      const reused: { segment: MediaSegment; bytes: number }[] = [];
       plan.forEach((segment, position) => {
         const storedBytes = reusable.get(segmentKey(segment.trackId, segment.index));
-        if (storedBytes === undefined) {
-          pending.push(position);
-        } else {
-          reused += 1;
-          bytes += storedBytes;
-        }
+        if (storedBytes === undefined) pending.push(position);
+        else reused.push({ segment, bytes: storedBytes });
       });
-      tracker.resume(reused, bytes);
+      tracker.resume(reused);
       return pending;
     } catch (error) {
       throw await this.#storageFailure(storageFailure(error));
@@ -384,7 +379,7 @@ export class DownloadManager {
         await storage.completeSegment({ ...key, bytes: stored, parts: result.parts }).catch((error: unknown) => {
           throw storageFailure(error);
         });
-        tracker.segmentDone(stored);
+        tracker.segmentDone(stored, segment);
         this.#space.written(stored);
         this.#report(run);
         break;

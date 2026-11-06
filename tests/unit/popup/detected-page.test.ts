@@ -1,0 +1,150 @@
+// @vitest-environment happy-dom
+import { act } from 'react';
+import { afterEach, describe, expect, it } from 'vitest';
+import { detectionStorageKey } from '@/core/detection/detection-store';
+import type { DetectedStream } from '@/core/models/detected-stream';
+import { DetectedPage } from '@/popup/pages/DetectedPage';
+import { click, installPopupChrome, render } from '@tests/fakes/popup-dom';
+
+/**
+ * Tab Detected (v0.2.0): tiêu đề nổi bật, thông tin phụ gọn, chọn chất lượng
+ * ngay trên thẻ, audio vẫn chọn được, tải riêng từng video và tải hàng loạt
+ * có số lượng đã chọn.
+ */
+
+const TAB = { id: 7, url: 'https://video.example.com/watch/42' };
+
+const stream = (id: string, overrides: Partial<DetectedStream> = {}): DetectedStream => ({
+  id,
+  tabId: TAB.id,
+  frameId: 0,
+  protocol: 'hls',
+  url: `https://cdn.example.com/vod/${id}.m3u8`,
+  dedupeKey: `https://cdn.example.com/vod/${id}.m3u8`,
+  evidence: ['extension'],
+  status: 'ready',
+  requestContext: {},
+  firstSeen: 1,
+  lastSeen: 1,
+  title: 'Movie Title',
+  pageUrl: TAB.url,
+  manifest: { role: 'master', live: false, drmSystems: [], encryption: 'none' },
+  media: {
+    durationSec: 734,
+    variants: [
+      { id: 'video-0', height: 1080, bandwidth: 5_000_000, videoCodec: 'avc1.640028', audioCodec: 'mp4a.40.2', audioOnly: false, audioTrackIds: ['audio-0', 'audio-1'] },
+      { id: 'video-1', height: 720, bandwidth: 2_800_000, videoCodec: 'avc1.64001f', audioCodec: 'mp4a.40.2', audioOnly: false, audioTrackIds: ['audio-0', 'audio-1'] },
+    ],
+    audioTracks: [
+      { id: 'audio-0', name: 'English', isDefault: true },
+      { id: 'audio-1', name: 'Français', isDefault: false },
+    ],
+  },
+  ...overrides,
+});
+
+let unmount: (() => void) | undefined;
+afterEach(() => {
+  act(() => unmount?.());
+  document.body.innerHTML = '';
+});
+
+async function setup() {
+  const chrome = await installPopupChrome({
+    activeTab: TAB,
+    answers: { 'downloads/start': { created: [], failed: [] } },
+  });
+  const { media: _media, ...locked } = stream('locked', { title: 'Protected video', status: 'drm', statusMessage: 'Widevine DRM' });
+  const streams = [
+    stream('first'),
+    stream('second', { protocol: 'dash', url: 'https://cdn.example.com/vod/second.mpd', dedupeKey: 'https://cdn.example.com/vod/second.mpd' }),
+    stream('other', { title: 'Another video' }),
+    locked,
+  ];
+  await chrome.session.set({ [detectionStorageKey(TAB.id)]: { version: 1, tabId: TAB.id, generation: 1, streams, updatedAt: 1 } });
+  const view = await render(DetectedPage, { onShowQueue: () => undefined });
+  unmount = () => view.root.unmount();
+  const rows = () => [...view.container.querySelectorAll('li')];
+  return { ...chrome, view, rows };
+}
+
+const check = async (input: Element | null | undefined) => {
+  if (!(input instanceof HTMLInputElement)) throw new Error('no checkbox');
+  await act(async () => {
+    input.click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+};
+
+describe('Detected tab', () => {
+  it('shows the title first, then protocol, site and duration, without codecs or manifest names unless needed', async () => {
+    const { rows } = await setup();
+    const [first, second, other, locked] = rows().map((row) => row.textContent ?? '');
+    expect(first).toMatch(/^Movie Title/);
+    expect(first).toContain('HLS');
+    expect(first).toContain('video.example.com');
+    expect(first).toContain('12:14');
+    expect(second).toContain('DASH');
+    // Hai video cùng tiêu đề: tên file manifest giúp phân biệt; tiêu đề riêng thì không cần.
+    expect(first).toContain('first.m3u8');
+    expect(second).toContain('second.mpd');
+    expect(other).not.toContain('other.m3u8');
+    // Codec chỉ hiện trong phần mở rộng; trạng thái "Ready" không chiếm chỗ.
+    expect(first).not.toContain('H.264');
+    expect(first).not.toContain('Ready');
+    expect(locked).toContain('DRM · not supported');
+    expect(locked).toContain('Widevine DRM');
+  });
+
+  it('offers a compact quality selector, audio tracks behind one toggle, and a download button per video', async () => {
+    const { view, rows, sent } = await setup();
+    const select = rows()[2]?.querySelector('select');
+    expect(select?.getAttribute('aria-label')).toBe('Quality of Another video');
+    expect([...(select?.options ?? [])].map((option) => option.textContent)).toEqual(['1080p', '720p']);
+    await act(async () => {
+      if (!select) return;
+      select.value = 'video-1';
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    const toggle = [...(rows()[2]?.querySelectorAll('button') ?? [])].find((button) => button.textContent?.startsWith('Audio: English'));
+    expect(toggle?.getAttribute('aria-expanded')).toBe('false');
+    await act(async () => {
+      toggle?.click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(toggle?.getAttribute('aria-expanded')).toBe('true');
+    const panel = rows()[2]?.textContent ?? '';
+    expect(panel).toContain('Français');
+    expect(panel).toContain('Codecs: H.264 · AAC');
+    await check([...(rows()[2]?.querySelectorAll('input[type="checkbox"]') ?? [])].find((input) => input.parentElement?.textContent?.startsWith('Français')));
+
+    await click(view.container, 'Download Another video');
+    expect(sent.at(-1)).toEqual({
+      type: 'downloads/start',
+      payload: { requests: [{ tabId: TAB.id, streamId: 'other', variantId: 'video-1', audioTrackIds: ['audio-0', 'audio-1'], fileName: 'Another_video_720p' }] },
+    });
+  });
+
+  it('counts the selected videos in the bulk download button and marks selected cards', async () => {
+    const { view, rows, sent } = await setup();
+    const bulk = () => [...view.container.querySelectorAll('button')].find((button) => button.textContent?.startsWith('Download selected'));
+    expect(bulk()?.textContent).toBe('Download selected');
+    expect(bulk()?.disabled).toBe(true);
+    // The DRM-protected video cannot be selected.
+    expect(rows()[3]?.querySelector<HTMLInputElement>('input[type="checkbox"]')?.disabled).toBe(true);
+
+    await check(rows()[0]?.querySelector('input[type="checkbox"]'));
+    await check(rows()[2]?.querySelector('input[type="checkbox"]'));
+    expect(view.container.textContent).toContain('2 of 3 selected');
+    expect(bulk()?.textContent).toBe('Download selected (2)');
+    expect(rows()[0]?.className).toContain('bg-indigo-50');
+    expect(rows()[1]?.className).not.toContain('bg-indigo-50');
+
+    await click(view.container, 'Download selected (2)');
+    const request = sent.at(-1) as { type: string; payload: { requests: { streamId: string }[] } };
+    expect(request.type).toBe('downloads/start');
+    expect(request.payload.requests.map((entry) => entry.streamId)).toEqual(['first', 'other']);
+  });
+});

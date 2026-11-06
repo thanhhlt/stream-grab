@@ -10,6 +10,7 @@ import { StreamCard } from '../components/StreamCard';
 import { useActiveTab } from '../hooks/useActiveTab';
 import { useDetections } from '../hooks/useDetections';
 import { useSettings } from '../hooks/useSettings';
+import { streamLabel } from '../format';
 import {
   defaultChoice,
   downloadAvailability,
@@ -41,10 +42,20 @@ export function DetectedPage({ onShowQueue }: DetectedPageProps) {
   const [feedback, setFeedback] = useState<Feedback | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
 
-  if (tab.state === 'unavailable') return <EmptyState title="No active tab">{tab.error}</EmptyState>;
+  if (tab.state === 'unavailable') {
+    return (
+      <EmptyState title="No active tab" icon="off">
+        {tab.error}
+      </EmptyState>
+    );
+  }
   if (tab.state === 'loading' || detections.state === 'loading') return null;
   if (detections.state === 'error') {
-    return <EmptyState title="Could not read detections">{detections.error}</EmptyState>;
+    return (
+      <EmptyState title="Could not read detections" icon="error">
+        {detections.error}
+      </EmptyState>
+    );
   }
 
   const streams = detections.streams;
@@ -54,6 +65,9 @@ export function DetectedPage({ onShowQueue }: DetectedPageProps) {
   const selectableIds = streams.filter((stream) => availability.get(stream.id)?.ok).map((stream) => stream.id);
   // Streams that disappeared or became unavailable drop out of the selection by themselves.
   const effectiveSelection = new Set(selectableIds.filter((id) => selected.has(id)));
+  // Tiêu đề trùng nhau (vd. nhiều stream của cùng một trang): hiện tên file manifest để phân biệt.
+  const labelCounts = new Map<string, number>();
+  for (const stream of streams) labelCounts.set(streamLabel(stream), (labelCounts.get(streamLabel(stream)) ?? 0) + 1);
   const choiceOf = (stream: DetectedStream): StreamChoice | undefined =>
     choices[stream.id] ?? defaultChoice(stream, preference);
 
@@ -117,7 +131,7 @@ export function DetectedPage({ onShowQueue }: DetectedPageProps) {
   return (
     <div className="flex h-full flex-col">
       {detectionOff && (
-        <div className="flex items-center gap-3 border-b border-amber-200 bg-amber-50 px-4 py-2 text-xs text-amber-900 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-200">
+        <div className="flex items-center gap-3 border-b border-amber-200 bg-amber-50 px-4 py-2 text-xs text-amber-900 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-200">
           <span className="flex-1">Automatic detection is off. New streams are not being detected.</span>
           <button
             type="button"
@@ -131,14 +145,14 @@ export function DetectedPage({ onShowQueue }: DetectedPageProps) {
         </div>
       )}
       {actionError && (
-        <p role="alert" className="bg-red-50 px-4 py-2 text-xs text-red-700 dark:bg-red-950 dark:text-red-300">
+        <p role="alert" className="bg-red-50 px-4 py-2 text-xs text-red-700 dark:bg-red-500/10 dark:text-red-300">
           {actionError}
         </p>
       )}
       {feedback && (
         <div
           role="status"
-          className="flex items-center gap-3 border-b border-emerald-200 bg-emerald-50 px-4 py-2 text-xs text-emerald-900 dark:border-emerald-900 dark:bg-emerald-950 dark:text-emerald-200"
+          className="flex items-center gap-3 border-b border-emerald-200 bg-emerald-50 px-4 py-2 text-xs text-emerald-900 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-200"
         >
           <span className="flex-1">
             {feedback.queued > 0 && `${feedback.queued} ${feedback.queued === 1 ? 'download' : 'downloads'} queued.`}
@@ -154,11 +168,11 @@ export function DetectedPage({ onShowQueue }: DetectedPageProps) {
 
       {streams.length === 0 ? (
         httpPage ? (
-          <EmptyState title="No streams detected on this page yet">
+          <EmptyState title="No streams detected on this page yet" icon="search">
             Start playing a video. Supported streams appear here as soon as the page loads them.
           </EmptyState>
         ) : (
-          <EmptyState title="Nothing to detect here">Streams can only be detected on http and https pages.</EmptyState>
+          <EmptyState title="Nothing to detect here" icon="off">Streams can only be detected on http and https pages.</EmptyState>
         )
       ) : (
         <>
@@ -201,6 +215,7 @@ export function DetectedPage({ onShowQueue }: DetectedPageProps) {
                 busy={busy}
                 error={failures[stream.id]}
                 onRemove={remove}
+                showSource={(labelCounts.get(streamLabel(stream)) ?? 0) > 1}
               />
             ))}
           </ul>

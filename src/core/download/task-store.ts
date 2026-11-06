@@ -7,7 +7,7 @@ import { STORAGE_KEYS } from '@/shared/constants';
 import { OUTPUT_FORMATS } from '@/shared/settings/settings';
 import type { RemovableKeyValueArea } from '@/shared/storage/storage-area';
 import { isOneOf, isRecord } from '@/shared/utils/guards';
-import { parseMediaAnalysis, parseMediaProgress } from './engine-messages';
+import { parseMediaAnalysis, parseMediaProgress, parseTrackProgress } from './engine-messages';
 
 /**
  * Persistence of download tasks.
@@ -283,6 +283,10 @@ function parseProgress(raw: unknown): TaskProgress | undefined {
   const resumed = num(raw['resumedSegments']);
   if (resumed !== undefined && resumed > 0) progress.resumedSegments = resumed;
   if (raw['stale'] === true) progress.stale = true;
+  const average = num(raw['averageBytesPerSecond']);
+  if (average !== undefined && average >= 0) progress.averageBytesPerSecond = average;
+  const tracks = parseTrackProgress(raw['tracks']);
+  if (tracks) progress.tracks = tracks;
   return progress as TaskProgress;
 }
 

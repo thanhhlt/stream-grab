@@ -43,6 +43,28 @@ describe('TaskStore', () => {
     expect(resumed?.progress).toEqual({ ...progress, resumedSegments: 3 });
   });
 
+  it('keeps the per-track figures and average speed of v0.2.0, and still reads v0.1.0 progress without them', async () => {
+    const { store, local } = setup();
+    const v010 = { segmentsTotal: 10, segmentsDone: 4, bytes: 400, bytesPerSecond: 50, percent: 40, retries: 0, startedAt: 1 };
+    const tracks = [
+      { trackId: 'main', segmentsTotal: 5, segmentsDone: 3, bytes: 390, declaredBytes: 650 },
+      { trackId: 'audio-0', segmentsTotal: 5, segmentsDone: 1, bytes: 10 },
+    ];
+    await store.add([
+      { task: makeTask('old', { status: 'failed', progress: v010 }), context: {} },
+      { task: makeTask('new', { status: 'downloading', progress: { ...v010, averageBytesPerSecond: 40, tracks } }), context: {} },
+    ]);
+    const [old, next] = await store.list();
+    expect(old?.progress).toEqual(v010);
+    expect(next?.progress).toEqual({ ...v010, averageBytesPerSecond: 40, tracks });
+
+    // Damaged per-track figures are dropped, the rest of the progress stays.
+    await local.set({
+      [STORAGE_KEYS.taskProgress]: { new: { progress: { ...v010, averageBytesPerSecond: -1, tracks: [{ trackId: 'main', segmentsTotal: 'x' }] }, updatedAt: 5 } },
+    });
+    expect((await store.list()).find((task) => task.id === 'new')?.progress).toEqual(v010);
+  });
+
   it('updates and removes tasks (with their contexts)', async () => {
     const { session, store } = setup();
     await store.add([

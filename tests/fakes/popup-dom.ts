@@ -13,7 +13,16 @@ const session = new FakeStorageArea('session', events);
  * storage (with change events), runtime messaging (recorded, answered ok),
  * and the downloads calls of the Completed tab.
  */
-export async function installPopupChrome(options: { settings?: Record<string, unknown>; missingDownloads?: number[] } = {}) {
+export async function installPopupChrome(
+  options: {
+    settings?: Record<string, unknown>;
+    missingDownloads?: number[];
+    /** Tab chrome.tabs.query trả về (tab Detected). */
+    activeTab?: { id: number; url: string };
+    /** Dữ liệu trả lời theo loại message (mặc định {}). */
+    answers?: Record<string, unknown>;
+  } = {},
+) {
   local.data.clear();
   session.data.clear();
   // Through set(): a settings store created by an earlier test hears the change.
@@ -26,10 +35,11 @@ export async function installPopupChrome(options: { settings?: Record<string, un
       getURL: (path: string) => `chrome-extension://test/${path}`,
       sendMessage: (envelope: { type: string; payload: unknown }) => {
         sent.push({ type: envelope.type, payload: envelope.payload });
-        return Promise.resolve({ ok: true, data: {} });
+        return Promise.resolve({ ok: true, data: options.answers?.[envelope.type] ?? {} });
       },
     },
     storage: { local, session, onChanged: events },
+    tabs: { query: () => Promise.resolve(options.activeTab ? [options.activeTab] : []) },
     downloads: {
       search: ({ id }: { id: number }) => Promise.resolve([{ id, exists: !(options.missingDownloads ?? []).includes(id) }]),
       show: (id: number) => {
@@ -42,7 +52,7 @@ export async function installPopupChrome(options: { settings?: Record<string, un
     configurable: true,
     value: { estimate: () => Promise.resolve({ usage: 50 * 1024 ** 2, quota: 100 * 1024 ** 3 }) },
   });
-  return { sent, shown, local };
+  return { sent, shown, local, session };
 }
 
 (globalThis as Record<string, unknown>)['IS_REACT_ACT_ENVIRONMENT'] = true;
