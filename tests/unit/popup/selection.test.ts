@@ -56,6 +56,31 @@ describe('downloadAvailability', () => {
     ).toEqual({ ok: false, reason: 'Live streams cannot be downloaded yet.' });
     expect(downloadAvailability(stream({ media: { variants: [], audioTracks: [] } }))).toMatchObject({ ok: false });
   });
+
+  it('offers progressive files like streams, with a name that names no quality (0.3.0)', () => {
+    const { manifest: _manifest, ...base } = stream();
+    const file: DetectedStream = {
+      ...base,
+      protocol: 'progressive',
+      url: 'https://cdn.example.com/clip.mp4',
+      progressive: { container: 'mp4', bytes: 1_000_000 },
+      media: { variants: [{ id: 'file', audioOnly: false, audioTrackIds: [] }], audioTracks: [] },
+    };
+    expect(downloadAvailability(file)).toEqual({ ok: true });
+    expect(downloadAvailability({ ...file, status: 'error', statusMessage: 'Access denied (HTTP 403).' })).toEqual({
+      ok: false,
+      reason: 'Access denied (HTTP 403).',
+    });
+    const choice = defaultChoice(file, 'highest');
+    expect(choice).toEqual({ variantId: 'file', audioTrackIds: [], fileName: 'Movie_Title', fileNameEdited: false });
+    expect(toRequest(file, choice ?? { variantId: '', audioTrackIds: [], fileName: '', fileNameEdited: false })).toEqual({
+      tabId: 4,
+      streamId: 's1',
+      variantId: 'file',
+      audioTrackIds: [],
+      fileName: 'Movie_Title',
+    });
+  });
 });
 
 describe('choices', () => {

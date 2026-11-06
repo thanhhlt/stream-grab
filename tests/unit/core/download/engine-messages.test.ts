@@ -148,4 +148,32 @@ describe('engine messages', () => {
     expect(parseSaveRequest({ ...request, container: 'exe' }, origin)).toBeNull();
     expect(parseSaveRequest({ ...request, media: { tracks: 'x' } }, origin)).toBeNull();
   });
+
+  it('carries progressive file specs only with their container, and saves of files without container or analysis (0.3.0)', () => {
+    const file = {
+      taskId: 'f1',
+      protocol: 'progressive',
+      manifestUrl: 'https://cdn.example.com/clip.mp4',
+      context: { referer: 'https://site.example/' },
+      variant: { id: 'file' },
+      audioTrackIds: [],
+      concurrency: 1,
+      file: { container: 'webm', bytes: 1234 },
+    };
+    const { downloads } = parseEngineWork({
+      downloads: [
+        file,
+        { ...file, taskId: 'f2', file: { container: 'mkv' } },
+        { ...file, taskId: 'f3', file: undefined },
+        { ...file, taskId: 'f4', protocol: 'hls' }, // a stream never carries a file
+      ],
+    });
+    expect(downloads).toEqual([{ ...file, file: { container: 'webm', bytes: 1234 } }]);
+
+    const origin = 'chrome-extension://abcdef/';
+    const save = { taskId: 'f1', url: 'blob:chrome-extension://abcdef/77', size: 1234 };
+    expect(parseSaveRequest(save, origin)).toEqual(save);
+    expect(parseSaveRequest({ ...save, container: 'mp4' }, origin)).toBeNull(); // half a merged-video save
+    expect(parseSaveRequest({ ...save, url: 'https://cdn.example.com/clip.mp4' }, origin)).toBeNull();
+  });
 });

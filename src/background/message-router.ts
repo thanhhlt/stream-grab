@@ -96,7 +96,10 @@ export function registerMessageRouter(context: BackgroundContext): void {
 
       'downloads/remove': async (payload, sender) => {
         requireExtensionPage(sender);
-        const removed = await context.tasks.remove(parseTaskIds(payload));
+        const taskIds = parseTaskIds(payload);
+        // Partial files Chrome keeps for interrupted progressive downloads go with their tasks.
+        await downloads.beforeRemove(taskIds);
+        const removed = await context.tasks.remove(taskIds);
         await downloads.afterRemove(removed);
         return { removed: removed.length };
       },

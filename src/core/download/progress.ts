@@ -154,6 +154,30 @@ export class ProgressTracker {
   }
 }
 
+/**
+ * Progress of a progressive file (0.3.0) in the same model as segments, so
+ * storage, estimates (estimate.ts) and the Queue tab work unchanged: one
+ * "segment" (done when the whole file is in), the bytes received so far, and
+ * the file size as the track's declared bytes when the server announced it.
+ * Without a size there is no percentage, no estimate and no ETA. Speed and
+ * retries come from `base` (a ProgressTracker fed with received bytes).
+ */
+export function fileProgress(base: TaskProgress, received: number, total: number | undefined, done: boolean): TaskProgress {
+  const size = total !== undefined && total > 0 ? total : undefined;
+  const { resumedSegments: _resumed, stale: _stale, ...rest } = base;
+  let percent = 0;
+  if (done) percent = 100;
+  else if (size !== undefined) percent = Math.min(99.9, Math.floor((received / size) * 1000) / 10);
+  return {
+    ...rest,
+    segmentsTotal: 1,
+    segmentsDone: done ? 1 : 0,
+    bytes: received,
+    percent,
+    tracks: [{ trackId: 'file', segmentsTotal: 1, segmentsDone: done ? 1 : 0, bytes: received, ...(size !== undefined ? { declaredBytes: size } : {}) }],
+  };
+}
+
 /** Floored to 0.1 %, so 100 % appears only when everything is in. */
 export function percentOf(done: number, total: number): number {
   return total === 0 ? 0 : Math.floor((Math.min(done, total) / total) * 1000) / 10;

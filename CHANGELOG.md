@@ -7,6 +7,66 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-06
+
+Format release: progressive MP4 and WebM files are detected and downloaded as they are, through
+the existing queue, task store and popup. HLS and DASH work as in 0.2.0, with several merge fixes.
+
+### Added
+
+- **Progressive MP4/WebM detection**: files played by a `<video>` element (webRequest resource type
+  `media`, by Content-Type or, with a generic one, by `.mp4`/`.m4v`/`.webm`) and files referenced
+  by `<video src>`/`<source>`. Each candidate's first 64 KiB are read once, with the page's
+  Referer/Origin, to tell a whole file (MP4 `ftyp`…, WebM EBML DocType `webm`) from a segment or
+  initialization segment of a stream (native HLS playback), which is not listed. The listing
+  records the container, MIME type, size, byte-range support and the server's file name. A link
+  that redirects is listed once; requests by script (Media Source Extensions) stay ignored.
+- **Progressive downloads**: the original file is saved byte for byte (no FFmpeg, no segments,
+  nothing in IndexedDB), in its own container (`.mp4`/`.webm`), in one download slot of the
+  existing queue. Chrome downloads it (`chrome.downloads`, with the site's cookies and Chrome's own
+  resume); its progress (bytes, speed, ETA) is read once a second and shown in the Queue tab like
+  any download. Cancel, Retry (continuing an interrupted download when Chrome can), Remove (also
+  deleting a resumable partial file), notifications, Completed tab and duplicate prevention are
+  the existing ones.
+- **Files that need the page's Referer/Origin**: Chrome's own downloads cannot carry them
+  (declarativeNetRequest rules never apply to `chrome.downloads` requests, checked in Chrome 157).
+  When the server refuses Chrome's download (401, 403, 404, a web page instead of the video, or a
+  size other than the detected one) and the task has a request context, the offscreen engine
+  fetches the file with the page's Referer/Origin into Blob parts and hands it to Chrome, like a
+  merged video.
+- End-to-end tests for progressive files: detection, byte-for-byte downloads next to an HLS
+  stream, the Referer fallback, cancel and retry, and a download interrupted by Chrome crashing
+  or quitting. The local fixture site has a `/files` page (`npm run fixtures`).
+
+### Fixed
+
+- **A merged video came out a few seconds long** ("The merged file is much shorter than the
+  video (30 of 7407 seconds)") when a site disguises its HLS segments as pictures (`.png` names, a
+  small PNG or GIF before the MPEG-TS data): FFmpeg read them as one picture per segment. The bytes
+  before the first MPEG-TS packet are now skipped when analysing and merging (the downloaded data
+  is not changed), also for segments whose names give no container.
+- **Timestamps that go back without a discontinuity in the manifest** (an intro or ad on its own
+  timeline, a clock wrap) no longer squeeze the rest of the video onto a few seconds: such places
+  start a run of their own, joined by the concat demuxer (fragmented MP4 always; MPEG-TS when the
+  track is joined from several runs).
+- Fragmented MP4 tracks with a new initialization segment at each discontinuity were reported as
+  unreadable and their downloaded data discarded; they are now analysed by their first run.
+- "The merged file is much shorter…" now quotes FFmpeg's last notable log line.
+
+### Known limitations
+
+- Chrome's own downloads send no Referer/Origin; the engine fallback needs the task's request
+  context (lost after a browser restart until the video is played again), restarts from the
+  beginning after a failure (no Range resume), and needs disk room for the file twice while
+  Chrome saves it.
+- Quitting Chrome normally cancels its running downloads: the task fails saying so, and Retry
+  downloads the file again. After a crash, Chrome 157 completed the file but fetched it from the
+  start; after Chrome resumes a download by itself, the file may take the URL's name instead of
+  the chosen one (the Completed tab shows the real name).
+- Progressive files show no resolution or codecs (they are not analysed by FFmpeg); their only
+  quality is the file itself ("Single quality"). Audio-only files, Matroska/MOV and files fetched
+  by script are not listed.
+
 ## [0.2.0] - 2026-11-06
 
 UI/UX release: detailed download progress with size estimates and ETA, a compact Completed tab
@@ -114,6 +174,7 @@ Notably: merging is stream copy only (no re-encoding); SAMPLE-AES and DRM-protec
 not supported; subtitles are ignored; the bundled FFmpeg.wasm core is licensed
 GPL-2.0-or-later and adds 32 MB to the extension.
 
-[Unreleased]: https://github.com/thanhhlt/stream-grab/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/thanhhlt/stream-grab/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/thanhhlt/stream-grab/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/thanhhlt/stream-grab/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/thanhhlt/stream-grab/releases/tag/v0.1.0

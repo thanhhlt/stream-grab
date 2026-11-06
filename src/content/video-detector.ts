@@ -1,12 +1,13 @@
-import { classifyMimeType, protocolFromUrl } from '@/core/detection/manifest-detector';
+import { classifyMimeType, progressiveContainer, protocolFromUrl } from '@/core/detection/manifest-detector';
 import { METADATA_LIMITS, type DomSource } from '@/shared/types/page-metadata';
 import { parseHttpUrl } from '@/shared/utils/url';
 import { describeVideoElement } from './page-metadata';
 
 /**
- * Finds manifests referenced directly by media elements
- * (`<video src="….m3u8">`, `<source type="application/dash+xml">`). This
- * catches streams before they are played (preload="none") and sites that rely
+ * Finds manifests and progressive files (MP4/WebM, since 0.3.0) referenced
+ * directly by media elements (`<video src="….m3u8">`,
+ * `<source type="application/dash+xml">`, `<video src="clip.mp4">`). This
+ * catches videos before they are played (preload="none") and sites that rely
  * on native HLS playback. MSE players expose only blob: URLs here; those are
  * caught by network monitoring instead.
  */
@@ -21,12 +22,19 @@ export function findDomSources(root: ParentNode, baseUrl: string): DomSource[] {
     if (!raw) continue;
     const url = parseHttpUrl(raw, baseUrl); // drops blob:, data:, mediastream:
     if (!url || url.href.length > METADATA_LIMITS.maxUrlLength) continue;
-    const declared = classifyMimeType(element.getAttribute('type') ?? undefined);
+    if (found.has(url.href)) continue;
+    const type = element.getAttribute('type') ?? undefined;
+    const declared = classifyMimeType(type);
     const protocol = declared === 'hls' || declared === 'dash' ? declared : protocolFromUrl(url)?.protocol;
-    if (!protocol || found.has(url.href)) continue;
+    const file = protocol ? null : progressiveContainer(url, type);
+    let source: DomSource;
+    if (protocol) source = { url: url.href, protocol };
+    else if (file) source = { url: url.href, protocol: 'progressive', container: file.container };
+    else continue;
     const video = element instanceof HTMLVideoElement ? element : element.closest('video');
     const title = video ? describeVideoElement(video.ownerDocument, video).title : undefined;
-    found.set(url.href, title === undefined ? { url: url.href, protocol } : { url: url.href, protocol, title });
+    if (title !== undefined) source.title = title;
+    found.set(url.href, source);
   }
   return [...found.values()];
 }

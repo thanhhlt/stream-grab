@@ -12,6 +12,10 @@ export interface FixtureResponse {
   body: string | Uint8Array<ArrayBuffer>;
   /** Simulated server latency (the manual server waits this long; tests may ignore it). */
   delayMs?: number;
+  /** Further response headers (Content-Range, Location…; progressive files, 0.3.0). */
+  headers?: Record<string, string>;
+  /** Send the body at this rate instead of at once (slow downloads to cancel or interrupt). */
+  bytesPerSecond?: number;
 }
 
 export interface FixtureFiles {
@@ -60,10 +64,14 @@ export const EMBED_PAGE = `<!doctype html><html><head><meta charset="utf-8"><tit
 const HLS = 'application/vnd.apple.mpegurl';
 const DASH = 'application/dash+xml';
 
-/** `downloads`: the download demo's routes (createDownloadRouter); without it /download/* answers 404. */
+/**
+ * `downloads`: the download demo's routes (createDownloadRouter); without it /download/* answers 404.
+ * `progressive`: the progressive files page and files (createProgressiveRouter); without it /files* answers 404.
+ */
 export function createFixtureRouter(
   files: FixtureFiles,
   downloads: (pathname: string, request?: DemoRequest) => FixtureResponse | undefined = () => undefined,
+  progressive: (pathname: string, request?: DemoRequest) => FixtureResponse | undefined = () => undefined,
 ): (pathname: string, request?: DemoRequest) => FixtureResponse {
   const ok = (contentType: string, body: string | Uint8Array<ArrayBuffer>): FixtureResponse => ({ status: 200, contentType, body });
   const notFound: FixtureResponse = { status: 404, contentType: 'text/plain', body: 'not found' };
@@ -72,6 +80,7 @@ export function createFixtureRouter(
     if (pathname === '/download') return files.downloadPage ? ok('text/html; charset=utf-8', files.downloadPage()) : notFound;
     if (pathname === '/download/streams.json') return ok('application/json', JSON.stringify(DOWNLOAD_STREAMS));
     if (pathname.startsWith('/download/')) return downloads(pathname, request) ?? notFound;
+    if (pathname === '/files' || pathname.startsWith('/files/')) return progressive(pathname, request) ?? notFound;
     if (pathname === '/requests.json') return ok('application/json', JSON.stringify(PAGE_REQUESTS));
     if (pathname === '/embed/dash') return ok('text/html; charset=utf-8', EMBED_PAGE);
     if (pathname.endsWith('/master.m3u8')) return ok(HLS, files.manifest('hls/master.m3u8'));

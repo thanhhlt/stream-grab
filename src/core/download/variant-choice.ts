@@ -1,4 +1,4 @@
-import type { AudioTrackSummary, StreamingProtocol, VariantSummary } from '@/core/models/detected-stream';
+import type { AudioTrackSummary, MediaProtocol, VariantSummary } from '@/core/models/detected-stream';
 import type { VideoVariant } from '@/core/models/video-variant';
 import type { ResolutionPreference } from '@/shared/settings/settings';
 
@@ -55,7 +55,7 @@ export function chooseVariant(
  * that already carries audio.
  */
 export function defaultAudioTracks(
-  protocol: StreamingProtocol,
+  protocol: MediaProtocol,
   variant: VariantSummary,
   tracks: readonly AudioTrackSummary[],
 ): string[] {

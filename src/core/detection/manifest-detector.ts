@@ -1,9 +1,9 @@
-import type { StreamingProtocol } from '@/core/models/detected-stream';
+import type { ProgressiveContainer, StreamingProtocol } from '@/core/models/detected-stream';
 import { parseHttpUrl, pathExtension } from '@/shared/utils/url';
 
 /**
  * Classifies an observed network response as a streaming manifest, a candidate
- * worth sniffing, or something to ignore. Pure: no I/O.
+ * worth sniffing, a progressive media file, or something to ignore. Pure: no I/O.
  *
  * Signals, strongest first:
  *  1. Content-Type (HLS / DASH MIME types) — works for extensionless URLs.
@@ -12,6 +12,13 @@ import { parseHttpUrl, pathExtension } from '@/shared/utils/url';
  *  4. Format hints elsewhere in the URL (Azure `format=m3u8-aapl`, proxied `?url=…/x.m3u8`).
  *  5. Manifest keywords (manifest, playlist, master…) with a generic Content-Type → sniff the body.
  * Segment and asset extensions (.ts, .m4s, .mp4, .vtt, .key, …) are never manifests.
+ *
+ * Progressive files (since 0.3.0): an MP4/WebM response (Content-Type, or a
+ * generic one with a .mp4/.m4v/.webm path) to a media element's request
+ * (`media`). Players that fetch .mp4/.webm by XHR/fetch feed them to Media
+ * Source Extensions: those are segments of a stream, not files, and stay
+ * ignored. Whether a media-element response is a whole file or a segment
+ * (native HLS playback) is decided by inspecting its first bytes.
  */
 
 export interface ResponseObservation {
@@ -38,8 +45,14 @@ export type IgnoreReason =
 
 export type ManifestVerdict =
   | { kind: 'manifest'; protocol: StreamingProtocol; evidence: ManifestEvidence }
+  | { kind: 'progressive'; container: ProgressiveContainer; evidence: ProgressiveEvidence; mimeType?: string }
   | { kind: 'probe' }
   | { kind: 'ignore'; reason: IgnoreReason };
+
+export type ProgressiveEvidence = 'content-type' | 'extension';
+
+/** Resource type of a media element's requests: how progressive files are played. */
+export const PROGRESSIVE_RESOURCE_TYPE = 'media';
 
 /** Resource types a page uses to load manifests: XHR/fetch (MSE players), media (native playback), other. */
 export const OBSERVED_RESOURCE_TYPES = ['xmlhttprequest', 'media', 'other'] as const;
@@ -130,6 +143,30 @@ export function hasManifestKeyword(url: URL): boolean {
     .some((token) => MANIFEST_KEYWORDS.has(token));
 }
 
+const PROGRESSIVE_MIME: Readonly<Record<string, ProgressiveContainer>> = {
+  'video/mp4': 'mp4',
+  'video/x-m4v': 'mp4',
+  'video/webm': 'webm',
+};
+const PROGRESSIVE_EXTENSIONS: Readonly<Record<string, ProgressiveContainer>> = { mp4: 'mp4', m4v: 'mp4', webm: 'webm' };
+
+/**
+ * The progressive container a Content-Type (or a `<source type>`) names, or,
+ * when it is generic or missing, the URL's extension. Null for anything else
+ * (manifests, other media types, pages).
+ */
+export function progressiveContainer(
+  url: URL,
+  contentType: string | undefined,
+): { container: ProgressiveContainer; evidence: ProgressiveEvidence } | null {
+  const essence = mimeEssence(contentType);
+  const byType = PROGRESSIVE_MIME[essence];
+  if (byType) return { container: byType, evidence: 'content-type' };
+  if (!GENERIC_MIME.has(essence)) return null;
+  const byExtension = PROGRESSIVE_EXTENSIONS[pathExtension(url)];
+  return byExtension ? { container: byExtension, evidence: 'extension' } : null;
+}
+
 function acceptableStatus(status: number): boolean {
   return (status >= 200 && status < 300 && status !== 204 && status !== 205) || status === 304;
 }
@@ -142,6 +179,15 @@ export function classifyResponse(observation: ResponseObservation): ManifestVerd
   if (!acceptableStatus(observation.statusCode)) return { kind: 'ignore', reason: 'status' };
   const url = parseHttpUrl(observation.url);
   if (!url) return { kind: 'ignore', reason: 'not-http' };
+  // Before the size cap: media files are big. A 304 carries no Content-Type; its URL decides.
+  if (observation.resourceType === PROGRESSIVE_RESOURCE_TYPE) {
+    const contentType = observation.statusCode === 304 ? undefined : observation.contentType;
+    const file = progressiveContainer(url, contentType);
+    if (file) {
+      const mimeType = mimeEssence(contentType);
+      return { kind: 'progressive', ...file, ...(mimeType !== '' ? { mimeType } : {}) };
+    }
+  }
   if (observation.contentLength !== undefined && observation.contentLength > MAX_MANIFEST_BYTES) {
     return { kind: 'ignore', reason: 'too-large' };
   }

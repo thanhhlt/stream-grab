@@ -1,10 +1,12 @@
 import {
   isEmptyRequestContext,
+  PROGRESSIVE_VARIANT_ID,
   requestContextKey,
   type DetectedStream,
   type DetectionEvidence,
+  type MediaProtocol,
+  type ProgressiveInfo,
   type RequestContext,
-  type StreamingProtocol,
 } from '@/core/models/detected-stream';
 import { describeDrm } from '@/core/protocols/drm';
 import { createLimiter, type Limiter } from '@/shared/utils/concurrency';
@@ -14,15 +16,17 @@ import type { Logger } from '@/shared/utils/logger';
 import { dedupeKey, parseHttpUrl, urlShape } from '@/shared/utils/url';
 import type { DetectionStore, StoredTabDetections } from './detection-store';
 import type { ManifestInfo } from './manifest-inspector';
-import type { InspectionOutcome } from './stream-inspector';
+import type { InspectionKind, InspectionOutcome } from './stream-inspector';
 
-/** A possible manifest observed in a tab (network request or DOM element). */
+/** A possible manifest or progressive file observed in a tab (network request or DOM element). */
 export interface DetectionCandidate {
   tabId: number;
   frameId: number;
   url: string;
   /** Known protocol and the evidence for it; absent when the body must be sniffed before listing. */
-  match?: { protocol: StreamingProtocol; evidence: DetectionEvidence };
+  match?: { protocol: MediaProtocol; evidence: DetectionEvidence };
+  /** Progressive files: what the request revealed (container from Content-Type or extension). Required with that protocol. */
+  progressive?: ProgressiveInfo;
   requestContext: RequestContext;
   timestamp: number;
   /** Title known exactly for this URL (its own <video> element); wins over frame-level titles. */
@@ -52,7 +56,7 @@ export const DEFAULT_DETECTION_LIMITS: Readonly<DetectionLimits> = {
 
 export interface DetectionManagerOptions {
   store: DetectionStore;
-  inspect: (url: string, context: RequestContext) => Promise<InspectionOutcome>;
+  inspect: (url: string, context: RequestContext, kind: InspectionKind) => Promise<InspectionOutcome>;
   resolvePageInfo: (tabId: number, frameId: number) => Promise<PageInfo>;
   /** Called after a tab's detections were persisted (badge updates). */
   onTabChanged?: (tabId: number, streams: readonly DetectedStream[]) => void;
@@ -70,6 +74,8 @@ interface TabState {
   streams: Map<string, DetectedStream>;
   /** URL shapes whose content probe found no manifest (segments of one stream share a shape). */
   probedShapes: Set<string>;
+  /** URL shapes of media-element requests that turned out to be segments, not files (native HLS playback). */
+  segmentShapes: Set<string>;
   probes: number;
   inspecting: Set<string>;
   /** Dedupe keys the user removed; ignored until the next navigation. */
@@ -220,6 +226,10 @@ export class DetectionManager {
     if (tab.removed) return;
     const key = dedupeKey(candidate.url);
     if (tab.dismissedKeys.has(key) || this.#isChildKey(tab, key)) return;
+    if (candidate.match?.protocol === 'progressive') {
+      // Segments of one stream share a URL shape: once one was found to be a segment, skip the rest.
+      if (!candidate.progressive || tab.segmentShapes.has(urlShape(candidate.url))) return;
+    }
     const id = streamIdFor(key);
     const existing = tab.streams.get(id);
     if (existing) {
@@ -252,6 +262,12 @@ export class DetectionManager {
       stream.evidence = [...stream.evidence, evidence];
       changed = true;
     }
+    // The element's own title wins over frame-level titles, also when the element's request was seen first
+    // (a media element loads its file before the content script's debounced DOM scan reports it).
+    if (candidate.title !== undefined && stream.title !== candidate.title) {
+      stream.title = candidate.title;
+      changed = true;
+    }
     if (!changed) return;
     this.#markDirty(tab);
     // A fresh URL or context (e.g. a re-signed link after expiry) is worth another inspection.
@@ -269,7 +285,7 @@ export class DetectionManager {
     tab.probedShapes.add(shape);
     tab.probes += 1;
     const generation = tab.generation;
-    const outcome = await this.#limit(() => this.#safeInspect(candidate.url, candidate.requestContext));
+    const outcome = await this.#limit(() => this.#safeInspect(candidate.url, candidate.requestContext, 'manifest'));
     if (!this.#isCurrent(tab, generation) || outcome.kind !== 'manifest') return;
     // Only negative results are cached by shape; another manifest may share this one's shape.
     tab.probedShapes.delete(shape);
@@ -283,7 +299,7 @@ export class DetectionManager {
     candidate: DetectionCandidate,
     key: string,
     id: string,
-    protocol: StreamingProtocol,
+    protocol: MediaProtocol,
     evidence: DetectionEvidence,
     inspect = true,
   ): DetectedStream {
@@ -303,6 +319,7 @@ export class DetectionManager {
     };
     if (tab.pageUrl !== undefined) stream.pageUrl = tab.pageUrl;
     if (candidate.title !== undefined) stream.title = candidate.title;
+    if (protocol === 'progressive' && candidate.progressive) stream.progressive = { ...candidate.progressive };
     tab.streams.set(id, stream);
     this.#markDirty(tab);
     if (inspect) this.#scheduleInspection(tab, id);
@@ -329,7 +346,8 @@ export class DetectionManager {
         try {
           const stream = tab.streams.get(id);
           if (!stream) return;
-          const outcome = await this.#limit(() => this.#safeInspect(stream.url, stream.requestContext));
+          const kind: InspectionKind = stream.protocol === 'progressive' ? 'progressive' : 'manifest';
+          const outcome = await this.#limit(() => this.#safeInspect(stream.url, stream.requestContext, kind));
           if (!this.#isCurrent(tab, generation)) return;
           const latest = tab.streams.get(id);
           if (latest) this.#applyOutcome(tab, latest, outcome);
@@ -340,9 +358,9 @@ export class DetectionManager {
     );
   }
 
-  async #safeInspect(url: string, context: RequestContext): Promise<InspectionOutcome> {
+  async #safeInspect(url: string, context: RequestContext, kind: InspectionKind): Promise<InspectionOutcome> {
     try {
-      return await this.#inspect(url, context);
+      return await this.#inspect(url, context, kind);
     } catch (error) {
       return { kind: 'failed', reason: errorMessage(error) };
     }
@@ -353,8 +371,13 @@ export class DetectionManager {
       case 'manifest':
         this.#applyManifest(tab, stream, outcome.info);
         return;
+      case 'progressive':
+        this.#applyProgressive(tab, stream, outcome.info, outcome.finalUrl);
+        return;
       case 'not-manifest':
-        // The URL looked like a manifest but the body is not one (error page, plain M3U…).
+        // The URL looked like a manifest but the body is not one (error page, plain M3U…),
+        // or a media-element request was a segment of a stream rather than a whole file.
+        if (stream.protocol === 'progressive') tab.segmentShapes.add(urlShape(stream.url));
         tab.streams.delete(stream.id);
         this.#logger?.debug('Dropped candidate that is not a manifest', { url: stream.url, reason: outcome.reason });
         this.#markDirty(tab);
@@ -397,6 +420,28 @@ export class DetectionManager {
       }
     } else if (this.#isChildKey(tab, stream.dedupeKey)) {
       tab.streams.delete(stream.id);
+    }
+    this.#markDirty(tab);
+  }
+
+  /**
+   * A whole MP4/WebM file. It is listed with one "quality", the file itself,
+   * so the Detected tab's selection works as for manifests. A link that
+   * redirected (CDN, signed URL) is the same video as its target: the target
+   * is folded under it like an HLS master's playlists, whichever was seen first.
+   */
+  #applyProgressive(tab: TabState, stream: DetectedStream, info: ProgressiveInfo, finalUrl: string): void {
+    stream.inspectedAt = this.#now();
+    stream.progressive = info;
+    stream.media = { variants: [{ id: PROGRESSIVE_VARIANT_ID, audioOnly: false, audioTrackIds: [] }], audioTracks: [] };
+    stream.status = 'ready';
+    delete stream.statusMessage;
+    const target = dedupeKey(finalUrl);
+    if (target !== stream.dedupeKey) {
+      stream.childKeys = [target];
+      for (const other of [...tab.streams.values()]) {
+        if (other.id !== stream.id && other.dedupeKey === target) tab.streams.delete(other.id);
+      }
     }
     this.#markDirty(tab);
   }
@@ -451,6 +496,7 @@ export class DetectionManager {
       pageUrl: stored?.pageUrl,
       streams: new Map((stored?.streams ?? []).map((stream) => [stream.id, stream])),
       probedShapes: new Set(),
+      segmentShapes: new Set(),
       probes: 0,
       inspecting: new Set(),
       dismissedKeys: new Set(),
@@ -469,6 +515,7 @@ export class DetectionManager {
     tab.generation += 1;
     tab.streams.clear();
     tab.probedShapes.clear();
+    tab.segmentShapes.clear();
     tab.probes = 0;
     tab.inspecting = new Set();
   }

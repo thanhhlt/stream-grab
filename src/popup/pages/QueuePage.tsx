@@ -107,8 +107,9 @@ function DownloadBody({ task, now, actions }: { task: DownloadTask; now: number;
       </div>
       <ProgressBar percent={stats.percent} label={`Download progress of ${task.source.title}`} />
       <div className="mt-1.5 grid grid-cols-2 gap-x-3 gap-y-0.5 text-[11px] leading-4 tabular-nums">
+        {/* A progressive file (0.3.0) has no segments to count: the cell stays empty. */}
         <Stat title={stats.reused ? `${stats.reused} from an earlier run` : undefined}>
-          {stats.segments}
+          {task.progressive ? '' : stats.segments}
           {stats.reused && <span className="text-slate-500 dark:text-slate-400"> · {stats.reused}</span>}
         </Stat>
         <span className="truncate text-right" title={stats.note}>
@@ -196,7 +197,7 @@ function TaskRow({ task, now, onAction }: { task: DownloadTask; now: number; onA
         {task.source.title}
       </p>
       <p className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[11px] text-slate-500 dark:text-slate-400">
-        <ProtocolBadge protocol={task.source.protocol} />
+        <ProtocolBadge protocol={task.source.protocol} container={task.progressive?.container} />
         <span className="truncate">{taskMeta(task)}</span>
       </p>
       {body}

@@ -1,13 +1,24 @@
-import type { RequestContext } from '@/core/models/detected-stream';
+import type { ProgressiveInfo, RequestContext } from '@/core/models/detected-stream';
 import { describeFetchFailure, type ManifestFetcher } from '@/core/network/manifest-fetcher';
 import type { ProtocolRegistry } from '@/core/protocols/protocol-adapter';
 import { errorMessage, StreamGrabError } from '@/shared/utils/errors';
 import { manifestInfoFrom, type ManifestInfo } from './manifest-inspector';
 
+/**
+ * - `manifest`:     an HLS/DASH manifest, parsed
+ * - `progressive`:  a whole MP4/WebM file (core/detection/file-inspector.ts)
+ * - `not-manifest`: not what the URL looked like (not a manifest; for a media
+ *                   file: a segment of a stream or not MP4/WebM): not listed
+ * - `failed`:       could not be inspected (HTTP error, timeout, a web page instead of a video)
+ */
 export type InspectionOutcome =
   | { kind: 'manifest'; info: ManifestInfo; finalUrl: string }
+  | { kind: 'progressive'; info: ProgressiveInfo; finalUrl: string }
   | { kind: 'not-manifest'; reason: string }
   | { kind: 'failed'; reason: string };
+
+/** What an inspection checks: a manifest (protocol found from its body) or a progressive media file. */
+export type InspectionKind = 'manifest' | 'progressive';
 
 export interface InspectorDeps {
   fetcher: ManifestFetcher;

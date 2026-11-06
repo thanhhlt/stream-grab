@@ -1,8 +1,16 @@
 import {
-  STREAMING_PROTOCOLS,
+  MEDIA_PROTOCOLS,
+  PROGRESSIVE_CONTAINERS,
   type RequestContext,
 } from '@/core/models/detected-stream';
-import { TASK_STATUSES, type DownloadTask, type MediaProgress, type TaskProgress } from '@/core/models/download-task';
+import {
+  PROGRESSIVE_FETCHES,
+  TASK_STATUSES,
+  type DownloadTask,
+  type MediaProgress,
+  type ProgressiveTaskInfo,
+  type TaskProgress,
+} from '@/core/models/download-task';
 import { STORAGE_KEYS } from '@/shared/constants';
 import { OUTPUT_FORMATS } from '@/shared/settings/settings';
 import type { RemovableKeyValueArea } from '@/shared/storage/storage-area';
@@ -218,7 +226,7 @@ export function parseTask(raw: unknown): DownloadTask | null {
     createdAt === undefined ||
     updatedAt === undefined ||
     !isOneOf(status, TASK_STATUSES) ||
-    !isOneOf(protocol, STREAMING_PROTOCOLS) ||
+    !isOneOf(protocol, MEDIA_PROTOCOLS) ||
     manifestUrl === undefined ||
     title === undefined ||
     tabId === undefined ||
@@ -268,7 +276,23 @@ export function parseTask(raw: unknown): DownloadTask | null {
     if (path !== undefined && bytes !== undefined && bytes >= 0 && savedAt !== undefined) task.output.saved = { path, bytes, savedAt };
   }
   if (raw['dismissed'] === true) task.dismissed = true;
+  if (protocol === 'progressive') {
+    // A progressive task always knows its container and how it is fetched.
+    const progressive = parseProgressiveTask(raw['progressive']);
+    if (!progressive) return null;
+    task.progressive = progressive;
+  }
   return task;
+}
+
+function parseProgressiveTask(raw: unknown): ProgressiveTaskInfo | undefined {
+  if (!isRecord(raw) || !isOneOf(raw['container'], PROGRESSIVE_CONTAINERS) || !isOneOf(raw['fetch'], PROGRESSIVE_FETCHES)) return undefined;
+  const info: ProgressiveTaskInfo = { container: raw['container'], fetch: raw['fetch'] };
+  const bytes = num(raw['bytes']);
+  if (bytes !== undefined && bytes > 0 && Number.isInteger(bytes)) info.bytes = bytes;
+  const resumeId = num(raw['resumeId']);
+  if (resumeId !== undefined && Number.isInteger(resumeId) && resumeId >= 0) info.resumeId = resumeId;
+  return info;
 }
 
 function parseProgress(raw: unknown): TaskProgress | undefined {

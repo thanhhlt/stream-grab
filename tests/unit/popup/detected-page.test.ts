@@ -76,6 +76,58 @@ const check = async (input: Element | null | undefined) => {
   });
 };
 
+describe('Detected tab: progressive files (0.3.0)', () => {
+  it('lists MP4 and WebM files next to streams and queues them like streams, with the file extension', async () => {
+    const { session, sent } = await installPopupChrome({ activeTab: TAB, answers: { 'downloads/start': { created: [], failed: [] } } });
+    const { manifest: _manifest, media: _media, ...base } = stream('base');
+    const file = (id: string, container: 'mp4' | 'webm', overrides: Partial<DetectedStream> = {}): DetectedStream => ({
+      ...base,
+      id,
+      protocol: 'progressive',
+      url: `https://media.example.net/files/${id}.${container}`,
+      dedupeKey: `https://media.example.net/files/${id}.${container}`,
+      evidence: ['content-type'],
+      progressive: { container, mimeType: `video/${container}`, bytes: 52_428_800, acceptsRanges: true },
+      media: { variants: [{ id: 'file', audioOnly: false, audioTrackIds: [] }], audioTracks: [] },
+      ...overrides,
+    });
+    const streams = [
+      stream('first'),
+      file('trailer', 'mp4', { title: 'Trailer', durationHint: 95 }),
+      file('loop', 'webm', { title: 'Background loop' }),
+      file('gone', 'mp4', { title: 'Expired clip', status: 'error', statusMessage: 'Access denied (HTTP 403).' }),
+    ];
+    await session.set({ [detectionStorageKey(TAB.id)]: { version: 1, tabId: TAB.id, generation: 1, streams, updatedAt: 1 } });
+    const view = await render(DetectedPage, { onShowQueue: () => undefined });
+    unmount = () => view.root.unmount();
+    const rows = () => [...view.container.querySelectorAll('li')];
+    const [hls, trailer, loop, gone] = rows().map((row) => row.textContent ?? '');
+
+    expect(hls).toContain('HLS');
+    expect(trailer).toMatch(/^Trailer/);
+    expect(trailer).toContain('MP4');
+    expect(trailer).toContain('1:35');
+    expect(loop).toContain('WebM');
+    expect(gone).toContain('Unavailable');
+    expect(gone).toContain('Access denied (HTTP 403).');
+    expect((rows()[3]?.querySelector('input[type="checkbox"]') as HTMLInputElement | null)?.disabled).toBe(true);
+
+    // The options show the file's own extension (not the output format's).
+    const options = [...(rows()[2]?.querySelectorAll('button') ?? [])].find((button) => button.textContent?.startsWith('Options'));
+    await act(async () => {
+      options?.click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(rows()[2]?.textContent).toContain('.webm');
+
+    await click(view.container, 'Download Trailer');
+    expect(sent.at(-1)).toEqual({
+      type: 'downloads/start',
+      payload: { requests: [{ tabId: TAB.id, streamId: 'trailer', variantId: 'file', audioTrackIds: [], fileName: 'Trailer' }] },
+    });
+  });
+});
+
 describe('Detected tab', () => {
   it('shows the title first, then protocol, site and duration, without codecs or manifest names unless needed', async () => {
     const { rows } = await setup();

@@ -91,7 +91,7 @@ export function StreamCard(props: StreamCardProps) {
           </button>
         </div>
         <p className="mt-0.5 flex min-w-0 flex-wrap items-center gap-1.5 text-[11px] text-slate-500 dark:text-slate-400">
-          <ProtocolBadge protocol={stream.protocol} />
+          <ProtocolBadge protocol={stream.protocol} container={stream.progressive?.container} />
           {meta && <span className="truncate">{meta}</span>}
           {stream.status !== 'ready' && <Badge tone={status.tone}>{status.label}</Badge>}
           {streamTags(stream).map((tag) => (

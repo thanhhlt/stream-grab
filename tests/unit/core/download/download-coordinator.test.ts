@@ -3,6 +3,7 @@ import {
   CONTEXT_LOST_MESSAGE,
   DOWNLOADED_MESSAGE,
   DownloadCoordinator,
+  FILE_REMOVED_MESSAGE,
   saveFailureMessage,
   type CoordinatorDeps,
   type EngineChannel,
@@ -106,6 +107,8 @@ async function setup(
   let lease = 0;
   const files = new FakeFiles();
   const notifier = new FakeNotifier();
+  /** The progress poll of progressive downloads: run by the test (poll()). */
+  const timers: (() => void)[] = [];
   const coordinator = new DownloadCoordinator({
     store,
     storage,
@@ -119,10 +122,19 @@ async function setup(
     findStreams: (streamId) => Promise.resolve((options.elsewhere ?? []).filter((stream) => stream.id === streamId)),
     now: () => 5000,
     newLeaseId: () => `lease-${++lease}`,
+    schedule: (callback) => {
+      timers.push(callback);
+    },
   });
   const statusOf = async (id: string) => (await store.list()).find((task) => task.id === id)?.status;
   const taskOf = async (id: string) => (await store.list()).find((task) => task.id === id);
-  return { store, engine, coordinator, deleted, releases, acquireContext, statusOf, taskOf, stored, files, notifier };
+  /** Runs the scheduled progress poll, then waits for what it set off (pump included). */
+  const poll = async () => {
+    for (const callback of timers.splice(0)) callback();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    await coordinator.pump();
+  };
+  return { store, engine, coordinator, deleted, releases, acquireContext, statusOf, taskOf, stored, files, notifier, poll, timers };
 }
 
 const queued = (id: string, createdAt: number) => ({ task: makeTask(id, { createdAt }) });
@@ -709,5 +721,241 @@ describe('DownloadCoordinator', () => {
       await coordinator.pump();
       expect(deleted).toEqual(['ghost', 'a']);
     });
+  });
+});
+
+describe('DownloadCoordinator: progressive files (0.3.0)', () => {
+  const PAGE = { referer: 'https://site.example/watch/1' };
+  const urlOf = (id: string) => `https://media.example.net/files/${id}.mp4`;
+
+  function fileTask(id: string, overrides: Partial<DownloadTask> = {}): DownloadTask {
+    return makeTask(id, {
+      source: { protocol: 'progressive', manifestUrl: urlOf(id), title: 'Clip', tabId: 3, streamId: `f-${id}` },
+      selection: { variantId: 'file', variantLabel: 'Single quality', audioTrackIds: [], audioTrackNames: [] },
+      progressive: { container: 'mp4', fetch: 'browser' },
+      ...overrides,
+    });
+  }
+
+  it('has Chrome download a file in a download slot, without the engine, and follows it to completion', async () => {
+    const { coordinator, engine, files, notifier, poll, statusOf, taskOf, timers } = await setup(
+      [{ task: fileTask('f', { createdAt: 1 }), context: PAGE }, queued('a', 2)],
+      { settings: { maxActiveTasks: 1 } },
+    );
+    files.manual = true;
+    await coordinator.pump();
+    expect(await taskOf('f')).toMatchObject({ status: 'downloading', output: { downloadId: 1 } });
+    expect(files.entries.get(1)).toMatchObject({ url: urlOf('f'), path: '/Downloads/Movie_f.mp4' });
+    expect(engine.open).toBe(false); // no segments, no FFmpeg: Chrome does the work
+    expect(await statusOf('a')).toBe('queued'); // the file holds the only slot
+
+    files.advance(1, 400);
+    await poll();
+    expect((await taskOf('f'))?.progress).toMatchObject({
+      segmentsTotal: 1,
+      segmentsDone: 0,
+      bytes: 400,
+      percent: 40,
+      tracks: [{ trackId: 'file', bytes: 400, declaredBytes: 1000 }],
+    });
+
+    files.finish(1);
+    await coordinator.handleFileChange(1);
+    await coordinator.pump();
+    expect(await taskOf('f')).toMatchObject({
+      status: 'completed',
+      output: { downloadId: 1, saved: { path: '/Downloads/Movie_f.mp4', bytes: 1000 } },
+      progress: { percent: 100, bytes: 1000, segmentsDone: 1 },
+    });
+    expect(notifier.shown).toEqual([{ kind: 'completed', taskId: 'f' }]);
+    // The slot is free: the next task starts, in the engine.
+    expect(await statusOf('a')).toBe('downloading');
+    expect(engine.lastSync).toEqual(['a']);
+    await poll();
+    expect(timers).toEqual([]); // nothing left to watch
+  });
+
+  it('runs files and streams side by side: one slot each, only the streams in the engine', async () => {
+    const { coordinator, engine, files, statusOf } = await setup([{ task: fileTask('f', { createdAt: 1 }) }, queued('a', 2), queued('b', 3)], {
+      settings: { maxActiveTasks: 2 },
+    });
+    files.manual = true;
+    await coordinator.pump();
+    await coordinator.pump();
+    expect([await statusOf('f'), await statusOf('a'), await statusOf('b')]).toEqual(['downloading', 'downloading', 'queued']);
+    expect(engine.lastSync).toEqual(['a']);
+    expect(files.entries.size).toBe(1); // started once, however often the queue is pumped
+  });
+
+  it('keeps the file in its own container (WebM), with Chrome renaming on collisions', async () => {
+    const { coordinator, files, taskOf } = await setup([
+      { task: fileTask('w', { progressive: { container: 'webm', fetch: 'browser' }, output: { baseName: 'Loop', format: 'mkv' } }) },
+    ]);
+    files.remote.set(urlOf('w'), { mime: 'video/webm', size: 2048 });
+    files.remote.set('https://elsewhere.example/Loop.webm', { mime: 'video/webm', size: 1 });
+    await files.save({ url: 'https://elsewhere.example/Loop.webm', fileName: 'Loop.webm' }); // already in the folder
+    await coordinator.pump();
+    await coordinator.handleFileChange(2);
+    expect((await taskOf('w'))?.output.saved).toMatchObject({ path: '/Downloads/Loop (1).webm', bytes: 2048 });
+  });
+
+  it("switches to the engine, with the page's Referer, when the server refuses Chrome's download", async () => {
+    const { coordinator, engine, files, notifier, taskOf } = await setup([{ task: fileTask('p', { progressive: { container: 'mp4', fetch: 'browser', bytes: 1000 } }), context: PAGE }]);
+    files.remote.set(urlOf('p'), { mime: 'text/html', size: 0, error: 'SERVER_FORBIDDEN' });
+    await coordinator.pump();
+    await coordinator.handleFileChange(1);
+    await coordinator.pump();
+    const task = await taskOf('p');
+    expect(task).toMatchObject({ status: 'downloading', progressive: { fetch: 'extension' } });
+    expect(task?.output.downloadId).toBeUndefined();
+    expect(engine.synced.at(-1)).toEqual([
+      expect.objectContaining({ taskId: 'p', protocol: 'progressive', manifestUrl: urlOf('p'), context: PAGE, file: { container: 'mp4', bytes: 1000 } }),
+    ]);
+
+    // The engine fetched it and hands it over: Chrome saves the blob under the task's name.
+    const url = URL.createObjectURL(new Blob([new Uint8Array(1000)], { type: 'video/mp4' }));
+    expect(await coordinator.startSave({ taskId: 'p', url, size: 1000 })).toBe(true);
+    await coordinator.pump();
+    expect(await taskOf('p')).toMatchObject({ status: 'completed', output: { saved: { path: '/Downloads/Movie_p.mp4', bytes: 1000 } } });
+    expect(notifier.shown).toEqual([{ kind: 'completed', taskId: 'p' }]);
+    expect(engine.open).toBe(false);
+  });
+
+  it('removes a web page saved instead of the video, and falls back or fails with the reason', async () => {
+    const page = { mime: 'text/html', size: 29 };
+    const withContext = await setup([{ task: fileTask('c'), context: PAGE }]);
+    withContext.files.remote.set(urlOf('c'), page);
+    await withContext.coordinator.pump();
+    await withContext.coordinator.handleFileChange(1);
+    expect(withContext.files.removed).toEqual([1]);
+    expect((await withContext.taskOf('c'))?.progressive?.fetch).toBe('extension');
+
+    const without = await setup([{ task: fileTask('n') }]);
+    without.files.remote.set(urlOf('n'), page);
+    await without.coordinator.pump();
+    await without.coordinator.handleFileChange(1);
+    expect(without.files.removed).toEqual([1]);
+    expect(await without.taskOf('n')).toMatchObject({
+      status: 'failed',
+      statusMessage: expect.stringContaining('it sent a web page instead of the video') as string,
+    });
+    expect(without.notifier.shown).toEqual([{ kind: 'failed', taskId: 'n' }]);
+  });
+
+  it('stops a download whose size differs from the detected file when the page context could help', async () => {
+    const { coordinator, files, poll, taskOf } = await setup([
+      { task: fileTask('s', { progressive: { container: 'mp4', fetch: 'browser', bytes: 734_003_200 } }), context: PAGE },
+    ]);
+    files.manual = true;
+    files.remote.set(urlOf('s'), { mime: 'video/mp4', size: 4_096 }); // e.g. a "no hotlinking" clip
+    await coordinator.pump();
+    await poll();
+    expect(files.cancelled).toEqual([1]);
+    expect((await taskOf('s'))?.progressive?.fetch).toBe('extension');
+  });
+
+  it('fails a refused download without a page context, saying what the server did', async () => {
+    const { coordinator, files, taskOf } = await setup([{ task: fileTask('x') }]);
+    files.remote.set(urlOf('x'), { mime: 'text/html', size: 0, error: 'SERVER_BAD_CONTENT' });
+    await coordinator.pump();
+    await coordinator.handleFileChange(1);
+    expect(await taskOf('x')).toMatchObject({ status: 'failed', statusMessage: expect.stringContaining('HTTP 404') as string });
+  });
+
+  it('retries an interrupted download where Chrome stopped, or from the start when Chrome cannot', async () => {
+    const { coordinator, files, taskOf } = await setup([{ task: fileTask('r') }]);
+    files.manual = true;
+    await coordinator.pump();
+    files.advance(1, 600);
+    files.interrupt(1, 'NETWORK_FAILED', true);
+    await coordinator.handleFileChange(1);
+    expect(await taskOf('r')).toMatchObject({
+      status: 'failed',
+      statusMessage: expect.stringContaining('Chrome continues where it stopped') as string,
+      progressive: { resumeId: 1 },
+    });
+    expect((await taskOf('r'))?.output.downloadId).toBeUndefined();
+
+    await coordinator.retry(['r']);
+    expect(files.resumed).toEqual([1]);
+    expect(await taskOf('r')).toMatchObject({ status: 'downloading', output: { downloadId: 1 } });
+    expect((await taskOf('r'))?.progressive?.resumeId).toBeUndefined();
+
+    files.interrupt(1, 'SERVER_NO_RANGE', false);
+    await coordinator.handleFileChange(1);
+    expect((await taskOf('r'))?.progressive?.resumeId).toBeUndefined();
+    await coordinator.retry(['r']);
+    expect(await taskOf('r')).toMatchObject({ status: 'downloading', output: { downloadId: 2 } }); // a new download
+    files.finish(2);
+    await coordinator.handleFileChange(2);
+    expect(await taskOf('r')).toMatchObject({ status: 'completed', output: { saved: { bytes: 1000 } } });
+  });
+
+  it("cancels a running download in Chrome, and deletes a resumable partial file on Cancel or Remove", async () => {
+    const { coordinator, files, statusOf, taskOf } = await setup(
+      [{ task: fileTask('c', { createdAt: 1 }) }, { task: fileTask('q', { createdAt: 2 }) }, { task: fileTask('k', { createdAt: 3 }) }],
+      { settings: { maxActiveTasks: 1 } },
+    );
+    files.manual = true;
+    await coordinator.pump();
+    expect(await coordinator.cancel(['c'])).toBe(1);
+    expect(files.cancelled).toContain(1);
+    expect(await taskOf('c')).toMatchObject({ status: 'cancelled' });
+    expect((await taskOf('c'))?.output.downloadId).toBeUndefined();
+
+    // 'q' started in the freed slot; interrupted (resumable), then retried while 'k' holds the slot.
+    files.interrupt(2, 'NETWORK_FAILED', true);
+    await coordinator.handleFileChange(2);
+    await coordinator.pump();
+    expect(await statusOf('k')).toBe('downloading');
+    await coordinator.retry(['q']);
+    expect(await taskOf('q')).toMatchObject({ status: 'queued', progressive: { resumeId: 2 } });
+    await coordinator.cancel(['q']);
+    expect(files.cancelled).toContain(2);
+    expect((await taskOf('q'))?.progressive?.resumeId).toBeUndefined();
+
+    files.interrupt(3, 'NETWORK_FAILED', true);
+    await coordinator.handleFileChange(3);
+    await coordinator.beforeRemove(['k']);
+    expect(files.cancelled).toContain(3);
+  });
+
+  it('notices a download removed from Chrome’s list', async () => {
+    const { coordinator, files, poll, taskOf } = await setup([{ task: fileTask('g') }]);
+    files.manual = true;
+    await coordinator.pump();
+    files.erase(1);
+    await poll();
+    expect(await taskOf('g')).toMatchObject({ status: 'failed', statusMessage: FILE_REMOVED_MESSAGE });
+  });
+
+  it('fails a file Chrome refuses to start, and the next task takes its slot', async () => {
+    const { coordinator, files, statusOf, taskOf } = await setup([{ task: fileTask('z', { createdAt: 1 }) }, queued('a', 2)], { settings: { maxActiveTasks: 1 } });
+    files.refuse = 'Invalid filename';
+    await coordinator.pump();
+    await coordinator.pump();
+    expect(await taskOf('z')).toMatchObject({ status: 'failed', statusMessage: expect.stringContaining('Invalid filename') as string });
+    expect(await statusOf('a')).toBe('downloading');
+  });
+
+  it('recovers at service-worker start: settles what Chrome finished, resumes what closing Chrome interrupted', async () => {
+    const running = (id: string, downloadId: number) => fileTask(id, { status: 'downloading', output: { baseName: id, format: 'auto', downloadId } });
+    const { coordinator, files, taskOf } = await setup([{ task: running('done', 1) }, { task: running('closed', 2) }, { task: running('broken', 3) }]);
+    files.manual = true;
+    const ids = [
+      await files.save({ url: urlOf('done'), fileName: 'done.mp4' }),
+      await files.save({ url: urlOf('closed'), fileName: 'closed.mp4' }),
+      await files.save({ url: urlOf('broken'), fileName: 'broken.mp4' }),
+    ];
+    expect(ids).toEqual([1, 2, 3]);
+    files.finish(1);
+    files.interrupt(2, 'USER_SHUTDOWN', true);
+    files.interrupt(3, 'FILE_NO_SPACE', false);
+
+    await coordinator.onStartup();
+    expect(await taskOf('done')).toMatchObject({ status: 'completed', output: { saved: { path: '/Downloads/done.mp4' } } });
+    expect(files.resumed).toEqual([2]);
+    expect(await taskOf('closed')).toMatchObject({ status: 'downloading', output: { downloadId: 2 } });
+    expect(await taskOf('broken')).toMatchObject({ status: 'failed', statusMessage: expect.stringContaining('disk space') as string });
   });
 });

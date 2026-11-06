@@ -1,6 +1,28 @@
 import type { OutputFormat } from '@/shared/settings/settings';
-import type { RequestContext, StreamingProtocol } from './detected-stream';
+import type { MediaProtocol, ProgressiveContainer, RequestContext } from './detected-stream';
 import type { MediaAnalysis, OutputContainer } from './media-info';
+
+/**
+ * How a progressive file (MP4/WebM, since 0.3.0) is fetched:
+ * - `browser`: Chrome downloads the URL itself (chrome.downloads): the site's
+ *   cookies, Chrome's own resume, but no Referer/Origin — declarativeNetRequest
+ *   rules do not reach those requests (checked in Chrome 157).
+ * - `extension`: the offscreen engine fetches the file with the page's
+ *   Referer/Origin (the same DNR leases as segments) and hands it to Chrome as
+ *   a blob: URL, like a merged video. Used when the server refused the
+ *   browser's download and the task has a request context to replay.
+ */
+export const PROGRESSIVE_FETCHES = ['browser', 'extension'] as const;
+export type ProgressiveFetch = (typeof PROGRESSIVE_FETCHES)[number];
+
+export interface ProgressiveTaskInfo {
+  container: ProgressiveContainer;
+  fetch: ProgressiveFetch;
+  /** Size the detection reported. Chrome receiving another size means another response (e.g. a hotlink placeholder). */
+  bytes?: number;
+  /** An interrupted Chrome download of this task that Chrome can resume (Retry continues it). */
+  resumeId?: number;
+}
 
 /**
  * Lifecycle of a download task:
@@ -101,8 +123,8 @@ export interface DownloadTask {
   status: TaskStatus;
   statusMessage?: string;
   source: {
-    protocol: StreamingProtocol;
-    /** Manifest URL when the task was created (may carry a signed token). */
+    protocol: MediaProtocol;
+    /** Manifest URL (a progressive file: the file's URL) when the task was created (may carry a signed token). */
     manifestUrl: string;
     title: string;
     pageUrl?: string;
@@ -136,6 +158,8 @@ export interface DownloadTask {
   media?: MediaAnalysis;
   /** Completed task the user cleared from the Queue tab (it stays under Completed). */
   dismissed?: boolean;
+  /** Progressive files only (0.3.0): no segments, no FFmpeg; the original file is saved as it is. */
+  progressive?: ProgressiveTaskInfo;
 }
 
 export interface SavedFile {
@@ -147,13 +171,15 @@ export interface SavedFile {
 /** What the engine needs to run one task; built by the service worker. */
 export interface EngineTaskSpec {
   taskId: string;
-  protocol: StreamingProtocol;
+  /** `progressive`: a file fetched by the engine (ProgressiveFetch `extension`); `file` is set and `manifestUrl` is the file's URL. */
+  protocol: MediaProtocol;
   manifestUrl: string;
   context: RequestContext;
   variant: { id: string; height?: number; bandwidth?: number };
   audioTrackIds: string[];
   /** Simultaneous segment requests (Settings, 1–16). */
   concurrency: number;
+  file?: { container: ProgressiveContainer; bytes?: number };
 }
 
 /** Why a run failed, when the service worker may act on it (wording, recovery). */
@@ -219,14 +245,16 @@ export interface MediaReport {
 /**
  * Engine → service worker: the merged file is ready at `url` (a blob: URL of
  * the offscreen document, valid until the engine is told to let go of it).
+ * A progressive file fetched by the engine comes without `container` and
+ * `media` (its task knows its container; FFmpeg never looked at it).
  */
 export interface SaveRequest {
   taskId: string;
   url: string;
-  container: OutputContainer;
+  container?: OutputContainer;
   /** Bytes. */
   size: number;
-  media: MediaAnalysis;
+  media?: MediaAnalysis;
 }
 
 /** Everything the engine should be running: downloads and media jobs. */

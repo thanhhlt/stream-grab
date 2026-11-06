@@ -8,7 +8,7 @@ import {
 import { detectionStorageKey, SessionDetectionStore } from '@/core/detection/detection-store';
 import { inspectManifest } from '@/core/detection/manifest-inspector';
 import type { InspectionOutcome } from '@/core/detection/stream-inspector';
-import type { RequestContext } from '@/core/models/detected-stream';
+import { PROGRESSIVE_VARIANT_ID, type ProgressiveInfo, type RequestContext } from '@/core/models/detected-stream';
 import dashDrm from '@tests/fixtures/manifests/dash/drm.mpd?raw';
 import dashStatic from '@tests/fixtures/manifests/dash/static-separate-av.mpd?raw';
 import hlsMaster from '@tests/fixtures/manifests/hls/master.m3u8?raw';
@@ -331,7 +331,7 @@ describe('DetectionManager', () => {
     const second = setup({ area, outcomes: { [MASTER]: manifest(hlsMaster, MASTER) } });
     expect(await second.manager.getStreams(1)).toMatchObject([{ url: MASTER }]);
     await second.manager.idle();
-    expect(second.inspect).toHaveBeenCalledWith(MASTER, { referer: 'https://site.example/' });
+    expect(second.inspect).toHaveBeenCalledWith(MASTER, { referer: 'https://site.example/' }, 'manifest');
     expect((await second.manager.getStreams(1))[0]?.status).toBe('ready');
   });
 
@@ -362,5 +362,160 @@ describe('DetectionManager', () => {
       'https://a.example/1.m3u8',
       'https://a.example/3.m3u8',
     ]);
+  });
+});
+
+describe('DetectionManager: progressive files (0.3.0)', () => {
+  const FILE = 'https://media.example.net/v/clip.mp4?Expires=1&Signature=a';
+  const CONTEXT = { referer: 'https://site.example/watch/1', origin: 'https://site.example' };
+
+  function fileCandidate(url: string, overrides: Partial<DetectionCandidate> = {}): DetectionCandidate {
+    return candidate(url, {
+      match: { protocol: 'progressive', evidence: 'content-type' },
+      progressive: { container: 'mp4', mimeType: 'video/mp4' },
+      ...overrides,
+    });
+  }
+
+  function fileOutcome(finalUrl: string, info: Partial<ProgressiveInfo> = {}): InspectionOutcome {
+    return {
+      kind: 'progressive',
+      finalUrl,
+      info: { container: 'mp4', mimeType: 'video/mp4', bytes: 734_003_200, acceptsRanges: true, fileName: 'clip.mp4', ...info },
+    };
+  }
+
+  it('lists a file as pending with its container, then ready with what inspecting it revealed', async () => {
+    const pending = deferred<InspectionOutcome>();
+    const { manager, inspect, area } = setup({ outcomes: { [FILE]: () => pending.promise } });
+    await manager.handleCandidate(fileCandidate(FILE, { requestContext: CONTEXT }));
+    expect(await manager.getStreams(1)).toMatchObject([
+      { url: FILE, protocol: 'progressive', status: 'pending', progressive: { container: 'mp4', mimeType: 'video/mp4' } },
+    ]);
+    expect(inspect).toHaveBeenCalledWith(FILE, CONTEXT, 'progressive');
+
+    pending.resolve(fileOutcome(FILE));
+    await manager.idle();
+    const [stream] = await manager.getStreams(1);
+    expect(stream).toMatchObject({
+      status: 'ready',
+      requestContext: CONTEXT,
+      progressive: { container: 'mp4', mimeType: 'video/mp4', bytes: 734_003_200, acceptsRanges: true, fileName: 'clip.mp4' },
+      // One "quality": the file itself, so the Detected tab's selection works unchanged.
+      media: { variants: [{ id: PROGRESSIVE_VARIANT_ID, audioOnly: false, audioTrackIds: [] }], audioTracks: [] },
+    });
+    expect(stream?.manifest).toBeUndefined();
+    expect(area.data.get(detectionStorageKey(1))).toMatchObject({ streams: [{ protocol: 'progressive', progressive: { bytes: 734_003_200 } }] });
+  });
+
+  it('lists one entry per file, however often and by whom it is requested', async () => {
+    const { manager, inspect } = setup({ outcomes: { [FILE]: fileOutcome(FILE) } });
+    // The element in the DOM, then its network requests (range after range, re-signed link).
+    await manager.handleCandidate(
+      fileCandidate(FILE, { match: { protocol: 'progressive', evidence: 'dom' }, progressive: { container: 'mp4' }, title: 'Trailer' }),
+    );
+    await manager.handleCandidate(fileCandidate(FILE, { requestContext: CONTEXT, timestamp: 2_000 }));
+    const resigned = 'https://media.example.net/v/clip.mp4?Expires=2&Signature=b';
+    await manager.handleCandidate(fileCandidate(resigned, { requestContext: CONTEXT, timestamp: 3_000 }));
+    await manager.idle();
+    const streams = await manager.getStreams(1);
+    expect(streams).toHaveLength(1);
+    expect(streams[0]).toMatchObject({ url: resigned, title: 'Trailer', evidence: ['dom', 'content-type'], requestContext: CONTEXT, status: 'ready' });
+    expect(inspect).toHaveBeenCalledTimes(1);
+  });
+
+  it('drops segments of a stream and skips further segments of the same shape until the next page', async () => {
+    const segment = (n: number) => `https://cdn.example/hls/v1/seg-${n}.mp4`;
+    const notFile: InspectionOutcome = { kind: 'not-manifest', reason: 'A segment of a stream, not a whole video file.' };
+    const { manager, inspect } = setup({ outcomes: { [segment(1)]: notFile, [segment(9)]: notFile } });
+    await manager.handleCandidate(fileCandidate(segment(1)));
+    await manager.idle();
+    await manager.handleCandidate(fileCandidate(segment(2)));
+    await manager.handleCandidate(fileCandidate(segment(3)));
+    await manager.idle();
+    expect(await manager.getStreams(1)).toEqual([]);
+    expect(inspect).toHaveBeenCalledTimes(1);
+
+    await manager.resetTab(1, 'https://site.example/other');
+    await manager.handleCandidate(fileCandidate(segment(9)));
+    await manager.idle();
+    expect(inspect).toHaveBeenCalledTimes(2);
+  });
+
+  it("takes the element's own title when the DOM reports it after the element's request", async () => {
+    const { manager } = setup({ outcomes: { [FILE]: fileOutcome(FILE) }, pageInfo: { title: 'Site name', pageTitle: 'Site name' } });
+    // A media element loads its file at once; the content script's DOM scan reports it later.
+    await manager.handleCandidate(fileCandidate(FILE, { requestContext: CONTEXT }));
+    await manager.idle();
+    expect((await manager.getStreams(1))[0]?.title).toBe('Site name');
+    await manager.handleCandidate(fileCandidate(FILE, { match: { protocol: 'progressive', evidence: 'dom' }, title: 'Trailer' }));
+    await manager.idle();
+    expect((await manager.getStreams(1))[0]).toMatchObject({ title: 'Trailer', requestContext: CONTEXT, evidence: ['content-type', 'dom'] });
+  });
+
+  it('folds a redirecting link and its target into one entry, whichever is seen first', async () => {
+    const link = 'https://site.example/play/7.mp4';
+    const target = 'https://edge.cdn.example/store/f3a9/7.mp4?sig=xyz';
+    const outcomes = { [link]: fileOutcome(target), [target]: fileOutcome(target) };
+    const dom = { match: { protocol: 'progressive', evidence: 'dom' } } as const;
+
+    const linkFirst = setup({ outcomes });
+    await linkFirst.manager.handleCandidate(fileCandidate(link, dom));
+    await linkFirst.manager.idle();
+    await linkFirst.manager.handleCandidate(fileCandidate(target, { requestContext: CONTEXT }));
+    await linkFirst.manager.idle();
+    expect(await linkFirst.manager.getStreams(1)).toMatchObject([{ url: link, status: 'ready' }]);
+
+    const targetFirst = setup({ outcomes });
+    await targetFirst.manager.handleCandidate(fileCandidate(target, { requestContext: CONTEXT }));
+    await targetFirst.manager.idle();
+    await targetFirst.manager.handleCandidate(fileCandidate(link, dom));
+    await targetFirst.manager.idle();
+    expect(await targetFirst.manager.getStreams(1)).toMatchObject([{ url: link, status: 'ready' }]);
+  });
+
+  it('marks files that cannot be read as unavailable and retries once the page sends a new link', async () => {
+    const expired = 'https://media.example.net/v/clip.mp4?Expires=1&Signature=old';
+    const renewed = 'https://media.example.net/v/clip.mp4?Expires=2&Signature=new';
+    const { manager, advance } = setup({
+      outcomes: {
+        [expired]: { kind: 'failed', reason: 'Access denied (HTTP 403). The link may have expired.' },
+        [renewed]: fileOutcome(renewed),
+      },
+    });
+    await manager.handleCandidate(fileCandidate(expired));
+    await manager.idle();
+    expect((await manager.getStreams(1))[0]).toMatchObject({
+      status: 'error',
+      statusMessage: expect.stringContaining('HTTP 403') as string,
+      progressive: { container: 'mp4' },
+    });
+    advance(10_000);
+    await manager.handleCandidate(fileCandidate(renewed));
+    await manager.idle();
+    expect((await manager.getStreams(1))[0]).toMatchObject({ status: 'ready', url: renewed });
+  });
+
+  it('ignores progressive candidates that carry no container', async () => {
+    const { manager, inspect } = setup();
+    const { progressive: _progressive, ...bare } = fileCandidate(FILE);
+    await manager.handleCandidate(bare);
+    await manager.idle();
+    expect(await manager.getStreams(1)).toEqual([]);
+    expect(inspect).not.toHaveBeenCalled();
+  });
+
+  it('keeps files across a service-worker restart, next to manifests', async () => {
+    const area = new FakeStorageArea('session');
+    const first = setup({ area, outcomes: { [FILE]: fileOutcome(FILE), [MASTER]: manifest(hlsMaster, MASTER) } });
+    await first.manager.handleCandidate(candidate(MASTER));
+    await first.manager.handleCandidate(fileCandidate(FILE, { requestContext: CONTEXT }));
+    await first.manager.idle();
+
+    const second = setup({ area });
+    const streams = await second.manager.getStreams(1);
+    expect(streams.map((stream) => stream.protocol)).toEqual(['hls', 'progressive']);
+    expect(streams[1]).toMatchObject({ status: 'ready', requestContext: CONTEXT, progressive: { container: 'mp4', bytes: 734_003_200 } });
+    expect(second.inspect).not.toHaveBeenCalled();
   });
 });

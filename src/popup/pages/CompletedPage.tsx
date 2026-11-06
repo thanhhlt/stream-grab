@@ -27,7 +27,7 @@ function CompletedRow({ task, exists, onRemove }: { task: DownloadTask; exists: 
         </p>
       )}
       <p className="mt-1 flex min-w-0 items-center gap-1.5 text-xs text-slate-700 tabular-nums dark:text-slate-200">
-        <ProtocolBadge protocol={task.source.protocol} />
+        <ProtocolBadge protocol={task.source.protocol} container={task.progressive?.container} />
         <span className="truncate">{facts.primary.join(' · ')}</span>
       </p>
       <div className="mt-1 flex items-end gap-2">

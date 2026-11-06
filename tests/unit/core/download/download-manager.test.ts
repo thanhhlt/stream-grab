@@ -1,6 +1,6 @@
 import 'fake-indexeddb/auto';
 import { IDBFactory } from 'fake-indexeddb';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { hexToBytes } from '@/core/download/aes';
 import {
   DownloadManager,
@@ -14,7 +14,7 @@ import { estimateSize } from '@/core/download/estimate';
 import { diskFullMessage } from '@/core/download/storage-space';
 import type { MediaSegment } from '@/core/models/media-segment';
 import type { RequestContext } from '@/core/models/detected-stream';
-import type { EngineReport, EngineTaskSpec } from '@/core/models/download-task';
+import type { EngineReport, EngineTaskSpec, SaveRequest } from '@/core/models/download-task';
 import { ManifestFetcher } from '@/core/network/manifest-fetcher';
 import { DashAdapter } from '@/core/protocols/dash/dash-adapter';
 import { HlsAdapter } from '@/core/protocols/hls/hls-adapter';
@@ -620,5 +620,154 @@ describe('DownloadManager', () => {
       await manager.idle();
       expect(outcome()).toEqual({ status: 'failed', message: 'The selected quality is no longer offered. Download the video again.' });
     });
+  });
+});
+
+describe('DownloadManager: progressive files fetched by the engine (0.3.0)', () => {
+  const FILE = 'https://media.example.net/files/protected.mp4';
+  const SIZE = 200 * 1024;
+
+  const fileSpec = (overrides: Partial<EngineTaskSpec> = {}): EngineTaskSpec =>
+    spec({ protocol: 'progressive', manifestUrl: FILE, variant: { id: 'file' }, audioTrackIds: [], concurrency: 1, file: { container: 'mp4', bytes: SIZE }, ...overrides });
+
+  function fileSetup(site: FakeMediaSite, overrides: Partial<DownloadManagerDeps> = {}) {
+    const saves: SaveRequest[] = [];
+    const blobs = new Map<string, Blob>();
+    const revoked: string[] = [];
+    const control = { accept: true };
+    const context = setup(site, {
+      saveFile: (request) => {
+        saves.push(request);
+        return Promise.resolve(control.accept);
+      },
+      createUrl: (blob) => {
+        const url = `blob:chrome-extension://test/${blobs.size}`;
+        blobs.set(url, blob);
+        return url;
+      },
+      revokeUrl: (url) => {
+        revoked.push(url);
+      },
+      partSize: 64 * 1024,
+      ...overrides,
+    });
+    return { ...context, saves, blobs, revoked, control };
+  }
+
+  it('fetches the whole file into Blob parts (not IndexedDB), hands it over and holds its URL until released', async () => {
+    const site = new FakeMediaSite();
+    site.chunkSize = 16 * 1024;
+    const bytes = bodyFor(FILE, SIZE);
+    site.serve(FILE, bytes, 'video/mp4');
+    const { manager, saves, blobs, revoked, reports, released, storage, outcome } = fileSetup(site);
+
+    expect(manager.sync([fileSpec()])).toEqual(['t1']);
+    await vi.waitFor(() => {
+      expect(saves).toHaveLength(1);
+    });
+    const url = saves[0]?.url ?? '';
+    expect(saves[0]).toEqual({ taskId: 't1', url, size: SIZE });
+    const blob = blobs.get(url);
+    expect(blob?.type).toBe('video/mp4');
+    expect(new Uint8Array(await (blob as Blob).arrayBuffer())).toEqual(bytes); // the original bytes, untouched
+    expect(await storage.taskIds()).toEqual([]);
+    expect(site.requests).toEqual([{ url: FILE, range: undefined }]); // one plain request, no ranges
+
+    // Progress in bytes against the known size, never more than 100 %, 100 % only when complete.
+    const progress = reports.map((report) => report.progress);
+    expect(progress.map((entry) => entry.bytes)).toEqual([...progress.map((entry) => entry.bytes)].sort((a, b) => a - b));
+    expect(progress.some((entry) => entry.percent > 0 && entry.percent < 100)).toBe(true);
+    expect(progress.at(-1)).toMatchObject({ segmentsTotal: 1, segmentsDone: 1, bytes: SIZE, percent: 100, tracks: [{ trackId: 'file', declaredBytes: SIZE }] });
+    expect(estimateSize(progress[2] ?? progress[0]!)?.total).toBe(SIZE);
+    expect(released).toContain('t1');
+
+    // Chrome reads the file from the URL while saving: held until the service worker drops the task.
+    expect(manager.running).toEqual(['t1']);
+    expect(revoked).toEqual([]);
+    await manager.syncSettled([]);
+    await manager.idle();
+    expect(revoked).toEqual([url]);
+    expect(outcome()).toBeUndefined(); // saved: no failure, no cancellation
+  });
+
+  it('retries a failed request from the start of the file', async () => {
+    const site = new FakeMediaSite();
+    site.serve(FILE, bodyFor(FILE, SIZE), 'video/mp4');
+    site.failNext(FILE, { status: 503 });
+    const { manager, saves, reports } = fileSetup(site);
+    manager.sync([fileSpec()]);
+    await vi.waitFor(() => {
+      expect(saves).toHaveLength(1);
+    });
+    expect(site.count(FILE)).toBe(2);
+    expect(reports.at(-1)?.progress).toMatchObject({ retries: 1, bytes: SIZE });
+    await manager.syncSettled([]);
+  });
+
+  it('takes a re-signed link from the newest detection when the link expired, and fails as expired without one', async () => {
+    const renewed = `${FILE}?sig=new`;
+    const site = new FakeMediaSite();
+    site.serve(renewed, bodyFor(renewed, SIZE), 'video/mp4');
+    site.failNext(FILE, { status: 403 });
+    const { manager, saves, state, released } = fileSetup(site);
+    state.fresh = { manifestUrl: renewed, context: { referer: 'https://site.example/watch' } };
+    manager.sync([fileSpec()]);
+    await vi.waitFor(() => {
+      expect(saves).toHaveLength(1);
+    });
+    expect(site.count(renewed)).toBe(1);
+    expect(released.length).toBeGreaterThanOrEqual(1); // the old context's rules go
+    await manager.syncSettled([]);
+
+    const expired = new FakeMediaSite();
+    expired.failNext(FILE, { status: 403 });
+    const failing = fileSetup(expired);
+    failing.manager.sync([fileSpec()]);
+    await failing.manager.idle();
+    expect(failing.outcome()).toEqual({ status: 'failed', message: EXPIRED_LINK_MESSAGE, reason: 'expired' });
+    expect(failing.saves).toEqual([]);
+  });
+
+  it('refuses a web page sent instead of the video', async () => {
+    const site = new FakeMediaSite();
+    site.serve(FILE, '<!doctype html><title>Sign in</title>', 'text/html');
+    const { manager, outcome, saves } = fileSetup(site);
+    manager.sync([fileSpec()]);
+    await manager.idle();
+    expect(outcome()).toMatchObject({ status: 'failed', message: expect.stringContaining('web page') as string });
+    expect(saves).toEqual([]);
+  });
+
+  it('cancels while fetching: nothing is handed over', async () => {
+    const site = new FakeMediaSite();
+    site.latencyMs = 50;
+    site.serve(FILE, bodyFor(FILE, SIZE), 'video/mp4');
+    const { manager, outcome, saves } = fileSetup(site);
+    manager.sync([fileSpec()]);
+    await manager.cancel(['t1']);
+    expect(outcome()).toEqual({ status: 'cancelled' });
+    expect(saves).toEqual([]);
+  });
+
+  it('stops before fetching when the disk is nearly full', async () => {
+    const site = new FakeMediaSite();
+    site.serve(FILE, bodyFor(FILE, SIZE), 'video/mp4');
+    const { manager, outcome } = fileSetup(site, { estimateStorage: () => Promise.resolve({ usage: 0, quota: 100 * 1024 * 1024 }) });
+    manager.sync([fileSpec()]);
+    await manager.idle();
+    expect(outcome()).toMatchObject({ status: 'failed', reason: 'disk-full' });
+    expect(site.count(FILE)).toBe(0);
+  });
+
+  it('lets go of a file the service worker did not take (cancelled meanwhile, or refused by Chrome)', async () => {
+    const site = new FakeMediaSite();
+    site.serve(FILE, bodyFor(FILE, SIZE), 'video/mp4');
+    const { manager, control, revoked, saves } = fileSetup(site);
+    control.accept = false;
+    manager.sync([fileSpec()]);
+    await manager.idle();
+    expect(saves).toHaveLength(1);
+    expect(revoked).toEqual([saves[0]?.url]);
+    expect(manager.running).toEqual([]);
   });
 });

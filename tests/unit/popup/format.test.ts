@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { DetectedStream } from '@/core/models/detected-stream';
+import type { DownloadTask } from '@/core/models/download-task';
 import {
   formatBitrate,
   formatBytes,
@@ -139,6 +140,18 @@ describe('popup formatting', () => {
       '0.0% · 0 / 300 segments · 0 B · 3 retries',
     );
     expect(taskProgressLine(makeTask('c', { status: 'cancelled' }))).toBeUndefined();
+  });
+
+  it('describes progressive files in bytes, not segments, with their own extension (0.3.0)', () => {
+    const file = (overrides: Partial<DownloadTask>) =>
+      makeTask('f', { source: { ...makeTask('f').source, protocol: 'progressive' }, progressive: { container: 'webm', fetch: 'browser' }, ...overrides });
+    const progress = { segmentsTotal: 1, segmentsDone: 0, bytes: 3 * 1024 * 1024, bytesPerSecond: 1024 * 1024, percent: 30, retries: 0, startedAt: 1 };
+    expect(taskProgressLine(file({ status: 'downloading' }))).toBe('Starting the download…');
+    expect(taskProgressLine(file({ status: 'downloading', progress }))).toBe('30.0% · 3.0 MB · 1.0 MB/s');
+    expect(taskProgressLine(file({ status: 'failed', progress }))).toBe('30.0% · 3.0 MB');
+    expect(outputExtension(file({}))).toBe('.webm');
+    expect(outputExtension(file({ output: { baseName: 'x', format: 'mkv' } }))).toBe('.webm');
+    expect(outputExtension(makeTask('s', { output: { baseName: 'x', format: 'mkv' } }))).toBe('.mkv');
   });
 
   it('is truthful about resumed downloads', () => {

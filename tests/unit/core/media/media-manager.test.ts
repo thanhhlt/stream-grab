@@ -10,7 +10,7 @@ import type { MediaReport, MediaTaskSpec, SaveRequest } from '@/core/models/down
 import type { OutputFormat } from '@/shared/settings/settings';
 import { probeResult, ScriptedRunner } from '@tests/fakes/fake-ffmpeg';
 import { NodeFfmpegRunner } from '@tests/fakes/ffmpeg-node';
-import { storeDownloadedTask } from '@tests/fakes/stored-media';
+import { storeDownloadedTask, storeSegments, type StoredSegmentSpec } from '@tests/fakes/stored-media';
 import { syntheticMedia, type Rendition, type SyntheticMedia } from '@tests/fixtures/media/synthetic-media';
 
 /**
@@ -116,7 +116,7 @@ describe('MediaManager · process (real FFmpeg)', () => {
     const { storage, saves, process, probeSaved } = setup();
     await storeDownloadedTask(storage, 'd', [video(media.fmp4.video['v90'] as Rendition), english(media.fmp4.audio)]);
     await process('d');
-    expect(saves[0]?.media.tracks.map((track) => [track.format.includes('mp4'), track.segments])).toEqual([
+    expect(saves[0]?.media?.tracks.map((track) => [track.format.includes('mp4'), track.segments])).toEqual([
       [true, 5],
       [true, 5],
     ]);
@@ -289,6 +289,115 @@ describe('MediaManager · outcomes', () => {
     await waitFor(() => reports.some((report) => report.progress.stage === 'merging'));
     await expect(manager.syncSettled([])).resolves.toEqual([]);
     expect(reports.at(-1)).toMatchObject({ taskId: 'a', outcome: { status: 'cancelled' } });
+  });
+});
+
+describe('MediaManager · timestamps that go back (real FFmpeg)', () => {
+  /** A rendition's segments `times` times over: every repetition restarts the timestamps at the start. */
+  function repeated(rendition: Rendition, times: number, options: { tagged?: 'all' | 'first'; initEachTime?: boolean } = {}): StoredSegmentSpec[] {
+    const segments: StoredSegmentSpec[] = [];
+    for (let k = 0; k < times; k++) {
+      const discontinuity = options.tagged === 'all' ? k : options.tagged === 'first' ? Math.min(k, 1) : 0;
+      if (rendition.init && (k === 0 || options.initEachTime)) segments.push({ body: rendition.init, duration: 0, init: true, discontinuity });
+      rendition.segments.forEach((body, i) => segments.push({ body, duration: rendition.durations[i] ?? 2, discontinuity }));
+    }
+    return segments;
+  }
+
+  async function merge(container: 'fmp4' | 'mpeg-ts', main: StoredSegmentSpec[], audio: StoredSegmentSpec[]) {
+    const { storage, saves, process, probeSaved, reports } = setup();
+    await storeSegments(storage, 't', [
+      { trackId: 'main', trackType: 'main', container, segments: main },
+      { trackId: 'audio-0', trackType: 'audio', container, segments: audio, name: 'English' },
+    ]);
+    await process('t');
+    return { failure: reports.find((report) => report.outcome)?.outcome, merged: await probeSaved(saves[0]) };
+  }
+
+  // Regression: a 2.5 GB, 7407 s video came out "30 of 7407 seconds" long: FFmpeg clamps decode times that
+  // go back, so everything after the jump was squeezed onto its end.
+  it('MPEG-TS: a jump back inside a run joined by the concat demuxer (only the first boundary tagged)', async () => {
+    const v = media.ts.video['v180'] as Rendition;
+    const { failure, merged } = await merge('mpeg-ts', repeated(v, 5, { tagged: 'first' }), repeated(media.ts.audio, 5, { tagged: 'first' }));
+    expect(failure).toBeUndefined();
+    expect(merged?.streams.map((stream) => stream.kind)).toEqual(['video', 'audio']);
+    expect(merged?.durationSec).toBeCloseTo(40, 0);
+  });
+
+  it('fragmented MP4: tfdt going back without any tag (FFmpeg corrects none in MP4 input)', async () => {
+    const v = media.fmp4.video['v180'] as Rendition;
+    const { failure, merged } = await merge('fmp4', repeated(v, 5), repeated(media.fmp4.audio, 5));
+    expect(failure).toBeUndefined();
+    expect(merged?.durationSec).toBeCloseTo(40, 0);
+  });
+
+  it('fragmented MP4: a new initialization segment at each discontinuity is analysed from the first run, not discarded', async () => {
+    const v = media.fmp4.video['v180'] as Rendition;
+    const { failure, merged } = await merge('fmp4', repeated(v, 5, { tagged: 'all', initEachTime: true }), repeated(media.fmp4.audio, 5, { tagged: 'all', initEachTime: true }));
+    expect(failure).toBeUndefined();
+    expect(merged?.durationSec).toBeCloseTo(40, 0);
+  });
+
+  it('fragmented MP4: every segment starting over at 0 becomes a run of its own', async () => {
+    const v = media.fmp4.video['v180'] as Rendition;
+    const first = (rendition: Rendition): Rendition => ({
+      ...rendition,
+      segments: [rendition.segments[0] as Uint8Array<ArrayBuffer>],
+      durations: [rendition.durations[0] ?? 2],
+    });
+    const { failure, merged } = await merge('fmp4', repeated(first(v), 20), repeated(first(media.fmp4.audio), 20));
+    expect(failure).toBeUndefined();
+    expect(merged?.durationSec).toBeCloseTo(40, 0);
+  });
+
+  // Regression (the same 2.5 GB report): the site disguised its segments as pictures. FFmpeg took the part after
+  // the ad's discontinuity for a PNG and read no video from it, so only the 30-second ad was merged.
+  it('MPEG-TS segments disguised as pictures: the picture header is skipped (PNG, GIF), after an ad or from the start', async () => {
+    const PNG = Uint8Array.from(atob('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='), (c) => c.charCodeAt(0));
+    const GIF = new TextEncoder().encode('GIF89a\x01\x00\x01\x00\x00\x00\x00;');
+    const disguise = (prefix: Uint8Array, body: Uint8Array): Uint8Array<ArrayBuffer> => {
+      const out = new Uint8Array(prefix.length + body.length);
+      out.set(prefix);
+      out.set(body, prefix.length);
+      return out;
+    };
+    const muxed = media.ts.muxed;
+    const plain = muxed.segments.map((body, i): StoredSegmentSpec => ({ body, duration: muxed.durations[i] ?? 2 }));
+    for (const prefix of [PNG, GIF]) {
+      const movie = [0, 1, 2, 3, 4].flatMap(() => muxed.segments.map((body, i): StoredSegmentSpec => ({ body: disguise(prefix, body), duration: muxed.durations[i] ?? 2, discontinuity: 1 })));
+      const { storage, saves, process, probeSaved, reports } = setup();
+      await storeSegments(storage, 't', [{ trackId: 'main', trackType: 'main', container: 'mpeg-ts', segments: [...plain, ...movie] }]);
+      await process('t');
+      expect(reports.find((report) => report.outcome)?.outcome).toBeUndefined();
+      expect((await probeSaved(saves[0]))?.durationSec).toBeCloseTo(48, 0);
+      // The stored segments are untouched: only what FFmpeg reads skips the picture.
+      expect((await storage.trackData('t', 'main'))[muxed.segments.length]?.data.size).toBe(prefix.length + (muxed.segments[0]?.length ?? 0));
+    }
+
+    const { storage, saves, process, probeSaved } = setup();
+    await storeSegments(storage, 'd', [
+      { trackId: 'main', trackType: 'main', container: 'mpeg-ts', segments: muxed.segments.map((body, i) => ({ body: disguise(PNG, body), duration: muxed.durations[i] ?? 2 })) },
+    ]);
+    await process('d');
+    expect(saves[0]?.media?.tracks[0]?.streams.map((stream) => stream.codec)).toEqual(['h264', 'aac']); // not a "png" video
+    expect((await probeSaved(saves[0]))?.durationSec).toBeCloseTo(8, 0);
+
+    // The reported stream exactly: segments named ".png" (container "unknown"), a 1×1 PNG before every
+    // segment, no discontinuity. FFmpeg read one picture per segment: 750 segments came out as 30 seconds.
+    const named = setup();
+    const repeatedSegments = [0, 1, 2, 3, 4].flatMap(() => muxed.segments.map((body, i): StoredSegmentSpec => ({ body: disguise(PNG, body), duration: muxed.durations[i] ?? 2 })));
+    await storeSegments(named.storage, 'u', [{ trackId: 'main', trackType: 'main', container: 'unknown', segments: repeatedSegments }]);
+    await named.process('u');
+    expect(named.reports.find((report) => report.outcome)?.outcome).toBeUndefined();
+    expect(named.saves[0]?.media?.tracks[0]).toMatchObject({ format: 'mpegts', streams: [{ codec: 'h264' }, { codec: 'aac' }] });
+    expect((await named.probeSaved(named.saves[0]))?.durationSec).toBeCloseTo(40, 0);
+  });
+
+  it('leaves single MPEG-TS inputs to FFmpeg, which corrects their jumps itself', async () => {
+    const v = media.ts.video['v180'] as Rendition;
+    const { failure, merged } = await merge('mpeg-ts', repeated(v, 5), repeated(media.ts.audio, 5));
+    expect(failure).toBeUndefined();
+    expect(merged?.durationSec).toBeCloseTo(40, 0);
   });
 });
 

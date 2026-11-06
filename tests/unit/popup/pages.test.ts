@@ -115,6 +115,57 @@ describe('Queue tab', () => {
   });
 });
 
+describe('progressive files in the Queue and Completed tabs (0.3.0)', () => {
+  const file = (id: string, overrides: Partial<DownloadTask> = {}): DownloadTask =>
+    makeTask(id, {
+      source: { protocol: 'progressive', manifestUrl: `https://cdn.example.com/${id}.webm`, title: `Clip ${id}`, tabId: 3, streamId: id },
+      selection: { variantId: 'file', variantLabel: 'Single quality', audioTrackIds: [], audioTrackNames: [], durationSec: 95 },
+      progressive: { container: 'webm', fetch: 'browser' },
+      ...overrides,
+    });
+
+  it('shows bytes, speed and ETA of a file, never segments or FFmpeg', async () => {
+    await installPopupChrome();
+    const now = Date.now();
+    const progress = {
+      segmentsTotal: 1,
+      segmentsDone: 0,
+      bytes: 20 * 1024 ** 2,
+      bytesPerSecond: 2 * 1024 ** 2,
+      averageBytesPerSecond: 2 * 1024 ** 2,
+      percent: 40,
+      retries: 0,
+      startedAt: now - 10_000,
+      tracks: [{ trackId: 'file', segmentsTotal: 1, segmentsDone: 0, bytes: 20 * 1024 ** 2, declaredBytes: 50 * 1024 ** 2 }],
+    };
+    const view = await render(QueuePage, { tasks: [file('run', { status: 'downloading', updatedAt: now, progress }), file('new', { status: 'downloading' })] });
+    unmount = () => view.root.unmount();
+    const [run, starting] = [...view.container.querySelectorAll('li')].map((row) => row.textContent ?? '');
+    expect(run).toContain('WebM');
+    expect(run).toContain('Downloading40.0%');
+    expect(run).toContain('20.0 MB / 50.0 MB');
+    expect(run).toContain('Speed 2.0 MB/s');
+    expect(run).toContain('ETA ~15 seconds');
+    expect(run).not.toContain('segment');
+    expect(run).not.toContain('FFmpeg');
+    expect(starting).toContain('Starting the download…');
+  });
+
+  it('lists a saved file with its real size and container, without invented details', async () => {
+    await installPopupChrome();
+    const view = await render(CompletedPage, {
+      tasks: [file('done', { status: 'completed', output: { baseName: 'Clip done', format: 'auto', downloadId: 3, saved: { path: '/Downloads/Clip done.webm', bytes: 52_428_800, savedAt: 9 } } })],
+    });
+    unmount = () => view.root.unmount();
+    const row = view.container.querySelector('li')?.textContent ?? '';
+    expect(row).toContain('Clip done');
+    expect(row).toContain('Single quality · 1:35 · 50.0 MB');
+    expect(row).toContain('WEBM');
+    expect(row).not.toMatch(/H\.264|AAC|MP4/);
+    expect(row).toContain('Show in folder');
+  });
+});
+
 describe('Completed tab', () => {
   it('lists saved videos compactly, newest first, with the real file size, and marks files that are gone', async () => {
     const { sent, shown } = await installPopupChrome({ missingDownloads: [3] });

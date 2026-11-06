@@ -1,4 +1,4 @@
-import type { DetectedStream } from '@/core/models/detected-stream';
+import { PROGRESSIVE_VARIANT_ID, type DetectedStream } from '@/core/models/detected-stream';
 import {
   ACTIVE_TASK_STATUSES,
   type DownloadRequest,
@@ -127,6 +127,7 @@ export class TaskService {
         break;
     }
     if (stream.manifest?.live) throw new RequestError('Live streams cannot be downloaded yet.');
+    if (stream.protocol === 'progressive') return this.#prepareFile(request, stream, settings, taken, active);
 
     const adapter = this.#deps.protocols.forProtocol(stream.protocol);
     if (!adapter) throw new RequestError(`${stream.protocol.toUpperCase()} is not supported.`);
@@ -173,6 +174,44 @@ export class TaskService {
     if (variant.height !== undefined) task.selection.height = variant.height;
     if (variant.bandwidth !== undefined) task.selection.bandwidth = variant.bandwidth;
     if (manifest.durationSec !== undefined) task.selection.durationSec = manifest.durationSec;
+    if (active.some((other) => isSameDownload(other, task))) {
+      throw new RequestError('This video is already in the queue with the same quality and audio.');
+    }
+    return { task, context: stream.requestContext };
+  }
+
+  /**
+   * A progressive file (MP4/WebM, 0.3.0): there is no manifest to read again,
+   * the detection describes the file. One "quality" (the file itself), no
+   * audio tracks; it is saved in its own container, whatever the output format.
+   */
+  #prepareFile(
+    request: DownloadRequest,
+    stream: DetectedStream,
+    settings: Settings,
+    taken: ReadonlySet<string>,
+    active: readonly DownloadTask[],
+  ): { task: DownloadTask; context: DetectedStream['requestContext'] } {
+    const file = stream.progressive;
+    if (!file) throw new RequestError('This video is not available.');
+    if (request.variantId !== PROGRESSIVE_VARIANT_ID || request.audioTrackIds.length > 0) {
+      throw new RequestError('The selected quality is no longer offered. Reopen the list and choose again.');
+    }
+    const title = stream.title ?? (fileNameOf(stream.url) || 'video');
+    const wanted = request.fileName.trim() === '' ? defaultBaseName(title) : sanitizeBaseName(request.fileName);
+    const now = this.#now();
+    const task: DownloadTask = {
+      id: this.#newId(),
+      createdAt: now,
+      updatedAt: now,
+      status: 'queued',
+      source: { protocol: 'progressive', manifestUrl: stream.url, title, tabId: stream.tabId, streamId: stream.id },
+      selection: { variantId: PROGRESSIVE_VARIANT_ID, variantLabel: variantLabel({ audioOnly: false }), audioTrackIds: [], audioTrackNames: [] },
+      output: { baseName: uniqueBaseName(wanted, taken), format: settings.outputFormat },
+      progressive: { container: file.container, fetch: 'browser', ...(file.bytes !== undefined ? { bytes: file.bytes } : {}) },
+    };
+    if (stream.pageUrl !== undefined) task.source.pageUrl = stream.pageUrl;
+    if (stream.durationHint !== undefined) task.selection.durationSec = stream.durationHint;
     if (active.some((other) => isSameDownload(other, task))) {
       throw new RequestError('This video is already in the queue with the same quality and audio.');
     }

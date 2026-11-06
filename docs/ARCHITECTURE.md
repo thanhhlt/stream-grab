@@ -3,9 +3,12 @@
 Living design notes. Requirements are in [SPEC.md](SPEC.md); this file records how they map onto
 Manifest V3 and why.
 
-StreamGrab is meant to handle several streaming formats and protocols. Version 0.2.0 supports HLS
-and MPEG-DASH; everything protocol-specific sits behind `StreamingProtocolAdapter`, so further
-formats are added as adapters (see [Adding a streaming format](#adding-a-streaming-format)).
+StreamGrab is meant to handle several streaming formats and protocols. Version 0.3.0 supports HLS
+and MPEG-DASH, and progressive MP4/WebM files; everything protocol-specific sits behind
+`StreamingProtocolAdapter`, so further streaming formats are added as adapters (see
+[Adding a streaming format](#adding-a-streaming-format)). Progressive files have no manifest and
+no segments: they go through the same detection, queue, task store and popup, but are saved as
+they are (see [Progressive files](#progressive-files-v030)).
 
 ## Phase status
 
@@ -21,6 +24,15 @@ formats are added as adapters (see [Adding a streaming format](#adding-a-streami
 | 8     | FFmpeg.wasm integration                            | Done   |
 | 9     | Audio/video merging and output generation          | Done   |
 | 10    | Error handling, performance, testing               | Done   |
+
+Version 0.3.0 (progressive MP4/WebM) was built in four further phases on top of the above:
+
+| Phase | Scope                                              | Status |
+| ----- | -------------------------------------------------- | ------ |
+| 1     | Architecture analysis (reuse of the existing pipeline) | Done |
+| 2     | MP4/WebM detection                                 | Done   |
+| 3     | Progressive download integration                   | Done   |
+| 4     | Regression testing and release                     | Done   |
 
 ## Execution contexts
 
@@ -101,7 +113,7 @@ formats are added as adapters (see [Adding a streaming format](#adding-a-streami
 | `storage`                             | Settings, task metadata, session detections                                                  | Phase 1   |
 | `unlimitedStorage`                    | Multi-GB temporary IndexedDB segment storage without a fixed quota or eviction; free disk space is still checked | Phase 7   |
 | `offscreen`                           | Engine host (see above)                                                                      | Phase 6   |
-| `downloads`                           | Save the merged file                                                                         | Phase 9   |
+| `downloads`                           | Save the merged file; download progressive files and follow their progress (0.3.0)           | Phase 9   |
 | `notifications`                       | Completion notification                                                                      | Phase 9   |
 
 Deliberately not requested: `tabs` (tab URL/title are readable with host permissions),
@@ -294,18 +306,20 @@ core/models/                         StreamingManifest, VideoVariant, AudioTrack
 
 ## Adding a streaming format
 
-HLS and DASH are the two formats in 0.2.0; the rest of the pipeline is written against the
-protocol-independent model (`StreamingManifest`, `VideoVariant`, `MediaSegment`). A new format
-or protocol touches these places:
+HLS and DASH are the two streaming formats in 0.3.0; the rest of the pipeline is written against
+the protocol-independent model (`StreamingManifest`, `VideoVariant`, `MediaSegment`). A new
+streaming format or protocol touches these places:
 
 1. **Protocol id.** Add it to `STREAMING_PROTOCOLS` in `core/models/detected-stream.ts`. Stored
-   detections, stored tasks and engine messages validate against this list.
+   detections, stored tasks and engine messages validate against `MEDIA_PROTOCOLS`, which is the
+   streaming protocols plus `progressive` (0.3.0: plain files, no adapter; see
+   [Progressive files](#progressive-files-v030)).
 2. **Detection.** Teach `core/detection/manifest-detector.ts` its MIME types
    (`classifyMimeType`), file extensions (`MANIFEST_EXTENSIONS`, `protocolFromUrl`) and URL
    keywords; `core/protocols/sniff.ts` (`sniffManifest`) how to recognise it by its first bytes;
    and `core/detection/manifest-inspector.ts` (`inspectManifest`) how to summarise it for the
-   popup. The content script (`content/video-detector.ts`) currently accepts only `hls`/`dash`
-   from a `<source type>`.
+   popup. The content script (`content/video-detector.ts`) recognises `hls`/`dash` manifests and
+   progressive MP4/WebM files from a `<source type>` or the URL (`parseDomSources` validates them).
 3. **Adapter.** Implement `StreamingProtocolAdapter` under `core/protocols/<format>/`, reusing
    `ManifestCache`, `segment-builder` and the shared fetcher, and register it in both registries:
    `background/detection-service.ts` (detection) and `offscreen/offscreen.ts` (download engine).
@@ -697,6 +711,7 @@ supports only `<6.1` today.
 | Media analysis               | `chrome.storage.local`    | On the task: what FFmpeg found and the container chosen |
 | FFmpeg.wasm core             | Extension package         | `dist/ffmpeg/`, loaded by the media worker only while processing |
 | Merged file while saving     | Blob (offscreen document) | Streamed out of FFmpeg in parts; a blob: URL Chrome reads; released after the save |
+| Progressive file (0.3.0)     | Downloads folder (Chrome) | Chrome writes it there itself; with the engine fallback, a Blob of parts until Chrome saved it. Never IndexedDB |
 | Saved file                   | Downloads folder          | Path, size and download ID on the task (`output.saved`), for the Completed tab |
 
 ## Merging and saving (Phase 9)
@@ -735,7 +750,8 @@ chrome.downloads.onChanged (complete | interrupted) ──▶ #settleSave
 - **Streaming output** (`output-sink.ts`, `sink-fs.ts`). `/out` is a custom Emscripten
   filesystem whose files are BlobSinks: the first 1 MiB stays in memory (muxers patch sizes and
   durations there at the end), the most recent ≤ 64 MiB too, everything older is flushed into
-  32 MiB Blob parts (Chrome keeps large Blob data on disk). The merged file is therefore never in
+  32 MiB Blob parts, which Chrome's Blob storage holds (in its own memory up to a limit, then on
+  disk; see Known limitations). The merged file is therefore never in
   memory whole, and neither MEMFS's growth-by-copy nor its single typed array limits the output
   size. A muxer that writes or reads inside flushed data gets EIO, and the session refuses the
   output even if FFmpeg exits with 0 (MP4 `faststart` does exactly that). Tested byte for byte
@@ -815,7 +831,7 @@ assembled across a browser restart.
   page instead of video data (HTTP 200). The link may have expired, or the site may want you
   signed in: play the video again on its page, then press Retry".
 - **Disk space before merging** (`MediaManager`, `mergeSpaceNeeded`). The merged file (about the
-  size of the segments; Chrome keeps large Blobs on disk) and the copy Chrome saves need room on
+  size of the segments; Chrome moves large Blobs to disk beyond its memory limit) and the copy Chrome saves need room on
   top of the stored segments. Before merging, `navigator.storage.estimate()` must leave twice the
   tracks' size plus the 256 MiB reserve; otherwise the task fails at once with how much is needed
   and free, and keeps its segments for Retry. (Seen working in Chromium: a plain web page's
@@ -969,7 +985,123 @@ than ready and for Live/encryption, then quality selector, audio/options toggle 
 options hold audio tracks, file name and codecs. Shared pieces live in `popup/components/`
 (`Badge`/`ProtocolBadge`, `ProgressBar`, `Menu`, `buttons.ts`, `EmptyState`).
 
+## Progressive files (v0.3.0)
+
+A progressive file is one plain media file (MP4, WebM) that a `<video>` element plays while it
+downloads. It has no manifest and no segments, so it needs neither adapters, IndexedDB nor FFmpeg:
+the original file is saved as it is. Everything else is the existing pipeline: detection manager,
+task service, queue and slots (`DownloadCoordinator.pump`), task store, retry/cancel/remove,
+`chrome.downloads` saving and its `onChanged` follow-up, notifications and the popup's tabs.
+
+```
+webRequest (type media, MP4/WebM)  ─┐
+content script <video src>/<source> ┴─▶ DetectionManager ── inspect first 64 KiB (DNR context) ──▶ ready
+popup Download ─▶ TaskService (#prepareFile) ─▶ task { progressive: { container, fetch: 'browser' } }
+pump: one slot ─▶ chrome.downloads.download(url, baseName.mp4|.webm) ── poll search() 1/s ──▶ progress
+                  onChanged complete ─▶ completed (saved path, size)
+                  refused (401/403/404, page, other size) + context ─▶ fetch: 'extension'
+                       ─▶ engine/sync ─▶ DownloadManager #runFile ─▶ Blob parts ─▶ engine/save ─▶ Chrome
+```
+
+- **Detection** (`manifest-detector.ts`, `file-inspector.ts`). `classifyResponse` reports
+  `progressive` for an MP4/WebM Content-Type (`video/mp4`, `video/x-m4v`, `video/webm`), or a
+  generic one with a `.mp4`/`.m4v`/`.webm` path, but only for the `media` resource type (a media
+  element's own requests), and before the manifest size cap. XHR/fetch requests for such files
+  are Media Source Extensions segments and stay ignored. The content script reports `<video src>`
+  and `<source>` files the same way. Each new candidate is inspected once: a `Range: bytes=0-65535`
+  request with the page's Referer/Origin (the existing DNR rules) whose first bytes must be a
+  whole file — MP4 starting with `ftyp`/`moov`/`mdat`/`free`… (and holding media data when the
+  whole file fits), or WebM (EBML DocType `webm`). Segments (`styp`/`moof`/`sidx`, a WebM Cluster)
+  and initialization segments of streams (native HLS playback through a media element) are
+  dropped, and later requests of the same URL shape are skipped until the next navigation; a web
+  page or JSON instead of media lists the file as unavailable with the reason. The detection
+  records the container (from the bytes), MIME type, size (Content-Range total or Content-Length),
+  whether ranges are served (206), and a file name (Content-Disposition, else the URL). A link that
+  redirects folds its target under it (`childKeys`), whichever is seen first. A ready file is
+  listed with one variant, `file` ("Single quality"), so the Detected tab's selection works
+  unchanged; an element's own title wins over frame-level titles even when its request came first.
+- **Tasks** (`task-service.ts`, `download-task.ts`). `source.protocol` is `progressive` and
+  `progressive = { container, fetch, bytes?, resumeId? }`; the default name is the title without
+  a quality. The output format setting does not apply: the file keeps its container. Duplicate
+  prevention and name uniqueness are the existing ones.
+- **The `browser` route** (default). In `pump`, a progressive task takes a download slot but not
+  the engine: the coordinator adopts the freshest detection of the video (a re-signed link), then
+  `chrome.downloads.download({ url, filename: baseName.container, conflictAction: 'uniquify' })`.
+  Chrome sends the site's cookies; it sends **no Referer/Origin**: declarativeNetRequest rules never
+  apply to `chrome.downloads` requests, and webRequest does not see them (checked in Chrome 157
+  under every rule condition, including `urlFilter` alone), while the `headers` option refuses
+  them (forbidden XHR headers). `chrome.downloads.onChanged` reports no progress, so the service
+  worker reads `chrome.downloads.search` once a second while such downloads run and writes the
+  bytes into the existing `TaskProgress` (`fileProgress`: one "segment", the size as the track's
+  declared bytes), so estimates, ETA and the Queue tab work as for streams.
+- **Refusals and the `extension` route.** A download that ends with `SERVER_UNAUTHORIZED`,
+  `SERVER_FORBIDDEN` or `SERVER_BAD_CONTENT` (401/403/404), whose MIME type is a page or JSON
+  (Chrome would save it as `.htm`), or whose size differs from the detected file while a request
+  context exists (a hotlink placeholder), is stopped (a saved page is deleted with
+  `removeFile`). If the task has the page's Referer/Origin, it switches to `fetch: 'extension'`:
+  the engine (`DownloadManager.#runFile`) fetches the file with its DNR leases through the
+  segment fetcher (8 MiB Blob parts, stall detection, web pages refused, retries with backoff, an
+  expired link refreshed from the newest detection), then hands it over with `engine/save`
+  (no container, no analysis) and holds the blob: URL until the service worker drops the task;
+  `startSave` saves it under the task's name. Without a context the task fails saying what the
+  server did.
+- **Lifecycle.** Completion and interruption come through the existing `onChanged` listener
+  (`#settleFile`). Interruptions keep the Chrome download's ID as `resumeId` when Chrome can
+  resume it: Retry calls `chrome.downloads.resume`, otherwise it starts over (deleting the
+  partial file). Cancel cancels the Chrome download; Remove of a failed task deletes a
+  resumable partial file (`beforeRemove`). A download erased from Chrome's list fails the task.
+  At service-worker start, downloads Chrome finished meanwhile are completed; one interrupted by a
+  crash, a shutdown or the network is resumed once. Browser facts checked in Chrome 157: a
+  dropped connection is resumed by Chrome itself with `Range`/`If-Range`; after a crash the file
+  was completed but fetched again from the start; quitting Chrome normally **cancels** running
+  downloads (`USER_CANCELED`, partial file deleted), which the task reports, and Retry downloads
+  again; after Chrome resumes a download by itself, the file may take the URL's name instead of
+  the one the extension gave (the task records the real path).
+
+### Merge fixes (v0.3.0)
+
+Found with a 2.5 GB, 7407 s HLS video that came out "30 of 7407 seconds" long:
+
+- **Segments disguised as pictures.** The site served its MPEG-TS segments as `.png` with a 1×1
+  PNG (95 bytes) before the data; players skip it, FFmpeg read the track as one picture per
+  segment (750 at 25 per second: 30 s). `track-data.ts` (`prepareTrack`, used by analysis and
+  merge) reads each segment's first 64 KiB (1 MiB if needed) and skips the bytes before the first
+  MPEG-TS packet (`tsSyncOffset`: sync bytes 188 apart), for tracks declared MPEG-TS and for
+  segments whose names give no container; MP4, WebM and packed-audio starts are never cut. The
+  stored data is not changed.
+- **Timestamps that go back without a discontinuity in the manifest** (an intro or ad on its own
+  timeline, a clock wrap) made FFmpeg clamp decode times and squeeze the rest of the video onto
+  their end. `timestamps.ts` reads each segment's first decode time (the first PES DTS/PTS per PID;
+  `tfdt` per track fragment) and such places start a run of their own (concat demuxer):
+  fragmented MP4 always (FFmpeg corrects no jump in MP4 input; `-use_tfdt 0` does not help in
+  5.1), MPEG-TS when the track already has several runs (FFmpeg corrects jumps in one MPEG-TS
+  input, not inside concat runs). A command may mount up to 8 192 inputs.
+- **Analysis by the first run.** A track joined from several runs is probed by its first run (a
+  new initialization segment mid-track made ffprobe fail and the data be discarded); its duration
+  is the manifest's.
+- "The merged file is much shorter…" quotes FFmpeg's last notable log line.
+
+Testing: `file-inspector.test.ts` (real MP4/WebM from `tests/fixtures/media/synthetic-files.ts`,
+segments, init segments, pages, headers, ranges), `progressive-detection.test.ts` (fixture site
+`/files` through the real classifier, inspector, manager and RequestContextRules),
+`download-coordinator.test.ts` (route, progress poll, refusals and fallback, resume, cancel,
+remove, gone, restart), `download-manager.test.ts` (`#runFile`), `timestamps.test.ts`,
+`media-manager.test.ts` (disguised segments and timestamp jumps with the real FFmpeg core), and
+three end-to-end scenarios in Chrome for Testing: detection on `/files`, byte-for-byte downloads
+next to an HLS stream with the Referer fallback, and cancel/retry/crash/quit on `/files/slow`
+(a 6 MiB file served at 1 MiB/s). Coverage: 90 % of lines of `src/`.
+
 ## Known limitations
+
+- **Progressive files.** Chrome's own downloads carry no Referer/Origin; the engine fallback
+  needs the task's request context (lost after a browser restart until the video is played
+  again), starts over after a failure (no Range resume) and needs room for the file twice while
+  Chrome saves it. Quitting Chrome normally cancels running downloads (Retry downloads again);
+  resumption is Chrome's decision (server ranges and validators). Files show no resolution or
+  codecs (no FFmpeg analysis). Audio-only files, Matroska/MOV, and files fetched by script are not
+  listed; each candidate costs one 64 KiB request, so single-use links fail inspection; a server
+  sending a decoy of exactly the detected size is not noticed; two links redirecting to the same
+  file are listed twice.
 
 - Merging is stream copy only: no re-encoding, so a forced MP4 of codecs MP4 cannot hold fails
   (after the download, keeping the data; a task's format cannot be changed, so it must be
@@ -984,6 +1116,13 @@ options hold audio tracks, file name and codecs. Shared pieces live in `popup/co
   demuxer ignores, so such a track starts at 0 and may be off by the video's start offset.
 - MP4 files have their index at the end (no faststart): players that stream from a network
   need the whole file first; local playback is unaffected.
+- **Memory while merging and saving a large video.** The merged file lives in Chrome's Blob
+  storage until Chrome has saved it. Chrome keeps Blob data in its own (browser process) memory
+  up to a limit that depends on the machine's RAM (on desktops it can reach about 1–2 GB) and
+  pages the rest to disk, so merging a multi-GB video raises Chrome's memory use by up to that
+  much until the save completes; it is released when the task is completed (blob URL revoked,
+  FFmpeg worker ended after 10 s idle, offscreen document closed). Writing the output to the
+  origin-private file system (OPFS) instead would keep it on disk; not done yet.
 - FFmpeg's heap is 2 GiB, but the merge does not depend on it: outputs stream into Blob parts.
   Chrome's own Blob storage limits remain (it pages large Blobs to disk; the disk needs room for
   the stored segments, the merged file while saving, and the saved copy at once, about three

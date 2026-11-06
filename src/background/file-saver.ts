@@ -22,9 +22,20 @@ export const chromeFileSaver: FileSaver = {
       path: item.filename,
       bytes: item.fileSize > 0 ? item.fileSize : Math.max(item.totalBytes, item.bytesReceived),
       ...(item.error !== undefined ? { error: item.error } : {}),
+      // Progressive files (0.3.0): onChanged reports no progress, so it is read from here.
+      received: item.bytesReceived,
+      ...(item.totalBytes > 0 ? { total: item.totalBytes } : {}),
+      canResume: item.canResume,
+      ...(item.mime ? { mime: item.mime } : {}),
     };
   },
   cancel: async (downloadId) => {
     await chrome.downloads.cancel(downloadId);
+  },
+  resume: async (downloadId) => {
+    await chrome.downloads.resume(downloadId);
+  },
+  removeFile: async (downloadId) => {
+    await chrome.downloads.removeFile(downloadId);
   },
 };

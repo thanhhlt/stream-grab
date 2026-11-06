@@ -111,6 +111,31 @@ describe('parseStoredTasks', () => {
     expect(parseStoredTasks(undefined)).toEqual([]);
   });
 
+  it('keeps progressive tasks with their container and route, and drops those without (0.3.0)', () => {
+    const file = makeTask('file', {
+      source: { protocol: 'progressive', manifestUrl: 'https://cdn.example.com/clip.webm', title: 'Clip', tabId: 3, streamId: 's9' },
+      selection: { variantId: 'file', variantLabel: 'Single quality', audioTrackIds: [], audioTrackNames: [] },
+      progressive: { container: 'webm', fetch: 'browser', bytes: 2048, resumeId: 12 },
+    });
+    const tasks = parseStoredTasks({
+      version: 1,
+      tasks: [
+        file,
+        { ...file, id: 'damaged', progressive: { container: 'webm', fetch: 'browser', bytes: -1, resumeId: 'x' } },
+        { ...file, id: 'mkv', progressive: { container: 'mkv', fetch: 'browser' } },
+        { ...file, id: 'teleport', progressive: { container: 'mp4', fetch: 'teleport' } },
+        { ...file, id: 'none', progressive: undefined },
+        makeTask('hls'),
+      ],
+    });
+    expect(tasks.map((task) => [task.id, task.progressive])).toEqual([
+      ['file', { container: 'webm', fetch: 'browser', bytes: 2048, resumeId: 12 }],
+      ['damaged', { container: 'webm', fetch: 'browser' }],
+      ['hls', undefined],
+    ]);
+    expect(tasks[0]).toEqual(file);
+  });
+
   it('keeps media processing progress and analyses, and drops damaged ones', async () => {
     const { local, store } = setup();
     const processing = { stage: 'analysing' as const, step: 2, steps: 2, percent: 50, startedAt: 1, detail: 'English' };

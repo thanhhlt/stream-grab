@@ -142,3 +142,81 @@ describe('classifyResponse', () => {
     ).toEqual({ kind: 'ignore', reason: 'too-large' });
   });
 });
+
+describe('classifyResponse: progressive files (0.3.0)', () => {
+  const media = (url: string, overrides: Partial<ResponseObservation> = {}) =>
+    classifyResponse(observe(url, { resourceType: 'media', ...overrides }));
+
+  it('recognises MP4 and WebM played by a media element, by Content-Type even without an extension', () => {
+    expect(media('https://cdn.example/v/8f3a', { contentType: 'video/mp4', statusCode: 206 })).toEqual({
+      kind: 'progressive',
+      container: 'mp4',
+      evidence: 'content-type',
+      mimeType: 'video/mp4',
+    });
+    expect(media('https://cdn.example/clip', { contentType: 'Video/WebM; codecs="vp9"' })).toEqual({
+      kind: 'progressive',
+      container: 'webm',
+      evidence: 'content-type',
+      mimeType: 'video/webm',
+    });
+    expect(media('https://cdn.example/movie.m4v?sig=1', { contentType: 'video/x-m4v' })).toMatchObject({ container: 'mp4' });
+  });
+
+  it('uses the extension when the Content-Type is generic or missing (and for 304s)', () => {
+    expect(media('https://cdn.example/files/movie.MP4?token=x', { contentType: 'application/octet-stream' })).toEqual({
+      kind: 'progressive',
+      container: 'mp4',
+      evidence: 'extension',
+      mimeType: 'application/octet-stream',
+    });
+    expect(media('https://cdn.example/files/clip.webm', { contentType: undefined })).toEqual({
+      kind: 'progressive',
+      container: 'webm',
+      evidence: 'extension',
+    });
+    expect(media('https://cdn.example/files/clip.webm', { statusCode: 304, contentType: 'text/html' })).toMatchObject({
+      kind: 'progressive',
+      container: 'webm',
+    });
+  });
+
+  it('is not limited by the manifest size cap', () => {
+    expect(media('https://cdn.example/big.mp4', { contentType: 'video/mp4', contentLength: 4 * 1024 ** 3 })).toMatchObject({
+      kind: 'progressive',
+    });
+  });
+
+  it('leaves XHR/fetch media (MSE segments) ignored, as before', () => {
+    expect(classifyResponse(observe('https://cdn.example/dash/video_1.mp4', { contentType: 'video/mp4' }))).toEqual({
+      kind: 'ignore',
+      reason: 'content-type',
+    });
+    expect(classifyResponse(observe('https://cdn.example/hls/init.mp4', { contentType: 'application/octet-stream' }))).toEqual({
+      kind: 'ignore',
+      reason: 'segment',
+    });
+    expect(classifyResponse(observe('https://cdn.example/x.webm', { resourceType: 'other', contentType: 'video/webm' }))).toEqual({
+      kind: 'ignore',
+      reason: 'content-type',
+    });
+  });
+
+  it('keeps manifests played by media elements as manifests and ignores other media types', () => {
+    expect(media('https://cdn.example/x.m3u8', { contentType: 'application/vnd.apple.mpegurl' })).toEqual({
+      kind: 'manifest',
+      protocol: 'hls',
+      evidence: 'content-type',
+    });
+    expect(media('https://cdn.example/x.mpd', { contentType: 'application/octet-stream' })).toEqual({
+      kind: 'manifest',
+      protocol: 'dash',
+      evidence: 'extension',
+    });
+    expect(media('https://cdn.example/seg-1.ts', { contentType: 'video/mp2t' })).toEqual({ kind: 'ignore', reason: 'content-type' });
+    expect(media('https://cdn.example/song.mp4', { contentType: 'audio/mp4' })).toEqual({ kind: 'ignore', reason: 'content-type' });
+    expect(media('https://cdn.example/clip.ogv', { contentType: 'video/ogg' })).toEqual({ kind: 'ignore', reason: 'content-type' });
+    expect(media('https://cdn.example/clip.mkv', { contentType: 'application/octet-stream' })).toEqual({ kind: 'ignore', reason: 'segment' });
+    expect(media('https://cdn.example/x.mp4', { statusCode: 404, contentType: 'video/mp4' })).toEqual({ kind: 'ignore', reason: 'status' });
+  });
+});

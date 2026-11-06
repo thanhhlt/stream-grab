@@ -5,6 +5,7 @@ import { lastErrorLine, type FfmpegRunner } from './ffmpeg-job';
 import { MediaFailure } from './media-analysis';
 import { buildMergeJob, trackRuns, type MergeTrack } from './merge-plan';
 import { parseProbeOutput, probeJob } from './probe';
+import { prepareTrack } from './track-data';
 
 export interface MergeTaskOptions {
   storage: SegmentStorage;
@@ -28,6 +29,15 @@ export interface MergedFile {
 
 const KEPT = 'Press Retry to try again; the downloaded segments are kept.';
 
+/** The last line of FFmpeg's log that looks like a problem (for a failure message), if any. */
+function notableLine(stderr: readonly string[]): string | undefined {
+  for (let i = stderr.length - 1; i >= 0; i--) {
+    const line = stderr[i]?.trim() ?? '';
+    if (/error|invalid|impossible|could not|unable|non[- ]?monoton|discontinuity|corrupt|not found/i.test(line)) return line.replace(/^\/in\/[^:]+:\s*/, '');
+  }
+  return undefined;
+}
+
 /**
  * Merges a downloaded task into one file with FFmpeg (stream copy, see
  * buildMergeJob), then checks the result with ffprobe: it must contain the
@@ -41,15 +51,13 @@ export async function mergeTask(taskId: string, options: MergeTaskOptions): Prom
   for (const layout of options.layout) {
     const analysis = media.tracks.find((track) => track.trackId === layout.trackId);
     if (!analysis) throw new MediaFailure(`Internal error: no analysis for track ${layout.trackId}. ${KEPT}`);
-    const bySegment = new Map<number, Blob[]>();
-    for (const part of await storage.trackData(taskId, layout.trackId)) {
-      const parts = bySegment.get(part.index) ?? [];
-      parts.push(part.data);
-      bySegment.set(part.index, parts);
-    }
+    const parts = await storage.trackData(taskId, layout.trackId);
     signal.throwIfAborted();
-    const runs = trackRuns(layout).map((positions) => new Blob(positions.flatMap((position) => bySegment.get(position) ?? [])));
-    tracks.push({ layout, analysis, runs });
+    // Disguising picture headers dropped; timestamps that go back start a run of their own (track-data.ts).
+    const { bySegment, resets } = await prepareTrack(layout, parts, signal);
+    const split = resets.length > 0 ? { ...layout, discontinuityIndexes: [...layout.discontinuityIndexes, ...resets] } : layout;
+    const runs = trackRuns(split).map((positions) => new Blob(positions.flatMap((position) => bySegment.get(position) ?? [])));
+    tracks.push({ layout: split, analysis, runs });
   }
 
   const plan = buildMergeJob(tracks, { container: media.container, ...(options.title !== undefined ? { title: options.title } : {}) });
@@ -78,8 +86,10 @@ export async function mergeTask(taskId: string, options: MergeTaskOptions): Prom
     );
   }
   if (expected !== undefined && expected >= 10 && probe.durationSec !== undefined && probe.durationSec < expected / 2) {
+    // What FFmpeg said about it helps tell why (a part it could not read, timestamps it had to fix).
+    const said = notableLine(result.stderrTail);
     throw new MediaFailure(
-      `The merged file is much shorter than the video (${Math.round(probe.durationSec)} of ${Math.round(expected)} seconds). ${KEPT}`,
+      `The merged file is much shorter than the video (${Math.round(probe.durationSec)} of ${Math.round(expected)} seconds${said ? `; FFmpeg: ${said}` : ''}). ${KEPT}`,
     );
   }
   // FFmpeg's output carries no type; Chrome needs one to keep the file's extension (wrapping copies nothing).

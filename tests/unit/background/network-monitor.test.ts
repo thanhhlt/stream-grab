@@ -116,6 +116,38 @@ describe('NetworkMonitor', () => {
     ]);
   });
 
+  it('reports progressive MP4/WebM files played by media elements with their Referer/Origin (0.3.0)', () => {
+    const url = 'https://media.example.net/v/clip.mp4?Expires=99&Signature=s';
+    api.onSendHeaders.emit({
+      ...base({ requestId: '9', url, type: 'media' }),
+      requestHeaders: [
+        { name: 'Referer', value: 'https://site.example/watch/1' },
+        { name: 'Origin', value: 'https://site.example' },
+        { name: 'Range', value: 'bytes=0-' },
+      ],
+    });
+    api.onResponseStarted.emit({
+      ...response({ requestId: '9', url, type: 'media', statusCode: 206 }, 'video/mp4'),
+      responseHeaders: [
+        { name: 'Content-Type', value: 'video/mp4' },
+        { name: 'Content-Length', value: String(3 * 1024 ** 3) },
+      ],
+    });
+    // The same file requested by script (Media Source Extensions) is a segment, as before.
+    api.onResponseStarted.emit(response({ requestId: '10', url, type: 'xmlhttprequest' }, 'video/mp4'));
+    expect(candidates).toEqual([
+      {
+        tabId: 7,
+        frameId: 0,
+        url,
+        match: { protocol: 'progressive', evidence: 'content-type' },
+        progressive: { container: 'mp4', mimeType: 'video/mp4' },
+        requestContext: { referer: 'https://site.example/watch/1', origin: 'https://site.example' },
+        timestamp: 5_000,
+      },
+    ]);
+  });
+
   it('forwards probe candidates without a protocol match', () => {
     api.onResponseStarted.emit(response({ url: 'https://api.example.com/v/1/playlist' }, 'text/plain'));
     expect(candidates).toHaveLength(1);

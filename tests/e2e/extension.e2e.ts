@@ -13,6 +13,17 @@ import { STORAGE_KEYS } from '@/shared/constants';
 import { formatBytes } from '@/shared/utils/bytes';
 import { NodeFfmpegRunner } from '@tests/fakes/ffmpeg-node';
 import { DEMO_MEDIA } from '@tests/fixtures/download-routes';
+import { syntheticFiles } from '@tests/fixtures/media/synthetic-files';
+import {
+  MSE_SEGMENT_PATH,
+  PROGRESSIVE_FILES,
+  PROGRESSIVE_PAGE_PATH,
+  REDIRECT_TARGET_PATH,
+  SLOW_FILE_PATH,
+  SLOW_FILE_TITLE,
+  SLOW_PAGE_PATH,
+  slowFileBytes,
+} from '@tests/fixtures/progressive-routes';
 import { startFixtureSite, type FixtureSite } from './fixture-site';
 
 /**
@@ -230,6 +241,175 @@ describe('StreamGrab in Chrome (Chrome for Testing, unpacked dist/)', () => {
     const probe = await probeFile(done.output.saved?.path ?? '');
     expect(probe?.streams.map((stream) => stream.kind)).toEqual(['video', 'audio']);
     expect(probe?.durationSec).toBeCloseTo(DEMO_SECONDS, -1);
+    await again.close();
+  });
+
+  it('detects progressive MP4 and WebM files played by media elements, once each, not MSE fetches (0.3.0)', async () => {
+    const pageUrl = `${site.origin}${PROGRESSIVE_PAGE_PATH}`;
+    const page = await browser.newPage();
+    await page.goto(pageUrl);
+    const ext = await extensionPage();
+    const files = await syntheticFiles();
+    // "Ready" for the protected file means its inspection request carried the page as Referer (DNR rule).
+    const { streams } = await detected(ext, pageUrl, PROGRESSIVE_FILES.map((fixture) => fixture.path));
+    const byPath = new Map(streams.map((stream) => [new URL(stream.url).pathname, stream]));
+
+    for (const fixture of PROGRESSIVE_FILES) {
+      const stream = byPath.get(fixture.path);
+      expect(stream).toMatchObject({
+        protocol: 'progressive',
+        title: fixture.title,
+        progressive: { container: fixture.container, bytes: files[fixture.file].length, acceptsRanges: true },
+        media: { variants: [{ id: 'file' }] },
+      });
+    }
+    // Chrome reported the media elements' own requests (webRequest type "media"), with the page as Referer.
+    expect(byPath.get('/files/sample.mp4')?.evidence).toEqual(expect.arrayContaining(['dom', 'content-type']));
+    expect(byPath.get('/files/sample.mp4')?.requestContext.referer).toBe(pageUrl);
+    expect(site.requests.some((entry) => entry.path === '/files/protected.mp4' && entry.range === 'bytes=0-65535' && entry.referer === pageUrl)).toBe(
+      true,
+    );
+
+    // Nothing else is listed: not the redirect target (folded), not the .mp4 the page fetched by script.
+    await new Promise((done) => setTimeout(done, 1000));
+    const listed = await detected(ext, pageUrl, []);
+    expect(listed.streams).toEqual([]);
+    const all = await ext.evaluate(async (key) => {
+      const stored = (await chrome.storage.session.get(key))[key] as { streams: DetectedStream[] } | undefined;
+      return (stored?.streams ?? []).map((stream) => new URL(stream.url).pathname);
+    }, `detections:${listed.tabId}`);
+    expect(all.sort()).toEqual(PROGRESSIVE_FILES.map((fixture) => fixture.path).sort());
+    expect(site.requests.some((entry) => entry.path === MSE_SEGMENT_PATH)).toBe(true);
+    expect(site.requests.some((entry) => entry.path === REDIRECT_TARGET_PATH)).toBe(true);
+    await page.close();
+    await ext.close();
+  });
+
+  it('downloads MP4 and WebM files byte for byte next to an HLS stream, the Referer-protected one through the engine (0.3.0)', async () => {
+    const filesUrl = `${site.origin}${PROGRESSIVE_PAGE_PATH}?download`;
+    const demoUrl = `${site.origin}/download?mixed`;
+    const filesPage = await browser.newPage();
+    await filesPage.goto(filesUrl);
+    const demo = await browser.newPage();
+    await demo.goto(demoUrl);
+    const ext = await extensionPage();
+    const files = await syntheticFiles();
+    const progressive = await detected(ext, filesUrl, PROGRESSIVE_FILES.map((fixture) => fixture.path));
+    const hls = await detected(ext, demoUrl, ['/download/plain/plain.m3u8']);
+    const hlsStream = hls.streams[0] as DetectedStream;
+
+    const requests = [...progressive.streams.map((stream) => request(progressive.tabId, stream)), request(hls.tabId, hlsStream)];
+    const started = await send<{ created: { taskId: string; streamId: string }[]; failed: unknown[] }>(ext, 'downloads/start', { requests });
+    expect(started.failed).toEqual([]);
+    const ids = started.created.map((created) => created.taskId);
+
+    const finished = await waitFor('the saved files and video', async () => {
+      const list = (await tasks(ext)).filter((task) => ids.includes(task.id));
+      const failed = list.find((task) => task.status === 'failed');
+      if (failed) throw new Error(`${failed.source.title} failed: ${failed.statusMessage ?? ''}`);
+      return list.length === ids.length && list.every((task) => task.status === 'completed') ? list : undefined;
+    });
+
+    for (const fixture of PROGRESSIVE_FILES) {
+      const stream = progressive.streams.find((candidate) => new URL(candidate.url).pathname === fixture.path);
+      const task = finished.find((candidate) => candidate.source.streamId === stream?.id);
+      expect(task?.progressive).toMatchObject({ container: fixture.container, fetch: fixture.path === '/files/protected.mp4' ? 'extension' : 'browser' });
+      const saved = task?.output.saved;
+      expect(saved?.path).toMatch(new RegExp(`\\.${fixture.container}$`));
+      // The original file, untouched: no remux, no FFmpeg.
+      const bytes = new Uint8Array(readFileSync(saved?.path ?? ''));
+      expect(bytes.length).toBe(files[fixture.file].length);
+      expect(Buffer.compare(bytes, files[fixture.file])).toBe(0);
+      expect(saved?.bytes).toBe(files[fixture.file].length);
+      expect(task?.media).toBeUndefined();
+    }
+    // Chrome's own download of the protected file was refused (it cannot send the Referer); the engine's fetch carried it.
+    const protectedRequests = site.requests.filter((entry) => entry.path === '/files/protected.mp4' && entry.range === undefined);
+    expect(protectedRequests.some((entry) => entry.referer === undefined)).toBe(true);
+    expect(protectedRequests.some((entry) => entry.referer === filesUrl)).toBe(true);
+    // The HLS stream went its usual way, merged by FFmpeg, alongside.
+    const video = finished.find((task) => task.source.protocol === 'hls');
+    expect(video?.media?.container).toBe('mp4');
+    expect((await probeFile(video?.output.saved?.path ?? ''))?.streams.map((stream) => stream.kind)).toEqual(['video', 'audio']);
+
+    await filesPage.close();
+    await demo.close();
+    await ext.close();
+  });
+
+  it('cancels and retries a progressive download, and finishes it after Chrome crashes or is quit mid-download (0.3.0)', async () => {
+    const pageUrl = `${site.origin}${SLOW_PAGE_PATH}`;
+    const page = await browser.newPage();
+    await page.goto(pageUrl);
+    const ext = await extensionPage();
+    const { tabId, streams } = await detected(ext, pageUrl, [SLOW_FILE_PATH]);
+    const stream = streams[0] as DetectedStream;
+    expect(stream.title).toBe(SLOW_FILE_TITLE);
+    const started = await send<{ created: { taskId: string }[] }>(ext, 'downloads/start', { requests: [{ ...request(tabId, stream), fileName: 'Slow file' }] });
+    const taskId = started.created[0]?.taskId ?? '';
+    const taskIn = async (context: Page) => (await tasks(context)).find((task) => task.id === taskId);
+    const downloaded = (context: Page, atLeast: number) => async () => {
+      const task = await taskIn(context);
+      if (task?.status === 'failed') throw new Error(task.statusMessage);
+      return task?.status === 'downloading' && (task.progress?.bytes ?? 0) >= atLeast ? task : undefined;
+    };
+
+    // Chrome downloads it; the service worker reads its progress in bytes.
+    await waitFor('the file downloading', downloaded(ext, 512 * 1024), 30_000);
+    expect(await send(ext, 'downloads/cancel', { taskIds: [taskId] })).toEqual({ cancelled: 1 });
+    expect((await taskIn(ext))?.status).toBe('cancelled');
+    expect(await send(ext, 'downloads/retry', { taskIds: [taskId] })).toEqual({ retried: 1 });
+    const running = await waitFor('the retried download', downloaded(ext, 1024 * 1024), 30_000);
+    expect(running.progress?.percent).toBeGreaterThan(0);
+    expect(running.progress?.tracks?.[0]?.declaredBytes).toBe(6 * 1024 * 1024);
+
+    // Chrome ends abruptly (a crash, a power cut) mid-download and starts again on the same profile: the task
+    // is not lost, and the file is complete and intact. (Chrome 157 fetched it again from the start here; a
+    // dropped connection, by contrast, is continued with a Range request.)
+    browser.process()?.kill('SIGKILL');
+    await new Promise((done) => setTimeout(done, 1500));
+    await launch();
+    let again = await extensionPage();
+    const completed = (context: Page) => async () => {
+      const task = await taskIn(context);
+      if (task?.status === 'failed') throw new Error(task.statusMessage);
+      return task?.status === 'completed' ? task : undefined;
+    };
+    const done = await waitFor('the continued file', completed(again), 60_000);
+    // Chrome 157 forgets the name an extension gave a download it resumes: the file takes the URL's name.
+    // The task records where it really is.
+    expect(done.output.saved?.path).toMatch(/(Slow file|movie)( \(\d+\))?\.mp4$/);
+    const source = slowFileBytes(await syntheticFiles());
+    expect(Buffer.compare(new Uint8Array(readFileSync(done.output.saved?.path ?? '')), source)).toBe(0);
+
+    // Quitting Chrome normally cancels its running downloads (and deletes the partial file): the task says so,
+    // and Retry downloads the file again.
+    const newPage = await browser.newPage();
+    await newPage.goto(pageUrl);
+    const listed = await detected(again, pageUrl, [SLOW_FILE_PATH]);
+    const restarted = await send<{ created: { taskId: string }[] }>(again, 'downloads/start', {
+      requests: [{ ...request(listed.tabId, listed.streams[0] as DetectedStream), fileName: 'Slow file again' }],
+    });
+    const secondId = restarted.created[0]?.taskId ?? '';
+    await waitFor('the second download', async () => {
+      const task = (await tasks(again)).find((candidate) => candidate.id === secondId);
+      return task?.status === 'downloading' && (task.progress?.bytes ?? 0) >= 512 * 1024 ? task : undefined;
+    }, 30_000);
+    await browser.close();
+    await launch();
+    again = await extensionPage();
+    const failed = await waitFor('the cancelled download', async () => {
+      const task = (await tasks(again)).find((candidate) => candidate.id === secondId);
+      return task?.status === 'failed' ? task : undefined;
+    }, 30_000);
+    expect(failed.statusMessage).toMatch(/because Chrome was closed during the download/);
+    await send(again, 'downloads/retry', { taskIds: [secondId] });
+    const redone = await waitFor('the downloaded-again file', async () => {
+      const task = (await tasks(again)).find((candidate) => candidate.id === secondId);
+      if (task?.status === 'failed') throw new Error(task.statusMessage);
+      return task?.status === 'completed' ? task : undefined;
+    }, 60_000);
+    expect(Buffer.compare(new Uint8Array(readFileSync(redone.output.saved?.path ?? '')), source)).toBe(0);
     await again.close();
   });
 });

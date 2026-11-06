@@ -4,7 +4,7 @@ Browser extension (Chrome, Manifest V3) that detects, downloads and merges onlin
 entirely in the browser. No server, no native helper. It is built to support several streaming
 formats and protocols; see [Supported formats](#supported-formats) for what works today.
 
-Current version: **0.2.0** — see [CHANGELOG.md](CHANGELOG.md) and the
+Current version: **0.3.0** — see [CHANGELOG.md](CHANGELOG.md) and the
 [releases](https://github.com/thanhhlt/stream-grab/releases).
 
 Status: **all 10 phases done** (Phase 10: error handling, performance, testing). Streams are
@@ -19,7 +19,9 @@ segments are deleted and a notification says so. The Queue tab shows each downlo
 percentage, segments, downloaded / estimated total and remaining size, speed and ETA, with
 FFmpeg's processing shown separately; the Completed tab lists saved videos compactly (resolution,
 duration, real file size, codecs, container) with *Show in folder*. A 1.5 GB video merges in
-about 5 seconds. Besides unit and integration tests, an
+about 5 seconds. Since 0.3.0, plain MP4 and WebM files played by a page are listed too and saved
+as they are (byte for byte, no FFmpeg), downloaded by Chrome itself or, when the server wants the
+page's Referer, by the extension. Besides unit and integration tests, an
 end-to-end test runs the built extension in Chrome for Testing (detection, Referer rules,
 download, FFmpeg, saving, resume after a browser restart). See
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the design, measurements and known limitations,
@@ -33,12 +35,17 @@ FFmpeg.wasm (`@ffmpeg/core`) is licensed GPL-2.0-or-later and adds 32 MB to the 
 | ---------------------------------------------------------------- | ----- |
 | HLS (`.m3u8`): MPEG-TS and fMP4 segments, AES-128 encryption     | 0.1.0 |
 | MPEG-DASH (`.mpd`): SegmentTemplate, SegmentList, SegmentBase    | 0.1.0 |
+| Progressive MP4 and WebM files played by `<video>` (saved as is) | 0.3.0 |
 
-DRM-protected streams are detected and flagged but never downloaded.
+DRM-protected streams are detected and flagged but never downloaded. Progressive files are listed
+when a media element plays or references them; files a player fetches by script (Media Source
+Extensions) are parts of a stream, not videos, and are not listed.
 
-More formats and protocols are planned. Each one plugs in as a `StreamingProtocolAdapter`; the
-download engine, storage, merging and popup work on its output and stay protocol-independent.
-See [Adding a streaming format](docs/ARCHITECTURE.md#adding-a-streaming-format).
+More formats and protocols are planned. Each streaming protocol plugs in as a
+`StreamingProtocolAdapter`; the download engine, storage, merging and popup work on its output
+and stay protocol-independent. See
+[Adding a streaming format](docs/ARCHITECTURE.md#adding-a-streaming-format) and
+[Progressive files](docs/ARCHITECTURE.md#progressive-files-v030).
 
 ## Requirements
 
@@ -97,6 +104,11 @@ Serves a test site bound to 127.0.0.1, with two pages:
   `tests/integration/download-fixtures.test.ts` checks the same routes. The page also explains how to check resume and recovery: reload the extension
   in `chrome://extensions` mid-download (same effect as a browser restart) and watch the task
   continue from its stored segments in the Queue tab.
+- <http://localhost:5180/files>: **progressive MP4 and WebM files** (0.3.0). Four videos played
+  by `<video>` elements, served with byte ranges: an MP4, a WebM, an MP4 that needs the page as
+  Referer (downloaded through the extension's fallback), and an MP4 behind a redirect; the page
+  also fetches an `.mp4` by script, which must not be listed. <http://localhost:5180/files/slow>
+  serves a 6 MiB file at 1 MiB/s, to cancel, retry or close Chrome during the download.
 
 ## Scripts
 

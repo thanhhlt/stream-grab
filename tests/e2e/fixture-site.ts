@@ -4,15 +4,18 @@ import type { AddressInfo } from 'node:net';
 import { resolve } from 'node:path';
 import { createDownloadRouter, DEMO_MEDIA } from '@tests/fixtures/download-routes';
 import { createFixtureRouter } from '@tests/fixtures/fixture-routes';
+import { syntheticFiles } from '@tests/fixtures/media/synthetic-files';
 import { syntheticMedia } from '@tests/fixtures/media/synthetic-media';
+import { createProgressiveRouter } from '@tests/fixtures/progressive-routes';
+import { sendResponse } from '@tests/fixtures/send-response';
 
 const fixtures = resolve(import.meta.dirname, '..');
 
 export interface FixtureSite {
   /** http://127.0.0.1:<port> */
   origin: string;
-  /** Paths requested, in order, with the Referer each request carried. */
-  requests: { path: string; referer: string | undefined }[];
+  /** Paths requested, in order, with the Referer (and Range) each request carried. */
+  requests: { path: string; referer: string | undefined; range?: string | undefined }[];
   close(): Promise<void>;
 }
 
@@ -29,17 +32,13 @@ export async function startFixtureSite(options: { latencyMs: number }): Promise<
       downloadPage: () => readFileSync(resolve(fixtures, 'manual/download-page.html'), 'utf8'),
     },
     createDownloadRouter(media, { latencyMs: options.latencyMs }),
+    createProgressiveRouter(await syntheticFiles()),
   );
   const requests: FixtureSite['requests'] = [];
   const server = createServer((req, res) => {
     const url = new URL(req.url ?? '/', 'http://127.0.0.1');
-    requests.push({ path: url.pathname, referer: req.headers.referer });
-    const response = route(url.pathname, { referer: req.headers.referer });
-    setTimeout(() => {
-      if (res.destroyed) return;
-      res.writeHead(response.status, { 'content-type': response.contentType, 'cache-control': 'no-store' });
-      res.end(response.body);
-    }, response.delayMs ?? 0);
+    requests.push({ path: url.pathname, referer: req.headers.referer, range: req.headers.range });
+    sendResponse(res, route(url.pathname, { referer: req.headers.referer, range: req.headers.range }));
   });
   await new Promise<void>((done) => server.listen(0, '127.0.0.1', done));
   const { port } = server.address() as AddressInfo;

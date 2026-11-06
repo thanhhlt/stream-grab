@@ -41,10 +41,13 @@ export function taskProgressLine(task: DownloadTask): string | undefined {
   if (task.status === 'processing') return processingLine(task.processing);
   if (task.status === 'completed') return task.output.saved ? `Saved · ${formatBytes(task.output.saved.bytes)}` : 'Saved';
   const progress = task.progress;
+  // A progressive file (0.3.0) is one file: its progress is in bytes, never in segments.
+  const file = task.progressive !== undefined;
   const kept =
-    progress && progress.segmentsDone > 0 ? `${progress.segmentsDone} / ${progress.segmentsTotal} segments already downloaded` : undefined;
+    !file && progress && progress.segmentsDone > 0 ? `${progress.segmentsDone} / ${progress.segmentsTotal} segments already downloaded` : undefined;
   if (task.status === 'queued') return ['Waiting for a free download slot', kept].filter(Boolean).join(' · ');
   if (task.status === 'downloading') {
+    if (file && !progress) return 'Starting the download…';
     // Carried over from an earlier run: the engine has not confirmed it yet.
     if (progress?.stale) return kept ? `Resuming · ${kept}` : 'Preparing: reading the segment list…';
     // Started, but the segment list is still being read.
@@ -54,7 +57,7 @@ export function taskProgressLine(task: DownloadTask): string | undefined {
   let segments = `${progress.segmentsDone} / ${progress.segmentsTotal} segments`;
   if (task.status === 'failed' && progress.segmentsDone > 0) segments += ' kept';
   else if (progress.resumedSegments) segments += ` (${progress.resumedSegments} reused)`;
-  const parts = [`${progress.percent.toFixed(1)}%`, segments, formatBytes(progress.bytes)];
+  const parts = [`${progress.percent.toFixed(1)}%`, ...(file ? [] : [segments]), formatBytes(progress.bytes)];
   if (task.status === 'downloading') parts.push(formatSpeed(progress.bytesPerSecond));
   if (progress.retries > 0) parts.push(`${progress.retries} ${progress.retries === 1 ? 'retry' : 'retries'}`);
   return parts.join(' · ');
@@ -132,8 +135,12 @@ export function mediaSummary(media: MediaAnalysis): string {
   return `${parts.join(' · ')} → ${media.container.toUpperCase()}`;
 }
 
-/** Extension of the file the task will produce: the analysed container once known, else the one its format implies. */
+/**
+ * Extension of the file the task will produce: a progressive file keeps its own container; otherwise the
+ * analysed container once known, else the one its format implies.
+ */
 export function outputExtension(task: DownloadTask): string {
+  if (task.progressive) return `.${task.progressive.container}`;
   return task.media ? containerExtension(task.media.container) : extensionFor(task.output.format);
 }
 

@@ -46,7 +46,8 @@ function choiceFor(stream: DetectedStream, variant: VariantSummary): StreamChoic
   return {
     variantId: variant.id,
     audioTrackIds: defaultAudioTracks(stream.protocol, variant, stream.media?.audioTracks ?? []),
-    fileName: defaultBaseName(titleOf(stream), variantLabel(variant)),
+    // A progressive file has one quality, the file itself: its name says nothing about it.
+    fileName: defaultBaseName(titleOf(stream), stream.protocol === 'progressive' ? undefined : variantLabel(variant)),
     fileNameEdited: false,
   };
 }

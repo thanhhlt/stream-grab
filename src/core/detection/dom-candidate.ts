@@ -4,7 +4,7 @@ import { defaultReferrer } from '@/shared/utils/url';
 import type { DetectionCandidate } from './detection-manager';
 
 /**
- * Turns a manifest referenced by a media element into a detection candidate.
+ * Turns a manifest or progressive file referenced by a media element into a detection candidate.
  * No request has been observed yet, so the request context is the Referer the
  * element's own request would carry under the default referrer policy; a real
  * network observation later replaces it.
@@ -27,5 +27,6 @@ export function domSourceCandidate(
     timestamp,
   };
   if (source.title !== undefined) candidate.title = source.title;
+  if (source.protocol === 'progressive' && source.container !== undefined) candidate.progressive = { container: source.container };
   return candidate;
 }

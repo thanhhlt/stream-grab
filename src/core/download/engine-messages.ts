@@ -1,4 +1,4 @@
-import { STREAMING_PROTOCOLS, type RequestContext } from '@/core/models/detected-stream';
+import { MEDIA_PROTOCOLS, PROGRESSIVE_CONTAINERS, type RequestContext } from '@/core/models/detected-stream';
 import {
   FAILURE_REASONS,
   MEDIA_STAGES,
@@ -60,9 +60,13 @@ export function parseEngineTaskSpec(raw: unknown): EngineTaskSpec | null {
   const manifestUrl = str(raw['manifestUrl']);
   const protocol = raw['protocol'];
   const variantId = str(raw['variant']['id'], 64);
-  if (taskId === undefined || manifestUrl === undefined || variantId === undefined || !isOneOf(protocol, STREAMING_PROTOCOLS)) {
+  if (taskId === undefined || manifestUrl === undefined || variantId === undefined || !isOneOf(protocol, MEDIA_PROTOCOLS)) {
     return null;
   }
+  // A progressive file fetched by the engine (0.3.0) comes with its container, and only then.
+  const file = isRecord(raw['file']) ? raw['file'] : undefined;
+  const container = file?.['container'];
+  if ((protocol === 'progressive') !== isOneOf(container, PROGRESSIVE_CONTAINERS)) return null;
   const variant: EngineTaskSpec['variant'] = { id: variantId };
   const height = nonNegative(raw['variant']['height']);
   const bandwidth = nonNegative(raw['variant']['bandwidth']);
@@ -71,7 +75,7 @@ export function parseEngineTaskSpec(raw: unknown): EngineTaskSpec | null {
   const audioTrackIds = Array.isArray(raw['audioTrackIds'])
     ? raw['audioTrackIds'].filter((id): id is string => str(id, 64) !== undefined).slice(0, 20)
     : [];
-  return {
+  const spec: EngineTaskSpec = {
     taskId,
     protocol,
     manifestUrl,
@@ -80,6 +84,11 @@ export function parseEngineTaskSpec(raw: unknown): EngineTaskSpec | null {
     audioTrackIds,
     concurrency: clampInt(raw['concurrency'], SEGMENT_CONCURRENCY),
   };
+  if (isOneOf(container, PROGRESSIVE_CONTAINERS)) {
+    const bytes = nonNegative(file?.['bytes']);
+    spec.file = { container, ...(bytes !== undefined && bytes > 0 ? { bytes } : {}) };
+  }
+  return spec;
 }
 
 function parseEngineTaskSpecs(raw: unknown): EngineTaskSpec[] {
@@ -276,8 +285,15 @@ export function parseSaveRequest(raw: unknown, extensionOrigin: string): SaveReq
   const taskId = str(raw['taskId'], 64);
   const url = str(raw['url'], 200);
   const size = nonNegative(raw['size']);
-  const media = parseMediaAnalysis(raw['media']);
-  if (taskId === undefined || url === undefined || size === undefined || !media || !isOneOf(raw['container'], OUTPUT_CONTAINERS)) return null;
+  if (taskId === undefined || url === undefined || size === undefined) return null;
   if (!url.startsWith(`blob:${extensionOrigin.replace(/\/$/, '')}/`)) return null;
-  return { taskId, url, container: raw['container'], size, media };
+  const request: SaveRequest = { taskId, url, size };
+  // A merged video names its container and FFmpeg's analysis; a progressive file (0.3.0) has neither.
+  if (raw['container'] !== undefined || raw['media'] !== undefined) {
+    const media = parseMediaAnalysis(raw['media']);
+    if (!media || !isOneOf(raw['container'], OUTPUT_CONTAINERS)) return null;
+    request.container = raw['container'];
+    request.media = media;
+  }
+  return request;
 }

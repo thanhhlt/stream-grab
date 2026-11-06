@@ -47,6 +47,29 @@ describe('parseStoredTabDetections', () => {
     }
   });
 
+  it('keeps progressive files with their container and validated details, and drops them without a container', () => {
+    const { manifest: _manifest, ...base } = stream;
+    const file = { ...base, id: 'p1', protocol: 'progressive', url: 'https://a.example/clip.webm', dedupeKey: 'https://a.example/clip.webm' };
+    const parsed = parseStoredTabDetections({
+      ...record,
+      streams: [
+        {
+          ...file,
+          progressive: { container: 'webm', mimeType: 'video/webm', bytes: 52_428_800, acceptsRanges: true, fileName: 'clip.webm', junk: 1 },
+        },
+        { ...file, id: 'p2', progressive: { container: 'mp4', bytes: -5, acceptsRanges: 'yes', mimeType: 42 } },
+        { ...file, id: 'p3', progressive: { container: 'mkv' } },
+        { ...file, id: 'p4' },
+      ],
+    });
+    expect(parsed?.streams.map((entry) => [entry.id, entry.progressive])).toEqual([
+      ['p1', { container: 'webm', mimeType: 'video/webm', bytes: 52_428_800, acceptsRanges: true, fileName: 'clip.webm' }],
+      ['p2', { container: 'mp4' }],
+    ]);
+    // HLS/DASH streams are unchanged and carry no progressive details.
+    expect(parseStoredTabDetections(record)?.streams[0]).toEqual(stream);
+  });
+
   it('drops invalid streams and unknown enum values but keeps valid ones', () => {
     const parsed = parseStoredTabDetections({
       ...record,

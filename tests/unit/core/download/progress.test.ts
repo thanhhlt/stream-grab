@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { percentOf, ProgressTracker, type PlannedSegment } from '@/core/download/progress';
+import { estimateDownload } from '@/core/download/estimate';
+import { fileProgress, percentOf, ProgressTracker, type PlannedSegment } from '@/core/download/progress';
 
 const media = (trackId: string, length?: number, encrypted = false): PlannedSegment => ({
   trackId,
@@ -8,6 +9,39 @@ const media = (trackId: string, length?: number, encrypted = false): PlannedSegm
   ...(encrypted ? { encryption: { method: 'AES-128', keyUrl: 'https://cdn.example.com/key', iv: '0'.repeat(32) } } : {}),
 });
 const init = (trackId: string): PlannedSegment => ({ trackId, kind: 'init' });
+
+describe('fileProgress (progressive files, 0.3.0)', () => {
+  const base = { segmentsTotal: 0, segmentsDone: 0, bytes: 0, bytesPerSecond: 500_000, averageBytesPerSecond: 400_000, percent: 0, retries: 2, startedAt: 1_000, resumedSegments: 3, stale: true };
+
+  it('puts received bytes and the announced size into the segment model, so estimates work unchanged', () => {
+    const progress = fileProgress(base, 2_000_000, 10_000_000, false);
+    expect(progress).toEqual({
+      segmentsTotal: 1,
+      segmentsDone: 0,
+      bytes: 2_000_000,
+      bytesPerSecond: 500_000,
+      averageBytesPerSecond: 400_000,
+      percent: 20,
+      retries: 2,
+      startedAt: 1_000,
+      tracks: [{ trackId: 'file', segmentsTotal: 1, segmentsDone: 0, bytes: 2_000_000, declaredBytes: 10_000_000 }],
+    });
+    const estimate = estimateDownload(progress, { now: 6_000, reportedAt: 6_000 });
+    expect(estimate.size).toEqual({ downloaded: 2_000_000, total: 10_000_000, remaining: 8_000_000, exact: true, partial: false });
+    expect(estimate.etaSec).toBe(20); // 8 MB at the average 400 kB/s
+  });
+
+  it('has no percentage, size or ETA when the server did not say the size, and 100 % only when done', () => {
+    const unknown = fileProgress(base, 2_000_000, undefined, false);
+    expect(unknown.percent).toBe(0);
+    expect(unknown.tracks?.[0]?.declaredBytes).toBeUndefined();
+    const estimate = estimateDownload(unknown, { now: 6_000, reportedAt: 6_000 });
+    expect(estimate.size).toBeUndefined();
+    expect(estimate.etaSec).toBeUndefined();
+    expect(fileProgress(base, 9_999_999, 10_000_000, false).percent).toBe(99.9);
+    expect(fileProgress(base, 10_000_000, 10_000_000, true)).toMatchObject({ percent: 100, segmentsDone: 1 });
+  });
+});
 
 describe('ProgressTracker', () => {
   it('counts reused segments as done and stored, but not as received (speed)', () => {

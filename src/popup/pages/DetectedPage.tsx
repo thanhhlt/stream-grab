@@ -208,7 +208,7 @@ export function DetectedPage({ onShowQueue }: DetectedPageProps) {
                 onToggleExpanded={() => {
                   setExpanded((previous) => toggle(previous, stream.id, !previous.has(stream.id)));
                 }}
-                extension={extension}
+                extension={stream.progressive ? `.${stream.progressive.container}` : extension}
                 onDownload={() => {
                   startDownloads([stream.id]);
                 }}

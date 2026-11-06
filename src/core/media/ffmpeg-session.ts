@@ -35,7 +35,12 @@ export interface SessionOptions {
 }
 
 /** Inputs per command: one per track, or one per run of a track joined with the concat demuxer. */
-const MAX_INPUTS = 2048;
+/**
+ * Mounted inputs per command. A merge mounts one per run, and a track whose
+ * timestamps go back at every segment is one run per segment (media-merge.ts):
+ * a 4-hour video of 4-second segments with separate audio needs about 7 200.
+ */
+const MAX_INPUTS = 8192;
 const MAX_ARGS = 1024;
 
 /**

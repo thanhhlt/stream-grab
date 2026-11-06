@@ -70,6 +70,8 @@ const downloads = new DownloadManager({
   },
   // Free disk space: checked before each run and while segments are written.
   estimateStorage: () => navigator.storage.estimate(),
+  // Progressive files fetched here (they need the page's Referer/Origin) are saved like merged videos (0.3.0).
+  saveFile: async (request) => (await sendToBackground('engine/save', request)).accepted,
 });
 
 const ffmpeg = new FfmpegService({

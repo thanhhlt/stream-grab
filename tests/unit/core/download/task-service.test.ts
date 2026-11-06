@@ -78,7 +78,7 @@ async function setup(options: { settings?: Partial<Settings>; existing?: ReturnT
     now: () => 1000,
     newId: () => `task-${++counter}`,
   });
-  return { service, store, streams };
+  return { service, store, streams, session };
 }
 
 const request = (streamId: string, overrides: Partial<DownloadRequest> = {}): DownloadRequest => ({
@@ -175,6 +175,39 @@ describe('TaskService.start', () => {
     streams.set('sample', baseStream('sample', sampleAes, { media: { variants: [{ id: 'video-0', audioOnly: false, audioTrackIds: [] }], audioTracks: [] } }));
     const result = await service.start([request('sample')]);
     expect(result.failed).toEqual([{ streamId: 'sample', message: 'SAMPLE-AES encrypted streams are not supported yet.' }]);
+  });
+
+  it('queues progressive files (0.3.0): the original file in its own container, fetched by Chrome first', async () => {
+    const { service, streams, store, session } = await setup({ settings: { outputFormat: 'mkv' } });
+    const file = (id: string, url: string, container: 'mp4' | 'webm', bytes?: number): DetectedStream => ({
+      ...baseStream(id, url, { title: 'Trailer', durationHint: 95 }),
+      protocol: 'progressive',
+      progressive: { container, mimeType: `video/${container}`, ...(bytes !== undefined ? { bytes } : {}) },
+      media: { variants: [{ id: 'file', audioOnly: false, audioTrackIds: [] }], audioTracks: [] },
+    });
+    streams.set('mp4', file('mp4', 'https://cdn.example.com/v/clip.mp4?sig=1', 'mp4', 52_428_800));
+    streams.set('webm', file('webm', 'https://cdn.example.com/v/loop.webm', 'webm'));
+
+    const result = await service.start([request('mp4', { variantId: 'file' }), request('webm', { variantId: 'file', fileName: 'My loop' })]);
+    expect(result.failed).toEqual([]);
+    const [mp4, webm] = await store.list();
+    expect(mp4).toMatchObject({
+      status: 'queued',
+      source: { protocol: 'progressive', manifestUrl: 'https://cdn.example.com/v/clip.mp4?sig=1', title: 'Trailer', tabId: 3, streamId: 'mp4' },
+      selection: { variantId: 'file', variantLabel: 'Single quality', audioTrackIds: [], audioTrackNames: [], durationSec: 95 },
+      // No quality in a file's name; the output format setting does not apply to a file saved as it is.
+      output: { baseName: 'Trailer', format: 'mkv' },
+      progressive: { container: 'mp4', fetch: 'browser', bytes: 52_428_800 },
+    });
+    expect(webm).toMatchObject({ output: { baseName: 'My loop' }, progressive: { container: 'webm', fetch: 'browser' } });
+    expect(webm?.progressive?.bytes).toBeUndefined();
+    // The page's Referer stays in session storage, as for streams.
+    expect(session.data.get('taskContexts')).toMatchObject({ [mp4?.id ?? '']: { referer: 'https://site.example/watch' } });
+
+    const again = await service.start([request('mp4', { variantId: 'file' })]);
+    expect(again.failed).toEqual([{ streamId: 'mp4', message: 'This video is already in the queue with the same quality and audio.' }]);
+    const wrong = await service.start([request('webm', { variantId: 'video-0' })]);
+    expect(wrong.failed[0]?.message).toMatch(/no longer offered/);
   });
 
   it('refuses each invalid request with a reason, without failing the others', async () => {

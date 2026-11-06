@@ -29,6 +29,8 @@ export interface DownloadDemoOptions {
 
 export interface DemoRequest {
   referer?: string | undefined;
+  /** The Range header (progressive files, 0.3.0). */
+  range?: string | undefined;
 }
 
 export interface DemoStream {

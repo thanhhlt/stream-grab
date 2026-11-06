@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react';
-import type { StreamingProtocol } from '@/core/models/detected-stream';
+import type { MediaProtocol, ProgressiveContainer } from '@/core/models/detected-stream';
 import type { Tone } from '../format';
 
 const TONE_CLASSES: Record<Tone, string> = {
@@ -19,16 +19,19 @@ export function Badge({ tone, children, title }: { tone: Tone; children: ReactNo
   );
 }
 
-const PROTOCOL_NAMES: Record<StreamingProtocol, string> = { hls: 'HTTP Live Streaming', dash: 'MPEG-DASH' };
+const PROTOCOL_NAMES: Record<MediaProtocol, string> = { hls: 'HTTP Live Streaming', dash: 'MPEG-DASH', progressive: 'Video file' };
+const CONTAINER_LABELS: Record<ProgressiveContainer, string> = { mp4: 'MP4', webm: 'WebM' };
 
-/** Nhãn giao thức nhỏ ("HLS", "DASH") đứng đầu dòng thông tin phụ. */
-export function ProtocolBadge({ protocol }: { protocol: StreamingProtocol }) {
+/** Nhãn giao thức nhỏ ("HLS", "DASH"; file progressive: "MP4", "WebM") đứng đầu dòng thông tin phụ. */
+export function ProtocolBadge({ protocol, container }: { protocol: MediaProtocol; container?: ProgressiveContainer | undefined }) {
+  const label = protocol === 'progressive' ? (container ? CONTAINER_LABELS[container] : 'File') : protocol.toUpperCase();
+  const title = protocol === 'progressive' && container ? `${PROTOCOL_NAMES[protocol]} (${CONTAINER_LABELS[container]})` : PROTOCOL_NAMES[protocol];
   return (
     <span
-      title={PROTOCOL_NAMES[protocol]}
+      title={title}
       className="inline-flex shrink-0 items-center rounded bg-indigo-50 px-1 text-[10px] leading-4 font-semibold tracking-wide text-indigo-700 dark:bg-indigo-500/15 dark:text-indigo-300"
     >
-      {protocol.toUpperCase()}
+      {label}
     </span>
   );
 }

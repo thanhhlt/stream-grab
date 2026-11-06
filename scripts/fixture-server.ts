@@ -16,12 +16,16 @@ import { resolve } from 'node:path';
 import { projectRoot } from '../build/paths.ts';
 import { createDownloadRouter, DEMO_MEDIA } from '../tests/fixtures/download-routes.ts';
 import { createFixtureRouter } from '../tests/fixtures/fixture-routes.ts';
+import { syntheticFiles } from '../tests/fixtures/media/synthetic-files.ts';
 import { syntheticMedia } from '../tests/fixtures/media/synthetic-media.ts';
+import { createProgressiveRouter } from '../tests/fixtures/progressive-routes.ts';
+import { sendResponse } from '../tests/fixtures/send-response.ts';
 
 const port = Number(process.env['PORT'] ?? 5180);
-console.log('Generating the download demo media with FFmpeg.wasm…');
+console.log('Generating the download demo media and the progressive files with FFmpeg.wasm…');
 const started = performance.now();
 const media = await syntheticMedia(DEMO_MEDIA);
+const files = await syntheticFiles();
 console.log(`Done in ${((performance.now() - started) / 1000).toFixed(1)} s.`);
 const route = createFixtureRouter(
   {
@@ -30,6 +34,7 @@ const route = createFixtureRouter(
     downloadPage: () => readFileSync(resolve(projectRoot, 'tests/manual/download-page.html'), 'utf8'),
   },
   createDownloadRouter(media),
+  createProgressiveRouter(files),
 );
 
 /** Successful segment downloads of the demo would flood the log; manifests and errors are shown. */
@@ -38,23 +43,21 @@ const quiet = (pathname: string, status: number): boolean =>
 
 createServer((req, res) => {
   const url = new URL(req.url ?? '/', `http://localhost:${port}`);
-  const response = route(url.pathname, { referer: req.headers.referer });
-  const send = (): void => {
-    if (res.destroyed) return; // the client gave up (e.g. a cancelled download)
-    res.writeHead(response.status, { 'content-type': response.contentType, 'cache-control': 'no-store' });
-    res.end(response.body);
-  };
-  if (response.delayMs) setTimeout(send, response.delayMs);
-  else send();
+  const response = route(url.pathname, { referer: req.headers.referer, range: req.headers.range });
+  sendResponse(res, response);
   if (quiet(url.pathname, response.status)) return;
   // Who asked and with which Referer: the page's own requests are `same-origin`; the extension's
   // fetches differ, and must carry the Referer replayed by its DNR rule.
   const site = req.headers['sec-fetch-site'] ?? '-';
   const referer = req.headers.referer ?? '-';
+  const range = req.headers.range ? ` range=${req.headers.range}` : '';
   console.log(
     `${req.method ?? 'GET'} ${url.pathname}${url.search} → ${response.status} ${response.contentType}` +
-      `  [fetch-site=${String(site)} referer=${referer}]`,
+      `  [fetch-site=${String(site)} referer=${referer}${range}]`,
   );
 }).listen(port, '127.0.0.1', () => {
-  console.log(`StreamGrab fixtures on http://localhost:${port}/ (download demo: http://localhost:${port}/download)`);
+  console.log(
+    `StreamGrab fixtures on http://localhost:${port}/ (download demo: http://localhost:${port}/download, ` +
+      `progressive MP4/WebM files: http://localhost:${port}/files)`,
+  );
 });

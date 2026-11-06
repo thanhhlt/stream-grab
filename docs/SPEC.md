@@ -214,3 +214,21 @@ reliable parallel downloading; correct merging; stable task management; clean, e
 architecture; good UX. No mock data in place of real functionality. Do not silently ignore
 unsupported formats. When a browser API limits something, explain it and implement the best
 technically valid alternative.
+
+## Addendum: version 0.3.0 (progressive MP4/WebM)
+
+The sections above are the original requirements, kept as written. Version 0.3.0 added one
+format, within the existing architecture (no rebuilt download infrastructure, no UI redesign):
+
+- Detect progressive MP4 and WebM files from supported network requests and media elements, tell
+  them apart from HLS/DASH manifests and from segments of streams, keep the page's
+  Referer/Origin, avoid duplicates, and list them in the Detected tab.
+- Download the original file without transcoding, remuxing, FFmpeg, segmentation or IndexedDB,
+  preferably with Chrome's own downloads; one file takes one simultaneous-download slot and none
+  of the segment workers; reuse the queue, task store and lifecycle, Chrome Downloads handling,
+  the Queue and Completed tabs.
+- Where `chrome.downloads` cannot carry the needed request context, use a safe Manifest V3
+  alternative and document what is not supported.
+
+How this was realised, the browser behaviour it relies on (checked in Chrome 157) and its
+limitations are described in [ARCHITECTURE.md](ARCHITECTURE.md#progressive-files-v030).

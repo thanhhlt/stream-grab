@@ -1,5 +1,6 @@
 import type { RequestContext } from '@/core/models/detected-stream';
-import type { EngineReport, EngineTaskSpec, FailureReason } from '@/core/models/download-task';
+import type { ProgressiveContainer } from '@/core/models/detected-stream';
+import type { EngineReport, EngineTaskSpec, FailureReason, SaveRequest } from '@/core/models/download-task';
 import type { TrackLayout } from '@/core/models/media-info';
 import type { MediaSegment } from '@/core/models/media-segment';
 import type { FetchFunction } from '@/core/network/manifest-fetcher';
@@ -10,7 +11,7 @@ import { stableHash } from '@/shared/utils/hash';
 import { Aes128KeyCache } from './aes';
 import { runWorkerPool } from './download-queue';
 import type { SegmentStorage } from './download-storage';
-import { ProgressTracker } from './progress';
+import { fileProgress, ProgressTracker } from './progress';
 import {
   backoffDelay,
   classifyFailure,
@@ -56,6 +57,14 @@ export interface DownloadManagerDeps {
   random?: () => number;
   /** `navigator.storage.estimate`; without it free disk space is not checked. */
   estimateStorage?: EstimateStorage;
+  /**
+   * Progressive files fetched by the engine (0.3.0): hands the file to the
+   * service worker (engine/save), which has Chrome save it. True when taken.
+   */
+  saveFile?: (request: SaveRequest) => Promise<boolean>;
+  /** URL.createObjectURL / revokeObjectURL (injectable for tests). */
+  createUrl?: (blob: Blob) => string;
+  revokeUrl?: (url: string) => void;
   /** Downloads stop while this much disk space is still free. */
   reserveBytes?: number;
   /** Free space is re-measured after this many bytes were written. */
@@ -155,10 +164,14 @@ export class DownloadManager {
   readonly #policy: RetryPolicy;
   readonly #space: SpaceGuard;
   readonly #runs = new Map<string, Run>();
+  readonly #createUrl: (blob: Blob) => string;
+  readonly #revokeUrl: (url: string) => void;
 
   constructor(deps: DownloadManagerDeps) {
     this.#deps = deps;
     this.#now = deps.now ?? Date.now;
+    this.#createUrl = deps.createUrl ?? ((blob) => URL.createObjectURL(blob));
+    this.#revokeUrl = deps.revokeUrl ?? ((url) => URL.revokeObjectURL(url));
     this.#policy = deps.retryPolicy ?? DEFAULT_RETRY_POLICY;
     this.#space = new SpaceGuard(deps.estimateStorage, {
       ...(deps.reserveBytes !== undefined ? { reserveBytes: deps.reserveBytes } : {}),
@@ -236,7 +249,7 @@ export class DownloadManager {
       finished: Promise.resolve(),
     };
     this.#runs.set(spec.taskId, run);
-    run.finished = this.#run(run).finally(() => {
+    run.finished = (spec.protocol === 'progressive' ? this.#runFile(run) : this.#run(run)).finally(() => {
       if (this.#runs.get(spec.taskId) === run) this.#runs.delete(spec.taskId);
     });
   }
@@ -464,8 +477,141 @@ export class DownloadManager {
     }
   }
 
+  /**
+   * A progressive file fetched by the engine (0.3.0, ProgressiveFetch
+   * `extension`): its server wants the page's Referer/Origin, which only the
+   * engine's requests carry (DNR leases; Chrome's own downloads get none).
+   * The body streams into Blob parts through the segment fetcher (never
+   * whole in memory; Chrome keeps large Blob data on disk, nothing goes to
+   * IndexedDB), then goes to the service worker as a blob: URL that Chrome
+   * saves like a merged video; the URL is held until the service worker
+   * drops the task. Failures are retried like a segment's (retry policy, an
+   * expired link refreshed from the newest detection), each attempt from the
+   * start of the file: no Range resume.
+   */
+  async #runFile(run: Run): Promise<void> {
+    const { spec, controller } = run;
+    const signal = controller.signal;
+    const total = spec.file?.bytes;
+    let received = 0;
+    let url: string | undefined;
+    const report = (force: boolean, done = false): void => {
+      const now = this.#now();
+      if (!force && now - run.lastReport < (this.#deps.reportIntervalMs ?? 500)) return;
+      run.lastReport = now;
+      this.#deps.report({ taskId: spec.taskId, progress: fileProgress(run.tracker.snapshot(), received, total, done) });
+    };
+    try {
+      const container = spec.file?.container;
+      const saveFile = this.#deps.saveFile;
+      if (!container || !saveFile) throw new TaskFailure('This engine cannot download single video files.');
+      await this.#checkSpace(true);
+      run.plan = [fileSegment(spec.manifestUrl, container)];
+      run.tracker.setPlan(run.plan);
+      report(true);
+      const fetcher = new SegmentFetcher({
+        fetch: this.#deps.fetchFor(spec.taskId),
+        keys: new Aes128KeyCache(() => Promise.reject(new Error('A video file has no keys'))),
+        ...(this.#deps.partSize !== undefined ? { partSize: this.#deps.partSize } : {}),
+        ...(this.#deps.stallTimeoutMs !== undefined ? { stallTimeoutMs: this.#deps.stallTimeoutMs } : {}),
+      });
+      let parts: Blob[] = [];
+      /** A full disk found while the file streams in (the fetcher would report it as a write error). */
+      let diskFull: TaskFailure | undefined;
+      for (let attempt = 1; ; attempt += 1) {
+        parts = [];
+        received = 0;
+        try {
+          const segment = run.plan[0] ?? fileSegment(spec.manifestUrl, container);
+          await fetcher.download(
+            segment,
+            async (_part, data) => {
+              parts.push(new Blob([data]));
+              this.#space.written(data.byteLength);
+              try {
+                await this.#checkSpace();
+              } catch (error) {
+                diskFull = error instanceof TaskFailure ? error : undefined;
+                throw error;
+              }
+            },
+            signal,
+            (bytes) => {
+              received += bytes;
+              run.tracker.received(bytes);
+              report(false);
+            },
+          );
+          break;
+        } catch (error) {
+          if (diskFull) throw diskFull;
+          const kind = classifyFailure(error);
+          if (kind === 'aborted' || error instanceof TaskFailure) throw error;
+          if (error instanceof StorageWriteError) throw await this.#storageFailure(error);
+          if (kind === 'expired') {
+            if (await this.#refreshFile(run, container)) {
+              attempt -= 1; // a fresh link is not a failed attempt; refreshes are capped
+              continue;
+            }
+            throw expiredLink(error);
+          }
+          if (kind === 'fatal') throw new TaskFailure(`The video file could not be downloaded: ${describeSegmentError(error)}`, { cause: error });
+          if (attempt >= this.#policy.maxAttempts) {
+            throw new TaskFailure(`The video file could not be downloaded after ${attempt} attempts: ${describeSegmentError(error)}`, { cause: error });
+          }
+          run.tracker.retried();
+          report(true);
+          const retryAfter = error instanceof SegmentHttpError ? error.retryAfterMs : undefined;
+          await sleep(backoffDelay(attempt, this.#policy, retryAfter, this.#deps.random), signal);
+        }
+      }
+      await this.#deps.releaseContexts(spec.taskId).catch(() => undefined);
+      const blob = new Blob(parts, { type: container === 'webm' ? 'video/webm' : 'video/mp4' });
+      parts = [];
+      run.tracker.segmentDone(blob.size, run.plan[0]);
+      received = blob.size;
+      report(true, true);
+      url = this.#createUrl(blob);
+      const saved = await saveFile({ taskId: spec.taskId, url, size: blob.size });
+      if (!saved) return; // cancelled meanwhile, or Chrome refused it (the service worker failed the task)
+      // Chrome reads the file from this URL while it saves it: hold it until the service worker lets go.
+      await new Promise<void>((resolve) => {
+        if (signal.aborted) resolve();
+        else signal.addEventListener('abort', () => resolve(), { once: true });
+      });
+    } catch (error) {
+      if (signal.aborted) {
+        this.#finish(run, { status: 'cancelled' });
+      } else {
+        const failure = error instanceof TaskFailure ? error : new TaskFailure(errorMessage(error), { cause: error });
+        this.#deps.report({
+          taskId: spec.taskId,
+          progress: fileProgress(run.tracker.snapshot(), received, total, false),
+          outcome: { status: 'failed', message: failure.message, ...(failure.reason !== undefined ? { reason: failure.reason } : {}) },
+        });
+      }
+    } finally {
+      if (url !== undefined) this.#revokeUrl(url);
+      await this.#deps.releaseContexts(spec.taskId).catch(() => undefined);
+    }
+  }
+
+  /** A newer link (or context) for a progressive file whose link expired; false when there is none. */
+  async #refreshFile(run: Run, container: ProgressiveContainer): Promise<boolean> {
+    if (run.refreshes >= (this.#deps.maxRefreshes ?? 2)) return false;
+    run.refreshes += 1;
+    const fresh = await this.#deps.freshSource(run.spec.taskId).catch(() => null);
+    const current = run.plan[0]?.url ?? run.spec.manifestUrl;
+    if (!fresh || (fresh.manifestUrl === current && sameContext(fresh.context, run.spec.context))) return false;
+    await this.#deps.releaseContexts(run.spec.taskId).catch(() => undefined); // rules are re-acquired with the new context
+    run.plan = [fileSegment(fresh.manifestUrl, container)];
+    run.spec = { ...run.spec, manifestUrl: fresh.manifestUrl, context: fresh.context };
+    return true;
+  }
+
   /** Manifest → chosen variant and audio tracks → ordered segment list and its layout. */
   async #plan(spec: EngineTaskSpec, manifestUrl: string, context: RequestContext, signal: AbortSignal): Promise<Planned> {
+    if (spec.protocol === 'progressive') throw new TaskFailure('Internal error: a video file has no manifest.');
     const adapter = this.#deps.protocols(spec.taskId).forProtocol(spec.protocol);
     if (!adapter) throw new TaskFailure(`${spec.protocol.toUpperCase()} is not supported.`);
     try {
@@ -577,6 +723,21 @@ export class DownloadManager {
   #finish(run: Run, outcome: NonNullable<EngineReport['outcome']>): void {
     this.#deps.report({ taskId: run.spec.taskId, progress: run.tracker.snapshot(), outcome });
   }
+}
+
+/** A whole progressive file as one "segment" of one track, so the segment fetcher downloads it. */
+function fileSegment(url: string, container: ProgressiveContainer): MediaSegment {
+  return {
+    id: 'file:0',
+    trackId: 'file',
+    trackType: 'main',
+    index: 0,
+    kind: 'media',
+    url,
+    duration: 0,
+    discontinuity: 0,
+    container: container === 'webm' ? 'webm' : 'unknown',
+  };
 }
 
 function sameContext(a: RequestContext, b: RequestContext): boolean {

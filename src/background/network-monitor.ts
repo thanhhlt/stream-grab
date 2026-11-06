@@ -6,7 +6,8 @@ import { pickRequestContext, type HeaderLike } from './request-context';
 /**
  * Observes the network with chrome.webRequest (non-blocking, as MV3 allows):
  *  - onSendHeaders captures the Referer/Origin of candidate requests,
- *  - onResponseStarted classifies responses (status, Content-Type, URL),
+ *  - onResponseStarted classifies responses (status, Content-Type, URL):
+ *    manifests, and progressive MP4/WebM files played by media elements,
  *  - onResponseStarted for main frames signals navigations.
  *
  * Requests that are not tied to a tab (tabId -1) are skipped: that includes
@@ -144,6 +145,10 @@ export class NetworkMonitor {
       timestamp: details.timeStamp,
     };
     if (verdict.kind === 'manifest') candidate.match = { protocol: verdict.protocol, evidence: verdict.evidence };
+    if (verdict.kind === 'progressive') {
+      candidate.match = { protocol: 'progressive', evidence: verdict.evidence };
+      candidate.progressive = { container: verdict.container, ...(verdict.mimeType !== undefined ? { mimeType: verdict.mimeType } : {}) };
+    }
     this.#sink.candidate(candidate);
   };
 

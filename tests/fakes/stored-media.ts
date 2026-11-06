@@ -1,6 +1,6 @@
 import type { SegmentStorage } from '@/core/download/download-storage';
 import { buildLayout } from '@/core/download/track-layout';
-import type { MediaSegment, TrackType } from '@/core/models/media-segment';
+import type { ContainerFormat, MediaSegment, TrackType } from '@/core/models/media-segment';
 import type { AudioTrack } from '@/core/models/streaming-manifest';
 import type { Rendition } from '@tests/fixtures/media/synthetic-media';
 
@@ -9,6 +9,48 @@ export interface StoredTrack {
   trackType: TrackType;
   rendition: Rendition;
   name?: string;
+}
+
+export interface StoredSegmentSpec {
+  body: Uint8Array<ArrayBuffer>;
+  /** Seconds (0 for an init segment). */
+  duration: number;
+  init?: boolean;
+  /** The manifest's discontinuity counter (EXT-X-DISCONTINUITY / Period). */
+  discontinuity?: number;
+}
+
+/**
+ * Like storeDownloadedTask, for segment lists a test lays out itself:
+ * repeated segments (timestamps that go back), discontinuity counters,
+ * initialization segments in the middle.
+ */
+export async function storeSegments(
+  storage: SegmentStorage,
+  taskId: string,
+  tracks: readonly { trackId: string; trackType: TrackType; container: ContainerFormat; segments: readonly StoredSegmentSpec[]; name?: string }[],
+): Promise<void> {
+  const segments: MediaSegment[] = [];
+  const audioTracks: AudioTrack[] = [];
+  for (const track of tracks) {
+    if (track.name !== undefined) audioTracks.push({ id: track.trackId, name: track.name, language: 'en', isDefault: true });
+    for (const [index, spec] of track.segments.entries()) {
+      segments.push({
+        id: `${track.trackId}:${index}`,
+        trackId: track.trackId,
+        trackType: track.trackType,
+        index,
+        kind: spec.init ? 'init' : 'media',
+        url: `https://cdn.example.com/${track.trackId}/${index}`,
+        duration: spec.duration,
+        discontinuity: spec.discontinuity ?? 0,
+        container: track.container,
+      });
+      await storage.put({ taskId, trackId: track.trackId, index, part: 0 }, new Blob([spec.body]));
+      await storage.completeSegment({ taskId, trackId: track.trackId, index, bytes: spec.body.length, parts: 1 });
+    }
+  }
+  await storage.savePlan({ taskId, signature: `test-${segments.length}`, segmentsTotal: segments.length, updatedAt: 1, layout: buildLayout(segments, audioTracks) });
 }
 
 /**

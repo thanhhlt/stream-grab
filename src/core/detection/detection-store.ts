@@ -4,11 +4,13 @@ import {
   DRM_SYSTEMS,
   ENCRYPTION_KINDS,
   MANIFEST_ROLES,
-  STREAMING_PROTOCOLS,
+  MEDIA_PROTOCOLS,
+  PROGRESSIVE_CONTAINERS,
   type AudioTrackSummary,
   type DetectedStream,
   type ManifestSummary,
   type MediaSummary,
+  type ProgressiveInfo,
   type RequestContext,
   type VariantSummary,
 } from '@/core/models/detected-stream';
@@ -137,6 +139,19 @@ function parseAudioTrackSummary(raw: unknown): AudioTrackSummary | null {
   return summary;
 }
 
+export function parseProgressiveInfo(raw: unknown): ProgressiveInfo | undefined {
+  if (!isRecord(raw) || !isOneOf(raw['container'], PROGRESSIVE_CONTAINERS)) return undefined;
+  const info: ProgressiveInfo = { container: raw['container'] };
+  const mimeType = optionalString(raw['mimeType']);
+  if (mimeType !== undefined && mimeType.length <= 255) info.mimeType = mimeType;
+  const bytes = finiteNumber(raw['bytes']);
+  if (bytes !== undefined && bytes > 0 && Number.isInteger(bytes)) info.bytes = bytes;
+  if (typeof raw['acceptsRanges'] === 'boolean') info.acceptsRanges = raw['acceptsRanges'];
+  const fileName = optionalString(raw['fileName']);
+  if (fileName !== undefined && fileName.length <= 255) info.fileName = fileName;
+  return info;
+}
+
 function parseMediaSummary(raw: unknown): MediaSummary | undefined {
   if (!isRecord(raw)) return undefined;
   const list = <T>(value: unknown, parse: (item: unknown) => T | null): T[] =>
@@ -164,7 +179,7 @@ export function parseDetectedStream(raw: unknown): DetectedStream | null {
     typeof id !== 'string' ||
     typeof tabId !== 'number' ||
     typeof frameId !== 'number' ||
-    !isOneOf(protocol, STREAMING_PROTOCOLS) ||
+    !isOneOf(protocol, MEDIA_PROTOCOLS) ||
     typeof url !== 'string' ||
     typeof dedupeKey !== 'string' ||
     !isOneOf(status, DETECTION_STATUSES) ||
@@ -208,6 +223,12 @@ export function parseDetectedStream(raw: unknown): DetectedStream | null {
   if (media) stream.media = media;
   if (Array.isArray(raw['childKeys'])) {
     stream.childKeys = raw['childKeys'].filter((key): key is string => typeof key === 'string');
+  }
+  if (protocol === 'progressive') {
+    // A progressive file is always listed with at least its container.
+    const progressive = parseProgressiveInfo(raw['progressive']);
+    if (!progressive) return null;
+    stream.progressive = progressive;
   }
   return stream;
 }

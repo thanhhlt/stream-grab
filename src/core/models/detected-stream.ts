@@ -1,13 +1,42 @@
+/** Protocols whose media comes in segments listed by a manifest; each has a protocol adapter. */
 export const STREAMING_PROTOCOLS = ['hls', 'dash'] as const;
 export type StreamingProtocol = (typeof STREAMING_PROTOCOLS)[number];
 
 /**
+ * Every kind of video StreamGrab lists: the streaming protocols, plus
+ * `progressive` (since 0.3.0): one plain media file (MP4, WebM) that a
+ * media element plays while it downloads and that is saved as it is.
+ */
+export const MEDIA_PROTOCOLS = [...STREAMING_PROTOCOLS, 'progressive'] as const;
+export type MediaProtocol = (typeof MEDIA_PROTOCOLS)[number];
+
+export const PROGRESSIVE_CONTAINERS = ['mp4', 'webm'] as const;
+export type ProgressiveContainer = (typeof PROGRESSIVE_CONTAINERS)[number];
+
+/** The one "quality" of a progressive file (the selection model expects a variant). */
+export const PROGRESSIVE_VARIANT_ID = 'file';
+
+/** What is known about a progressive file: from the page's request, then from inspecting the file. */
+export interface ProgressiveInfo {
+  /** Confirmed from the file's first bytes once inspected; before that, from the Content-Type or extension. */
+  container: ProgressiveContainer;
+  /** Content-Type the server declared (essence, lower case), e.g. "video/mp4" or "application/octet-stream". */
+  mimeType?: string;
+  /** File size in bytes (Content-Range total or Content-Length); absent when the server does not say. */
+  bytes?: number;
+  /** The server answered a byte-range request with 206 Partial Content. */
+  acceptsRanges?: boolean;
+  /** Name the server suggests (Content-Disposition) or the last path segment of the URL. */
+  fileName?: string;
+}
+
+/**
  * Why a stream was recognised:
- * - `content-type`: the response declared an HLS/DASH MIME type
- * - `extension`:    .m3u8 / .m3u / .mpd path
+ * - `content-type`: the response declared an HLS/DASH (or MP4/WebM) MIME type
+ * - `extension`:    .m3u8 / .m3u / .mpd path (.mp4 / .m4v / .webm for progressive files)
  * - `url-hint`:     manifest format hints elsewhere in the URL (format=m3u8-aapl, ?url=…/x.m3u8)
  * - `content`:      the body was sniffed (extensionless URL with a generic Content-Type)
- * - `dom`:          a <video>/<source> element points at a manifest
+ * - `dom`:          a <video>/<source> element points at a manifest or media file
  */
 export const DETECTION_EVIDENCE = ['content-type', 'extension', 'url-hint', 'content', 'dom'] as const;
 export type DetectionEvidence = (typeof DETECTION_EVIDENCE)[number];
@@ -98,8 +127,8 @@ export interface DetectedStream {
   tabId: number;
   /** Frame whose request loaded the manifest (0 = top frame). */
   frameId: number;
-  protocol: StreamingProtocol;
-  /** Most recently seen manifest URL (keeps the freshest signed token). */
+  protocol: MediaProtocol;
+  /** Most recently seen manifest (or progressive file) URL (keeps the freshest signed token). */
   url: string;
   /** URL without volatile query parameters (tokens, cache busters); identical manifests share it. */
   dedupeKey: string;
@@ -107,8 +136,10 @@ export interface DetectedStream {
   status: DetectionStatus;
   statusMessage?: string;
   manifest?: ManifestSummary;
-  /** Qualities, duration and audio tracks from the parsed manifest. */
+  /** Qualities, duration and audio tracks from the parsed manifest (a progressive file: its one variant). */
   media?: MediaSummary;
+  /** Progressive files only. */
+  progressive?: ProgressiveInfo;
   /** Dedupe keys of playlists referenced by an HLS master; they are not listed as separate videos. */
   childKeys?: string[];
   /** Top-level page URL when the stream was detected. */

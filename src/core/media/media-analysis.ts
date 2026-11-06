@@ -5,7 +5,9 @@ import type { ContainerFormat } from '@/core/models/media-segment';
 import type { OutputFormat } from '@/shared/settings/settings';
 import { chooseContainer } from './containers';
 import type { FfmpegRunner } from './ffmpeg-job';
+import { trackRuns } from './merge-plan';
 import { parseProbeOutput, probeError, probeJob } from './probe';
+import { prepareTrack } from './track-data';
 
 /** A media job failed for a reason the user can act on. */
 export class MediaFailure extends Error {
@@ -109,9 +111,17 @@ export async function analyseTask(taskId: string, options: AnalyseOptions): Prom
       });
     }
     const name = `track-${position + 1}${EXTENSIONS[track.container]}`;
+    // What FFmpeg reads, as for the merge: disguising picture headers dropped (track-data.ts), and a track joined
+    // from several runs probed by its first run (a run is one valid stream; the whole track may hold further
+    // initialization segments FFmpeg cannot read past).
+    const { bySegment } = await prepareTrack(track, parts, signal);
+    const runs = trackRuns(track);
+    const firstRun = runs.length > 1 ? runs[0] : undefined;
+    const positions = firstRun ?? Array.from({ length: track.segments }, (_, index) => index);
+    const probed = new Blob(positions.flatMap((index) => bySegment.get(index) ?? []));
     // The first command loads FFmpeg (fetching and compiling its WebAssembly).
     options.progress(loaded ? { stage: 'analysing', ...step, percent: done } : { stage: 'loading', step: 1, steps: 1, percent: done });
-    const result = await options.ffmpeg.run(probeJob(name, data), {
+    const result = await options.ffmpeg.run(probeJob(name, probed), {
       signal,
       timeoutMs: options.timeoutMs ?? 120_000,
       onStarted: () => {
@@ -140,7 +150,9 @@ export async function analyseTask(taskId: string, options: AnalyseOptions): Prom
       streams: probe.streams,
     };
     if (track.name !== undefined) analysis.name = track.name;
-    if (probe.durationSec !== undefined) analysis.durationSec = probe.durationSec;
+    // The probe saw the first run only: the manifest knows the whole track's length.
+    if (firstRun && track.durationSec > 0) analysis.durationSec = track.durationSec;
+    else if (probe.durationSec !== undefined) analysis.durationSec = probe.durationSec;
     if (probe.startSec !== undefined) analysis.startSec = probe.startSec;
     tracks.push(analysis);
   }

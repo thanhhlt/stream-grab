@@ -1,5 +1,5 @@
-import type { StreamingProtocol } from '@/core/models/detected-stream';
-import { isRecord } from '@/shared/utils/guards';
+import { PROGRESSIVE_CONTAINERS, type MediaProtocol, type ProgressiveContainer } from '@/core/models/detected-stream';
+import { isOneOf, isRecord } from '@/shared/utils/guards';
 import { parseHttpUrl } from '@/shared/utils/url';
 
 /**
@@ -27,10 +27,12 @@ export interface FrameMetadata {
   videos: VideoElementInfo[];
 }
 
-/** A manifest URL referenced directly by a <video> or <source> element. */
+/** A manifest or progressive file (MP4/WebM) URL referenced directly by a <video> or <source> element. */
 export interface DomSource {
   url: string;
-  protocol: StreamingProtocol;
+  protocol: MediaProtocol;
+  /** Progressive files: the container their type attribute or extension names. */
+  container?: ProgressiveContainer;
   /** Title of the referencing <video> element: an exact association, unlike frame-level titles. */
   title?: string;
 }
@@ -94,11 +96,15 @@ export function parseDomSources(raw: unknown): DomSource[] {
   const sources: DomSource[] = [];
   for (const item of raw['sources'].slice(0, METADATA_LIMITS.maxSources)) {
     if (!isRecord(item)) continue;
-    const { url, protocol } = item;
+    const { url, protocol, container } = item;
     if (typeof url !== 'string' || url.length > METADATA_LIMITS.maxUrlLength || !parseHttpUrl(url)) continue;
-    if (protocol !== 'hls' && protocol !== 'dash') continue;
+    let source: DomSource;
+    if (protocol === 'hls' || protocol === 'dash') source = { url, protocol };
+    else if (protocol === 'progressive' && isOneOf(container, PROGRESSIVE_CONTAINERS)) source = { url, protocol, container };
+    else continue;
     const title = cleanText(item['title']);
-    sources.push(title === undefined ? { url, protocol } : { url, protocol, title });
+    if (title !== undefined) source.title = title;
+    sources.push(source);
   }
   return sources;
 }

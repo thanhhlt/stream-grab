@@ -1,5 +1,5 @@
 import { containerExtension } from '@/core/media/containers';
-import type { DetectedStream, RequestContext } from '@/core/models/detected-stream';
+import { isEmptyRequestContext, type DetectedStream, type RequestContext } from '@/core/models/detected-stream';
 import {
   CANCELLABLE_TASK_STATUSES,
   RETRYABLE_TASK_STATUSES,
@@ -9,6 +9,7 @@ import {
   type EngineWork,
   type MediaReport,
   type MediaTaskSpec,
+  type ProgressiveTaskInfo,
   type SaveRequest,
   type TaskProgress,
   type TaskStatus,
@@ -18,7 +19,7 @@ import { errorMessage } from '@/shared/utils/errors';
 import type { Logger } from '@/shared/utils/logger';
 import { dedupeKey } from '@/shared/utils/url';
 import type { SegmentStorage } from './download-storage';
-import { percentOf } from './progress';
+import { fileProgress, percentOf, ProgressTracker } from './progress';
 import type { TaskStore } from './task-store';
 
 /** How the service worker reaches the engine in the offscreen document. */
@@ -43,6 +44,13 @@ export interface SaveState {
   bytes: number;
   /** chrome.downloads.InterruptReason when interrupted. */
   error?: string;
+  /** Progressive files (0.3.0): bytes received so far, and the size when the server announced it. */
+  received?: number;
+  total?: number;
+  /** Chrome can continue the interrupted download where it stopped. */
+  canResume?: boolean;
+  /** MIME type of the response. */
+  mime?: string;
 }
 
 /** chrome.downloads, as the coordinator uses it. */
@@ -50,7 +58,12 @@ export interface FileSaver {
   /** Starts saving `url` as `fileName` in the Downloads folder (renamed if taken); resolves to the download ID. */
   save(options: { url: string; fileName: string }): Promise<number>;
   find(downloadId: number): Promise<SaveState | undefined>;
+  /** Stops a download; Chrome deletes its partial file. */
   cancel(downloadId: number): Promise<void>;
+  /** Continues an interrupted download Chrome can resume (progressive files). */
+  resume?(downloadId: number): Promise<void>;
+  /** Deletes a completed download's file (a web page saved instead of a video). */
+  removeFile?(downloadId: number): Promise<void>;
 }
 
 /** Desktop notifications at the end of a task. */
@@ -75,6 +88,8 @@ export interface CoordinatorDeps {
   notifier?: Notifier;
   now?: () => number;
   newLeaseId?: () => string;
+  /** Timer of the progress poll of progressive downloads (setTimeout; injectable for tests). */
+  schedule?: (callback: () => void, delayMs: number) => void;
   logger?: Logger;
 }
 
@@ -117,6 +132,73 @@ export const CONTEXT_LOST_MESSAGE =
 /** Tasks whose stored segments are still needed; data of any other task (or of none) is an orphan. */
 const KEEPS_DATA: readonly TaskStatus[] = ['queued', 'downloading', 'downloaded', 'processing', 'failed'];
 
+/** How often the progress of progressive files Chrome downloads is read (chrome.downloads reports no progress events). */
+export const FILE_POLL_MS = 1000;
+
+/** Chrome's interrupt reasons for a server that refused the request: 401, 403, 404 (checked in Chrome 157). */
+const REFUSALS = new Set(['SERVER_UNAUTHORIZED', 'SERVER_FORBIDDEN', 'SERVER_BAD_CONTENT']);
+/** Interruptions Chrome may continue after a restart (the browser closed, the connection dropped). */
+const RESUMABLE_ON_STARTUP = new Set(['USER_SHUTDOWN', 'CRASH', 'NETWORK_FAILED', 'NETWORK_TIMEOUT', 'NETWORK_DISCONNECTED', 'NETWORK_SERVER_DOWN']);
+
+export const FILE_REMOVED_MESSAGE = "The download was removed from Chrome's downloads. Press Retry to download the video again.";
+
+/** Why Chrome's download of a progressive file stopped (chrome.downloads.InterruptReason), for the Queue tab. */
+export function fileFailureMessage(reason: string | undefined, canResume: boolean): string {
+  const again = canResume ? 'Press Retry: Chrome continues where it stopped.' : 'Press Retry to download it again.';
+  switch (reason ?? '') {
+    case 'NETWORK_FAILED':
+    case 'NETWORK_TIMEOUT':
+    case 'NETWORK_DISCONNECTED':
+    case 'NETWORK_SERVER_DOWN':
+      return `The connection to the server was lost (${reason}). ${again}`;
+    case 'SERVER_FAILED':
+      return `The server could not send the file (${reason}). ${again}`;
+    case 'SERVER_NO_RANGE':
+    case 'SERVER_CONTENT_LENGTH_MISMATCH':
+      return `The server could not continue the download (${reason}). Press Retry to download it again.`;
+    case 'FILE_NO_SPACE':
+      return `Not enough disk space to save the file. Free up space, then press Retry.`;
+    case 'FILE_TOO_LARGE':
+      return 'The file is too large for the Downloads drive (FAT32 drives hold at most 4 GB per file).';
+    case 'FILE_NAME_TOO_LONG':
+      return 'The file name is too long for the Downloads folder.';
+    case 'FILE_ACCESS_DENIED':
+      return 'Chrome may not write to the Downloads folder.';
+    case 'FILE_BLOCKED':
+    case 'FILE_SECURITY_CHECK_FAILED':
+    case 'FILE_VIRUS_INFECTED':
+      return `Chrome or the system blocked the file (${reason}).`;
+    case 'USER_CANCELED':
+      // Also what Chrome does to running downloads when it is quit normally (checked in Chrome 157).
+      return `The download was cancelled in Chrome: in its downloads list, or because Chrome was closed during the download. ${again}`;
+    case 'USER_SHUTDOWN':
+    case 'CRASH':
+      return `Chrome closed during the download. ${again}`;
+    default:
+      return `Chrome could not download the file${reason ? ` (${reason})` : ''}. ${again}`;
+  }
+}
+
+/** A refusal the browser's download got; the label says what the server did. */
+function refusalLabel(state: SaveState): string {
+  switch (state.error ?? '') {
+    case 'SERVER_UNAUTHORIZED':
+      return 'HTTP 401';
+    case 'SERVER_FORBIDDEN':
+      return 'HTTP 403';
+    case 'SERVER_BAD_CONTENT':
+      return 'HTTP 404';
+    default:
+      return 'it sent a web page instead of the video';
+  }
+}
+
+/** Progressive files Chrome downloads itself (0.3.0): a download slot, no engine. */
+const fetchedByBrowser = (task: DownloadTask): boolean => task.progressive?.fetch === 'browser';
+
+/** The response is a page or a JSON error, not the video. */
+const isDocument = (state: SaveState): boolean => /^(text\/|application\/(json|xml|xhtml))/i.test(state.mime ?? '');
+
 function withoutRunData(task: DownloadTask): DownloadTask {
   const { statusMessage: _message, progress: _progress, processing: _processing, media: _media, dismissed: _dismissed, ...rest } = task;
   const { downloadId: _downloadId, saved: _saved, ...output } = task.output;
@@ -124,6 +206,15 @@ function withoutRunData(task: DownloadTask): DownloadTask {
 }
 
 const awaitsProcessing = (task: DownloadTask): boolean => task.status === 'downloaded';
+
+function withoutResume(info: ProgressiveTaskInfo): ProgressiveTaskInfo {
+  const { resumeId: _resumeId, ...rest } = info;
+  return rest;
+}
+
+function emptyProgress(now: number): TaskProgress {
+  return { segmentsTotal: 1, segmentsDone: 0, bytes: 0, bytesPerSecond: 0, percent: 0, retries: 0, startedAt: now };
+}
 
 /**
  * Service-worker side of downloading. Owns task state; the engine (offscreen
@@ -153,12 +244,21 @@ export class DownloadCoordinator {
   readonly #now: () => number;
   readonly #newLeaseId: () => string;
   readonly #leases = new Map<string, ReleaseContext>();
+  readonly #schedule: (callback: () => void, delayMs: number) => void;
+  /** Speed of each progressive file Chrome downloads, from the bytes it reports (memory only; rebuilt after a restart). */
+  readonly #fileSpeeds = new Map<string, { tracker: ProgressTracker; received: number }>();
+  #pollScheduled = false;
   #chain: Promise<unknown> = Promise.resolve();
 
   constructor(deps: CoordinatorDeps) {
     this.#deps = deps;
     this.#now = deps.now ?? Date.now;
     this.#newLeaseId = deps.newLeaseId ?? (() => crypto.randomUUID());
+    this.#schedule =
+      deps.schedule ??
+      ((callback, delayMs) => {
+        setTimeout(callback, delayMs);
+      });
   }
 
   /**
@@ -172,7 +272,11 @@ export class DownloadCoordinator {
   async onStartup(): Promise<void> {
     // Saves Chrome finished while this worker was not running.
     for (const task of await this.#deps.store.list()) {
-      if (task.status === 'processing' && task.output.downloadId !== undefined) await this.#settleSave(task.output.downloadId);
+      const downloadId = task.output.downloadId;
+      if (downloadId === undefined) continue;
+      if (task.status === 'processing') await this.#settleSave(downloadId);
+      // Progressive files Chrome downloads: finished, interrupted (the browser closed) or still running.
+      else if (task.status === 'downloading' && task.progressive) await this.#recoverFile(task, downloadId);
     }
     if (await this.#deps.engine.exists()) await this.#deps.engine.reacquireContexts().catch(() => undefined);
     else await this.#serial(() => this.#markInterrupted());
@@ -203,8 +307,16 @@ export class DownloadCoordinator {
         );
       }
       const active = [...running, ...toStart];
+      // Progressive files Chrome downloads itself take a download slot, not the engine (0.3.0).
+      const browserFiles = active.filter(fetchedByBrowser);
+      let failedToStart = false;
+      for (const task of browserFiles) failedToStart = !(await this.#startBrowserFile(task)) || failedToStart;
+      if (browserFiles.length > 0) this.#watchFiles();
+      // A slot freed by a file Chrome refused to start: the next queued task may take it (after this pump).
+      if (failedToStart) void this.pump();
+      const engineTasks = active.filter((task) => !fetchedByBrowser(task));
       const processing = await this.#startProcessing(tasks);
-      if (active.length === 0 && processing.length === 0) {
+      if (engineTasks.length === 0 && processing.length === 0) {
         if (await this.#deps.engine.exists()) {
           // Answers once stopped tasks have cleaned up, so closing does not cut that short.
           await this.#deps.engine.sync({ downloads: [], media: [] });
@@ -220,7 +332,7 @@ export class DownloadCoordinator {
       }
       await this.#deps.engine.ensure();
       const downloads: EngineTaskSpec[] = [];
-      for (const task of active) downloads.push(await this.#spec(task, settings));
+      for (const task of engineTasks) downloads.push(await this.#spec(task, settings));
       const media = processing.map((task): MediaTaskSpec => ({ taskId: task.id, job: 'process', format: task.output.format, title: task.source.title }));
       await this.#deps.engine.sync({ downloads, media });
     });
@@ -314,36 +426,41 @@ export class DownloadCoordinator {
    */
   async startSave(request: SaveRequest): Promise<boolean> {
     const task = (await this.#deps.store.list()).find((candidate) => candidate.id === request.taskId);
-    if (task?.status !== 'processing') return false;
+    // A merged video, or a progressive file the engine fetched (0.3.0): it keeps its own container and stays `downloading`.
+    const file = task?.status === 'downloading' && task.progressive?.fetch === 'extension' ? task.progressive : undefined;
+    const { container, media } = request;
+    if (!task || (!file && (task.status !== 'processing' || !container || !media))) return false;
+    const wanted: TaskStatus = file ? 'downloading' : 'processing';
     const files = this.#deps.files;
     // An earlier attempt (an engine that restarted while saving) is abandoned.
     if (files && task.output.downloadId !== undefined) await files.cancel(task.output.downloadId).catch(() => undefined);
-    const fileName = `${task.output.baseName}${containerExtension(request.container)}`;
+    const fileName = `${task.output.baseName}${file ? `.${file.container}` : containerExtension(container ?? 'mp4')}`;
     let downloadId: number;
     try {
       if (!files) throw new Error('downloads are not available');
       downloadId = await files.save({ url: request.url, fileName });
     } catch (error) {
       const failed = await this.#deps.store.update(task.id, (current) => {
-        if (current.status !== 'processing') return current;
+        if (current.status !== wanted) return current;
         const { processing: _processing, ...rest } = current;
-        return { ...rest, status: 'failed', statusMessage: `Chrome could not save the file: ${errorMessage(error)}. ${KEPT}`, updatedAt: this.#now() };
+        const kept = file ? 'Press Retry to download it again.' : KEPT;
+        return { ...rest, status: 'failed', statusMessage: `Chrome could not save the file: ${errorMessage(error)}. ${kept}`, updatedAt: this.#now() };
       });
       if (failed?.status === 'failed') this.#deps.notifier?.failed(failed);
       return false;
     }
-    const saving = await this.#deps.store.update(task.id, (current) =>
-      current.status === 'processing'
-        ? {
-            ...current,
-            media: request.media,
-            output: { ...current.output, downloadId },
-            processing: { stage: 'saving', step: 1, steps: 1, percent: 97, startedAt: current.processing?.startedAt ?? this.#now() },
-            updatedAt: this.#now(),
-          }
-        : current,
-    );
-    if (saving?.status !== 'processing') {
+    const saving = await this.#deps.store.update(task.id, (current) => {
+      if (current.status !== wanted) return current;
+      if (file) return { ...current, output: { ...current.output, downloadId }, updatedAt: this.#now() };
+      return {
+        ...current,
+        ...(media ? { media } : {}),
+        output: { ...current.output, downloadId },
+        processing: { stage: 'saving', step: 1, steps: 1, percent: 97, startedAt: current.processing?.startedAt ?? this.#now() },
+        updatedAt: this.#now(),
+      };
+    });
+    if (saving?.status !== wanted) {
       // Cancelled while Chrome started: stop it again.
       await files.cancel(downloadId).catch(() => undefined);
       return false;
@@ -377,8 +494,16 @@ export class DownloadCoordinator {
   async #settleSave(downloadId: number): Promise<void> {
     const state = await this.#deps.files?.find(downloadId).catch(() => undefined);
     if (!state || state.state === 'in_progress') return;
-    const task = (await this.#deps.store.list()).find((candidate) => candidate.status === 'processing' && candidate.output.downloadId === downloadId);
+    const task = (await this.#deps.store.list()).find(
+      (candidate) =>
+        candidate.output.downloadId === downloadId &&
+        (candidate.status === 'processing' || (candidate.status === 'downloading' && candidate.progressive !== undefined)),
+    );
     if (!task) return;
+    if (task.progressive) {
+      await this.#settleFile(task, downloadId, state);
+      return;
+    }
     let settled: DownloadTask | undefined;
     await this.#deps.store.update(task.id, (current) => {
       if (current.status !== 'processing' || current.output.downloadId !== downloadId) return current;
@@ -407,14 +532,21 @@ export class DownloadCoordinator {
     const targets = tasks.filter((task) => taskIds.includes(task.id) && CANCELLABLE_TASK_STATUSES.includes(task.status));
     for (const task of targets) {
       // Cancelling deletes the data, so no progress is left to show.
-      await this.#deps.store.update(task.id, (current) => ({ ...withoutRunData(current), status: 'cancelled', updatedAt: this.#now() }));
+      await this.#deps.store.update(task.id, (current) => {
+        const cancelled: DownloadTask = { ...withoutRunData(current), status: 'cancelled', updatedAt: this.#now() };
+        if (current.progressive) cancelled.progressive = withoutResume(current.progressive);
+        return cancelled;
+      });
+      this.#fileSpeeds.delete(task.id);
     }
-    const inEngine = (task: DownloadTask): boolean => task.status === 'downloading' || task.status === 'processing';
-    // A file Chrome is saving: stop that too (it removes the partial file).
+    const inEngine = (task: DownloadTask): boolean => (task.status === 'downloading' && !fetchedByBrowser(task)) || task.status === 'processing';
+    // A file Chrome is saving or downloading (progressive files): stop that too (it removes the partial file),
+    // and the partial file of an interrupted download that was waiting for Retry.
     for (const task of targets) {
-      if (task.status === 'processing' && task.output.downloadId !== undefined) {
+      if ((task.status === 'processing' || task.status === 'downloading') && task.output.downloadId !== undefined) {
         await this.#deps.files?.cancel(task.output.downloadId).catch(() => undefined);
       }
+      if (task.progressive?.resumeId !== undefined) await this.#deps.files?.cancel(task.progressive.resumeId).catch(() => undefined);
     }
     const running = targets.filter(inEngine).map((task) => task.id);
     if (running.length > 0 && (await this.#deps.engine.exists())) await this.#deps.engine.cancel(running);
@@ -439,6 +571,19 @@ export class DownloadCoordinator {
     }
     if (targets.length > 0) await this.pump();
     return targets.length;
+  }
+
+  /**
+   * Tasks are about to be removed: the partial file Chrome keeps for an
+   * interrupted progressive download goes with them (a saved file never does).
+   */
+  async beforeRemove(taskIds: readonly string[]): Promise<void> {
+    for (const task of await this.#deps.store.list()) {
+      const resumeId = task.progressive?.resumeId;
+      if (taskIds.includes(task.id) && resumeId !== undefined && task.status !== 'downloading') {
+        await this.#deps.files?.cancel(resumeId).catch(() => undefined);
+      }
+    }
   }
 
   /** Tasks were removed from the store: drop their stored segments. */
@@ -497,6 +642,220 @@ export class DownloadCoordinator {
     return stream ? this.#adopt(task.id, stream) : null;
   }
 
+  // ------------------------------------------------------- progressive files (0.3.0)
+
+  /**
+   * Has Chrome download a progressive file (in pump): the freshest link the
+   * page uses (a current detection of the video), saved under the task's
+   * name with the file's own extension. An interrupted earlier download that
+   * Chrome can resume continues instead (Retry). Chrome sends the site's
+   * cookies with it, no Referer/Origin. False when Chrome refused to start
+   * (the task failed and its slot is free).
+   */
+  async #startBrowserFile(snapshot: DownloadTask): Promise<boolean> {
+    const files = this.#deps.files;
+    const task = (await this.#deps.store.list()).find((candidate) => candidate.id === snapshot.id);
+    if (task?.status !== 'downloading' || !task.progressive || task.output.downloadId !== undefined) return true;
+    try {
+      if (!files) throw new Error('downloads are not available');
+      const resumeId = task.progressive.resumeId;
+      if (resumeId !== undefined) {
+        const previous = await files.find(resumeId).catch(() => undefined);
+        if (previous?.state === 'interrupted' && previous.canResume && files.resume) {
+          const resumed = await files.resume(resumeId).then(
+            () => true,
+            () => false,
+          );
+          if (resumed) return await this.#fileStarted(task.id, resumeId);
+        }
+        // Not resumable (any more): its partial file goes, the download starts over.
+        if (previous && previous.state !== 'complete') await files.cancel(resumeId).catch(() => undefined);
+      }
+      let url = task.source.manifestUrl;
+      const stream = await this.#currentStream(task);
+      if (stream?.protocol === 'progressive') ({ manifestUrl: url } = await this.#adopt(task.id, stream));
+      const downloadId = await files.save({ url, fileName: `${task.output.baseName}.${task.progressive.container}` });
+      return await this.#fileStarted(task.id, downloadId);
+    } catch (error) {
+      const failed = await this.#deps.store.update(task.id, (current) => {
+        if (current.status !== 'downloading') return current;
+        const progressive = current.progressive ? withoutResume(current.progressive) : undefined;
+        return {
+          ...current,
+          ...(progressive ? { progressive } : {}),
+          status: 'failed',
+          statusMessage: `Chrome could not start the download: ${errorMessage(error)}. Press Retry to try again.`,
+          updatedAt: this.#now(),
+        };
+      });
+      if (failed?.status === 'failed') this.#deps.notifier?.failed(failed);
+      return false;
+    }
+  }
+
+  /** Records Chrome's download of a task (a task cancelled meanwhile stops it again). */
+  async #fileStarted(taskId: string, downloadId: number): Promise<boolean> {
+    this.#fileSpeeds.delete(taskId);
+    const started = await this.#deps.store.update(taskId, (current) => {
+      if (current.status !== 'downloading' || !current.progressive) return current;
+      return { ...current, progressive: withoutResume(current.progressive), output: { ...current.output, downloadId }, updatedAt: this.#now() };
+    });
+    if (started?.output.downloadId !== downloadId) await this.#deps.files?.cancel(downloadId).catch(() => undefined);
+    return true;
+  }
+
+  /** Reads the progress of Chrome's progressive downloads about once a second while there are any. */
+  #watchFiles(): void {
+    if (this.#pollScheduled) return;
+    this.#pollScheduled = true;
+    this.#schedule(() => {
+      this.#pollScheduled = false;
+      this.#pollFiles().catch((error: unknown) => {
+        this.#deps.logger?.warn('Could not read the progress of a download', { error: errorMessage(error) });
+      });
+    }, FILE_POLL_MS);
+  }
+
+  async #pollFiles(): Promise<void> {
+    const watched = (await this.#deps.store.list()).filter((task) => task.status === 'downloading' && fetchedByBrowser(task));
+    for (const task of watched) {
+      const downloadId = task.output.downloadId;
+      if (downloadId === undefined) continue;
+      const state = await this.#deps.files?.find(downloadId).catch(() => undefined);
+      if (!state) await this.#fileGone(task.id, downloadId);
+      else if (state.state !== 'in_progress') await this.#settleSave(downloadId);
+      // Stop at once what is not the video: a page, or (with a context to replay) a response of another size.
+      else if (await this.#refusesContent(task, state)) await this.#refused(task, downloadId, state);
+      else await this.#reportFile(task.id, downloadId, state);
+    }
+    if (watched.length > 0) this.#watchFiles();
+  }
+
+  async #reportFile(taskId: string, downloadId: number, state: SaveState): Promise<void> {
+    const received = state.received ?? 0;
+    let speed = this.#fileSpeeds.get(taskId);
+    if (!speed) {
+      // Bytes received before this worker started watching (a restart) are not speed.
+      speed = { tracker: new ProgressTracker(1, this.#now), received };
+      this.#fileSpeeds.set(taskId, speed);
+    }
+    speed.tracker.received(received - speed.received);
+    speed.received = received;
+    const progress = fileProgress(speed.tracker.snapshot(), received, state.total, false);
+    await this.#deps.store.update(taskId, (current) =>
+      current.status === 'downloading' && current.output.downloadId === downloadId ? { ...current, progress, updatedAt: this.#now() } : current,
+    );
+  }
+
+  /** A web page instead of the video, or (when the page's context could make a difference) a response of another size. */
+  async #refusesContent(task: DownloadTask, state: SaveState): Promise<boolean> {
+    if (task.progressive?.fetch !== 'browser') return false;
+    if (isDocument(state)) return true;
+    const expected = task.progressive.bytes;
+    if (expected === undefined || state.total === undefined || state.total <= 0 || state.total === expected) return false;
+    const context = await this.#deps.store.findContext(task.id);
+    return context !== undefined && !isEmptyRequestContext(context);
+  }
+
+  /** Chrome finished or gave up a progressive file: completed, refused (another route or a failure), or failed. */
+  async #settleFile(task: DownloadTask, downloadId: number, state: SaveState): Promise<void> {
+    const refused = (state.state === 'interrupted' && REFUSALS.has(state.error ?? '')) || (await this.#refusesContent(task, state));
+    if (refused && task.progressive?.fetch === 'browser') {
+      await this.#refused(task, downloadId, state);
+      return;
+    }
+    let settled: DownloadTask | undefined;
+    await this.#deps.store.update(task.id, (current) => {
+      if (current.status !== 'downloading' || current.output.downloadId !== downloadId || !current.progressive) return current;
+      const { statusMessage: _message, ...rest } = current;
+      const now = this.#now();
+      if (state.state === 'complete') {
+        const bytes = state.bytes;
+        const progress = fileProgress(current.progress ?? fileProgress(emptyProgress(now), 0, undefined, false), bytes, bytes, true);
+        settled = { ...rest, status: 'completed', progress, updatedAt: now, output: { ...current.output, saved: { path: state.path, bytes, savedAt: now } } };
+      } else {
+        // Chrome keeps the partial file of a download it can resume: Retry continues it.
+        const resumable = current.progressive.fetch === 'browser' && state.canResume === true;
+        const { downloadId: _id, ...output } = current.output;
+        const progressive = resumable ? { ...current.progressive, resumeId: downloadId } : withoutResume(current.progressive);
+        settled = { ...rest, output, progressive, status: 'failed', statusMessage: fileFailureMessage(state.error, resumable), updatedAt: now };
+      }
+      return settled;
+    });
+    if (!settled) return;
+    this.#fileSpeeds.delete(task.id);
+    if (settled.status === 'completed') this.#deps.notifier?.completed(settled);
+    else this.#deps.notifier?.failed(settled);
+    // Not awaited: startSave may be on the stack (engine-fetched files), with the engine waiting for its answer.
+    void this.pump();
+  }
+
+  /**
+   * The server refused Chrome's own download of a progressive file (401, 403,
+   * 404, a web page instead of the video). Chrome's downloads cannot carry
+   * the page's Referer/Origin: when the task has them, the engine fetches the
+   * file with them instead (ProgressiveFetch `extension`). Otherwise the link
+   * expired or needs the page again.
+   */
+  async #refused(task: DownloadTask, downloadId: number, state: SaveState): Promise<void> {
+    const files = this.#deps.files;
+    if (state.state === 'complete') await files?.removeFile?.(downloadId).catch(() => undefined);
+    else if (state.state === 'in_progress') await files?.cancel(downloadId).catch(() => undefined);
+    this.#fileSpeeds.delete(task.id);
+    const context = await this.#deps.store.findContext(task.id);
+    const withContext = context !== undefined && !isEmptyRequestContext(context);
+    let failed: DownloadTask | undefined;
+    await this.#deps.store.update(task.id, (current) => {
+      if (current.status !== 'downloading' || current.output.downloadId !== downloadId || !current.progressive) return current;
+      const { downloadId: _id, ...output } = current.output;
+      const { progress: _progress, statusMessage: _message, ...rest } = current;
+      if (withContext && current.progressive.fetch === 'browser') {
+        return { ...rest, output, progressive: { ...withoutResume(current.progressive), fetch: 'extension' }, updatedAt: this.#now() };
+      }
+      const message =
+        context === undefined
+          ? CONTEXT_LOST_MESSAGE
+          : `The server refused the download (${refusalLabel(state)}). The link may have expired, or the site may want the video's page: play the video again on its page, then press Retry.`;
+      failed = { ...rest, output, progressive: withoutResume(current.progressive), status: 'failed', statusMessage: message, updatedAt: this.#now() };
+      return failed;
+    });
+    if (failed) this.#deps.notifier?.failed(failed);
+    void this.pump();
+  }
+
+  /** The download vanished from Chrome's list while running (the user removed it there). */
+  async #fileGone(taskId: string, downloadId: number): Promise<void> {
+    this.#fileSpeeds.delete(taskId);
+    const failed = await this.#deps.store.update(taskId, (current) => {
+      if (current.status !== 'downloading' || current.output.downloadId !== downloadId || !current.progressive) return current;
+      const { downloadId: _id, ...output } = current.output;
+      return { ...current, output, progressive: withoutResume(current.progressive), status: 'failed', statusMessage: FILE_REMOVED_MESSAGE, updatedAt: this.#now() };
+    });
+    if (failed?.status === 'failed') this.#deps.notifier?.failed(failed);
+    void this.pump();
+  }
+
+  /**
+   * Service-worker start: a progressive download Chrome finished or gave up
+   * meanwhile is settled; one the browser interrupted by closing (or a lost
+   * connection) is resumed once if Chrome can; a running one is left to the
+   * progress poll. Chrome decides whether a resume works (the server must
+   * support ranges and still accept the link).
+   */
+  async #recoverFile(task: DownloadTask, downloadId: number): Promise<void> {
+    const files = this.#deps.files;
+    const state = await files?.find(downloadId).catch(() => undefined);
+    if (!state) {
+      if (fetchedByBrowser(task)) await this.#fileGone(task.id, downloadId);
+      return;
+    }
+    if (state.state === 'in_progress') return;
+    const resumable =
+      state.state === 'interrupted' && fetchedByBrowser(task) && state.canResume === true && RESUMABLE_ON_STARTUP.has(state.error ?? '');
+    if (resumable && files?.resume && (await files.resume(downloadId).then(() => true, () => false))) return;
+    await this.#settleFile(task, downloadId, state);
+  }
+
   async #spec(task: DownloadTask, settings: Settings): Promise<EngineTaskSpec> {
     let manifestUrl = task.source.manifestUrl;
     let context = await this.#deps.store.findContext(task.id);
@@ -509,7 +868,7 @@ export class DownloadCoordinator {
     const variant: EngineTaskSpec['variant'] = { id: task.selection.variantId };
     if (task.selection.height !== undefined) variant.height = task.selection.height;
     if (task.selection.bandwidth !== undefined) variant.bandwidth = task.selection.bandwidth;
-    return {
+    const spec: EngineTaskSpec = {
       taskId: task.id,
       protocol: task.source.protocol,
       manifestUrl,
@@ -518,6 +877,10 @@ export class DownloadCoordinator {
       audioTrackIds: task.selection.audioTrackIds,
       concurrency: settings.segmentConcurrency,
     };
+    // A progressive file the engine fetches with the page's Referer/Origin (0.3.0).
+    const file = task.progressive;
+    if (file) spec.file = { container: file.container, ...(file.bytes !== undefined ? { bytes: file.bytes } : {}) };
+    return spec;
   }
 
   /** The detected stream of the task's video: in its own tab first, else the most recently seen in any tab. */
@@ -549,7 +912,8 @@ export class DownloadCoordinator {
         return { ...rest, status: 'downloaded', statusMessage: DOWNLOADED_MESSAGE, updatedAt: this.#now() };
       });
     }
-    const interrupted = tasks.filter((task) => task.status === 'downloading');
+    // Progressive files Chrome downloads were not in the engine: Chrome keeps (or resumes) them (onStartup).
+    const interrupted = tasks.filter((task) => task.status === 'downloading' && !fetchedByBrowser(task));
     for (const task of interrupted) {
       const stored = await this.#storedProgress(task.id);
       await this.#deps.store.update(task.id, (current) => {
