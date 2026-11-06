@@ -20,7 +20,7 @@ export interface Settings {
   /** Variant picked by default when a stream offers several resolutions. */
   preferredResolution: ResolutionPreference;
   outputFormat: OutputFormat;
-  /** Observe network traffic for HLS/DASH manifests. */
+  /** Observe network traffic for supported media streams (every registered protocol). */
   autoDetect: boolean;
   /** Drop finished tasks from the queue view automatically (they stay in Completed). */
   autoRemoveCompleted: boolean;

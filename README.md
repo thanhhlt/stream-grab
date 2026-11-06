@@ -1,7 +1,8 @@
 # StreamGrab
 
-Chrome (Manifest V3) extension that detects, downloads and merges HLS and MPEG-DASH streams
-entirely in the browser. No server, no native helper.
+Browser extension (Chrome, Manifest V3) that detects, downloads and merges online media streams
+entirely in the browser. No server, no native helper. It is built to support several streaming
+formats and protocols; see [Supported formats](#supported-formats) for what works today.
 
 Current version: **0.1.0** — see [CHANGELOG.md](CHANGELOG.md) and the
 [releases](https://github.com/thanhhlt/stream-grab/releases).
@@ -22,6 +23,19 @@ download, FFmpeg, saving, resume after a browser restart). See
 and [docs/SPEC.md](docs/SPEC.md) for the requirements.
 
 FFmpeg.wasm (`@ffmpeg/core`) is licensed GPL-2.0-or-later and adds 32 MB to the package.
+
+## Supported formats
+
+| Format                                                           | Since |
+| ---------------------------------------------------------------- | ----- |
+| HLS (`.m3u8`): MPEG-TS and fMP4 segments, AES-128 encryption     | 0.1.0 |
+| MPEG-DASH (`.mpd`): SegmentTemplate, SegmentList, SegmentBase    | 0.1.0 |
+
+DRM-protected streams are detected and flagged but never downloaded.
+
+More formats and protocols are planned. Each one plugs in as a `StreamingProtocolAdapter`; the
+download engine, storage, merging and popup work on its output and stay protocol-independent.
+See [Adding a streaming format](docs/ARCHITECTURE.md#adding-a-streaming-format).
 
 ## Requirements
 
@@ -145,3 +159,16 @@ tests/
 
 `dist/ffmpeg/` holds FFmpeg.wasm's core, copied unchanged from `@ffmpeg/core`; the media worker
 loads it only when a downloaded task is merged.
+
+## License
+
+Copyright (C) 2026 Huỳnh Lê Tấn Thành.
+
+StreamGrab is free software: you can redistribute it and/or modify it under the terms of the
+GNU General Public License as published by the Free Software Foundation, either version 3 of the
+License, or (at your option) any later version. See [LICENSE](LICENSE) for the full text
+(SPDX: `GPL-3.0-or-later`).
+
+Bundled third-party components keep their own licenses: FFmpeg.wasm (`@ffmpeg/core`) is
+GPL-2.0-or-later, `m3u8-parser` and `mpd-parser` are Apache-2.0, and React, `@xmldom/xmldom` and
+the other runtime dependencies are MIT.

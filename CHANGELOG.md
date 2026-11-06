@@ -5,6 +5,23 @@ All notable changes to StreamGrab are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- `LICENSE`: StreamGrab is licensed under GPL-3.0-or-later (`license` field in `package.json`,
+  License section in the README).
+- README *Supported formats* section and an *Adding a streaming format* guide in
+  `docs/ARCHITECTURE.md`.
+
+### Changed
+
+- The project, `package.json` and extension (`manifest.json`) descriptions are no longer limited
+  to HLS and MPEG-DASH: StreamGrab is described as a downloader for online media streams, with
+  HLS and MPEG-DASH listed as the formats supported so far.
+- Popup texts on the Detected tab and the "Detect videos automatically" setting now refer to
+  supported streams instead of naming HLS and DASH.
+
 ## [0.1.0] - 2026-11-06
 
 First release: a Chrome (Manifest V3) extension that detects, downloads and merges HLS and
@@ -47,4 +64,5 @@ Notably: merging is stream copy only (no re-encoding); SAMPLE-AES and DRM-protec
 not supported; subtitles are ignored; the bundled FFmpeg.wasm core is licensed
 GPL-2.0-or-later and adds 32 MB to the extension.
 
+[Unreleased]: https://github.com/thanhhlt/stream-grab/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/thanhhlt/stream-grab/releases/tag/v0.1.0

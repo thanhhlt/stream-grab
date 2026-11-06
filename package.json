@@ -2,7 +2,8 @@
   "name": "streamgrab",
   "version": "0.1.0",
   "private": true,
-  "description": "Chrome MV3 extension that detects, downloads and merges HLS and MPEG-DASH streams entirely in the browser.",
+  "description": "Browser extension (Chrome MV3) that detects, downloads and merges online media streams entirely in the browser.",
+  "license": "GPL-3.0-or-later",
   "type": "module",
   "engines": {
     "node": ">=22.18.0"

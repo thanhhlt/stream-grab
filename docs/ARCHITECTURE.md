@@ -3,6 +3,10 @@
 Living design notes. Requirements are in [SPEC.md](SPEC.md); this file records how they map onto
 Manifest V3 and why.
 
+StreamGrab is meant to handle several streaming formats and protocols. Version 0.1.0 supports HLS
+and MPEG-DASH; everything protocol-specific sits behind `StreamingProtocolAdapter`, so further
+formats are added as adapters (see [Adding a streaming format](#adding-a-streaming-format)).
+
 ## Phase status
 
 | Phase | Scope                                              | Status |
@@ -287,6 +291,35 @@ core/models/                         StreamingManifest, VideoVariant, AudioTrack
 - **Caching and requests** work as for HLS (shared `ManifestCache`, post-redirect aliases,
   `prefetched` body from detection, page request context replayed): one MPD is fetched and
   parsed once for detection, variant listing and segment lists of every representation.
+
+## Adding a streaming format
+
+HLS and DASH are the two formats in 0.1.0; the rest of the pipeline is written against the
+protocol-independent model (`StreamingManifest`, `VideoVariant`, `MediaSegment`). A new format
+or protocol touches these places:
+
+1. **Protocol id.** Add it to `STREAMING_PROTOCOLS` in `core/models/detected-stream.ts`. Stored
+   detections, stored tasks and engine messages validate against this list.
+2. **Detection.** Teach `core/detection/manifest-detector.ts` its MIME types
+   (`classifyMimeType`), file extensions (`MANIFEST_EXTENSIONS`, `protocolFromUrl`) and URL
+   keywords; `core/protocols/sniff.ts` (`sniffManifest`) how to recognise it by its first bytes;
+   and `core/detection/manifest-inspector.ts` (`inspectManifest`) how to summarise it for the
+   popup. The content script (`content/video-detector.ts`) currently accepts only `hls`/`dash`
+   from a `<source type>`.
+3. **Adapter.** Implement `StreamingProtocolAdapter` under `core/protocols/<format>/`, reusing
+   `ManifestCache`, `segment-builder` and the shared fetcher, and register it in both registries:
+   `background/detection-service.ts` (detection) and `offscreen/offscreen.ts` (download engine).
+4. **Segments and merging.** Segments carry a `ContainerFormat` (`mpeg-ts`, `fmp4`, `webm`,
+   `packed-audio`); a new segment container needs handling in `core/download/track-layout.ts`
+   and `core/media/merge-plan.ts`. Formats whose media is not split into segments can still be
+   expressed as byte ranges of one file, as DASH SegmentBase already is.
+5. **Protocol-specific defaults.** `defaultAudioTracks` in `core/download/variant-choice.ts`
+   and the protocol title in `popup/components/StreamCard.tsx` distinguish HLS from DASH.
+6. **Tests and fixtures.** Sample manifests under `tests/fixtures/manifests/<format>/`, adapter
+   unit tests, and cases in the detection and media pipeline tests; add the format to the
+   fixture site (`npm run fixtures`) when it can be served locally.
+
+Then list it under *Supported formats* in the README and in the changelog.
 
 ## Selection UI and download tasks (Phase 5)
 
@@ -886,7 +919,8 @@ download scheduling (`download-queue`), retry logic (`retry-policy`), cancellati
 - The core is FFmpeg 5.1 from `@ffmpeg/core` 0.12.10, single-threaded, without SIMD; the
   project's last release dates from 2025. It is licensed GPL-2.0-or-later (it includes x264 and
   other GPL libraries): distributing the extension with it brings GPL obligations for the
-  package. It adds 32 MB to the extension.
+  package, which is why StreamGrab itself is licensed GPL-3.0-or-later (compatible with both
+  FFmpeg's GPL-2.0-or-later and the Apache-2.0 manifest parsers). It adds 32 MB to the extension.
 - The end-to-end tests run the installed extension in Chrome for Testing, headless, against the
   local fixture site: notifications are not inspected, the Detected and Settings tabs are only
   checked by hand, and real sites are not part of any automated test.

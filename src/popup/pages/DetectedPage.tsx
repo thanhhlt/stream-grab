@@ -155,7 +155,7 @@ export function DetectedPage({ onShowQueue }: DetectedPageProps) {
       {streams.length === 0 ? (
         httpPage ? (
           <EmptyState title="No streams detected on this page yet">
-            Start playing a video. HLS and DASH streams appear here as soon as the page loads their manifest.
+            Start playing a video. Supported streams appear here as soon as the page loads them.
           </EmptyState>
         ) : (
           <EmptyState title="Nothing to detect here">Streams can only be detected on http and https pages.</EmptyState>

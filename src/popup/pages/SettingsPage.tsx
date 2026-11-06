@@ -143,7 +143,7 @@ export function SettingsPage() {
         <SettingRow
           id="auto-detect"
           label="Detect videos automatically"
-          description="Watch page network traffic for HLS and DASH manifests."
+          description="Watch page network traffic for supported media streams."
           control={
             <Toggle
               id="auto-detect"

@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "StreamGrab",
   "short_name": "StreamGrab",
-  "description": "Detect, download and merge HLS and MPEG-DASH streams entirely in your browser.",
+  "description": "Detect, download and merge online media streams entirely in your browser.",
   "version": "0.0.0",
   "minimum_chrome_version": "116",
   "icons": {
