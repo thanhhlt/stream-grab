@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useLayoutEffect, useRef, useState } from 'react';
 import { extensionFor } from '@/core/download/file-name';
 import type { DetectedStream } from '@/core/models/detected-stream';
 import { sendToBackground } from '@/shared/messaging/client';
@@ -21,6 +21,11 @@ import {
 
 interface DetectedPageProps {
   onShowQueue: () => void;
+  /**
+   * Gọi sau khi các video đã vào hàng đợi, với ô poster (đang thấy được) của chúng: điểm xuất phát
+   * của hiệu ứng gắp. Gọi sau khi React đã vẽ lại để vị trí các ô là vị trí thật.
+   */
+  onQueued?: (tiles: HTMLElement[]) => void;
 }
 
 interface Feedback {
@@ -28,7 +33,7 @@ interface Feedback {
   failed: number;
 }
 
-export function DetectedPage({ onShowQueue }: DetectedPageProps) {
+export function DetectedPage({ onShowQueue, onQueued }: DetectedPageProps) {
   const tab = useActiveTab();
   const tabId = tab.state === 'ready' ? tab.tabId : undefined;
   const detections = useDetections(tabId);
@@ -41,6 +46,28 @@ export function DetectedPage({ onShowQueue }: DetectedPageProps) {
   const [busy, setBusy] = useState(false);
   const [feedback, setFeedback] = useState<Feedback | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const list = useRef<HTMLUListElement>(null);
+  /** Stream vừa vào hàng đợi, chờ lần vẽ tiếp theo để bay (thông báo phía trên làm các dòng dịch xuống). */
+  const pendingGrab = useRef<readonly string[] | null>(null);
+  useLayoutEffect(() => {
+    const ids = pendingGrab.current;
+    pendingGrab.current = null;
+    const view = list.current;
+    if (!ids || !view) return;
+    const bounds = view.getBoundingClientRect();
+    const tiles = [...view.querySelectorAll<HTMLElement>('[data-stream-id]')]
+      .filter((row) => ids.includes(row.dataset.streamId ?? ''))
+      .flatMap((row) => {
+        const tile = row.querySelector<HTMLElement>('[data-poster]');
+        return tile ? [tile] : [];
+      })
+      // Ô đã cuộn khỏi khung nhìn thì không bay; số đếm vẫn cập nhật.
+      .filter((tile) => {
+        const rect = tile.getBoundingClientRect();
+        return rect.bottom > bounds.top && rect.top < bounds.bottom;
+      });
+    onQueued?.(tiles);
+  });
 
   if (tab.state === 'unavailable') {
     return (
@@ -101,6 +128,7 @@ export function DetectedPage({ onShowQueue }: DetectedPageProps) {
           setSelected((previous) => new Set([...previous].filter((id) => !queuedIds.has(id))));
           setExpanded((previous) => new Set([...previous].filter((id) => !queuedIds.has(id))));
           setFeedback({ queued: result.created.length, failed: result.failed.length });
+          if (result.created.length > 0) pendingGrab.current = result.created.map((entry) => entry.streamId);
         },
         (error: unknown) => {
           setActionError(errorMessage(error));
@@ -131,35 +159,35 @@ export function DetectedPage({ onShowQueue }: DetectedPageProps) {
   return (
     <div className="flex h-full flex-col">
       {detectionOff && (
-        <div className="flex items-center gap-3 border-b border-amber-200 bg-amber-50 px-4 py-2 text-xs text-amber-900 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-200">
+        <div className="mx-3 mt-2 flex items-center gap-3 rounded-field bg-warning-surface px-3 py-2 text-meta text-warning">
           <span className="flex-1">Automatic detection is off. New streams are not being detected.</span>
           <button
             type="button"
             onClick={() => {
               update({ autoDetect: true });
             }}
-            className="font-semibold underline-offset-2 hover:underline"
+            className="cursor-pointer font-semibold underline-offset-2 hover:underline"
           >
             Turn on
           </button>
         </div>
       )}
       {actionError && (
-        <p role="alert" className="bg-red-50 px-4 py-2 text-xs text-red-700 dark:bg-red-500/10 dark:text-red-300">
+        <p role="alert" className="mx-3 mt-2 rounded-field bg-danger-surface px-3 py-2 text-meta text-danger">
           {actionError}
         </p>
       )}
       {feedback && (
         <div
           role="status"
-          className="flex items-center gap-3 border-b border-emerald-200 bg-emerald-50 px-4 py-2 text-xs text-emerald-900 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-200"
+          className="mx-3 mt-2 flex items-center gap-3 rounded-field bg-success-surface px-3 py-2 text-meta text-success"
         >
           <span className="flex-1">
             {feedback.queued > 0 && `${feedback.queued} ${feedback.queued === 1 ? 'download' : 'downloads'} queued.`}
             {feedback.failed > 0 && ` ${feedback.failed} could not be queued; see the reason below.`}
           </span>
           {feedback.queued > 0 && (
-            <button type="button" onClick={onShowQueue} className="font-semibold underline-offset-2 hover:underline">
+            <button type="button" onClick={onShowQueue} className="cursor-pointer font-semibold underline-offset-2 hover:underline">
               View queue
             </button>
           )}
@@ -190,7 +218,7 @@ export function DetectedPage({ onShowQueue }: DetectedPageProps) {
             onClear={clear}
             busy={busy}
           />
-          <ul className="min-h-0 flex-1 divide-y divide-slate-200 overflow-y-auto dark:divide-slate-800">
+          <ul ref={list} className="min-h-0 flex-1 space-y-0.5 overflow-y-auto pb-2">
             {streams.map((stream) => (
               <StreamCard
                 key={stream.id}

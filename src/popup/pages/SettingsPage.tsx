@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, type CSSProperties } from 'react';
 import { MAX_FOLDER_LENGTH, parseDownloadFolder } from '@/core/download/file-name';
 import { ACTIVE_TASKS, SEGMENT_CONCURRENCY } from '@/shared/constants';
 import {
@@ -8,6 +8,8 @@ import {
   type ResolutionPreference,
 } from '@/shared/settings/settings';
 import { isOneOf } from '@/shared/utils/guards';
+import { BUTTON } from '../components/buttons';
+import { Select } from '../components/Select';
 import { SettingRow } from '../components/SettingRow';
 import { Toggle } from '../components/Toggle';
 import { useSettings } from '../hooks/useSettings';
@@ -29,13 +31,16 @@ const FORMAT_LABELS: Record<OutputFormat, string> = {
   mkv: 'MKV',
 };
 
-const selectClass =
-  'w-44 rounded-md border border-slate-300 bg-white px-2 py-1.5 text-[13px] focus-visible:outline-2 focus-visible:outline-indigo-500 dark:border-slate-700 dark:bg-slate-900';
+/** Thanh trượt vẽ như thanh tiến độ (`.range` trong styles.css): phần đã chọn tới giá trị hiện tại. */
+const rangeClass = 'range w-full';
 
-const rangeClass = 'w-full accent-indigo-600 dark:accent-indigo-400';
+function rangeFill(value: number, { min, max }: { min: number; max: number }): CSSProperties {
+  return { '--fill': `${((value - min) / (max - min)) * 100}%` } as CSSProperties;
+}
 
+/** Ô nhập 10 px bo góc trên nền `surface`; sai thì viền `danger` (kèm lý do bằng chữ ngay dưới). */
 const inputClass =
-  'w-full rounded-md border border-slate-300 bg-white px-2 py-1.5 text-[13px] focus-visible:outline-2 focus-visible:outline-indigo-500 aria-invalid:border-red-500 dark:border-slate-700 dark:bg-slate-900';
+  'h-[30px] w-full rounded-field bg-surface px-2.5 text-ink placeholder:text-muted aria-invalid:ring-2 aria-invalid:ring-danger';
 
 /**
  * The Downloads subfolder: saved on Enter or when the field loses focus, in
@@ -86,11 +91,11 @@ function DownloadFolderInput({ value, onSave }: { value: string; onSave: (folder
         className={inputClass}
       />
       {problem !== null ? (
-        <p id="download-folder-error" role="alert" className="text-xs text-red-700 dark:text-red-300">
+        <p id="download-folder-error" role="alert" className="text-meta text-danger">
           {problem}
         </p>
       ) : (
-        <p className="truncate text-[11px] text-slate-500 dark:text-slate-400" title={`Downloads/${value}`}>
+        <p className="truncate text-tech text-muted" title={`Downloads/${value}`}>
           Saving to: Downloads{value === '' ? '' : `/${value}`}
         </p>
       )}
@@ -102,18 +107,18 @@ export function SettingsPage() {
   const { settings, error, update, reset } = useSettings();
 
   if (!settings) {
-    return <p className="p-4 text-slate-500">{error ?? 'Loading settings…'}</p>;
+    return <p className="p-4 text-muted">{error ?? 'Loading settings…'}</p>;
   }
 
   return (
     <div className="px-4 pb-4">
       {error && (
-        <p role="alert" className="mt-3 rounded-md bg-red-50 px-3 py-2 text-xs text-red-700 dark:bg-red-950 dark:text-red-300">
+        <p role="alert" className="mt-3 rounded-field bg-danger-surface px-3 py-2 text-meta text-danger">
           {error}
         </p>
       )}
 
-      <section className="divide-y divide-slate-200 dark:divide-slate-800">
+      <section className="divide-y divide-line">
         <SettingRow
           id="segment-concurrency"
           label={`Concurrent segment requests: ${settings.segmentConcurrency}`}
@@ -127,6 +132,7 @@ export function SettingsPage() {
               max={SEGMENT_CONCURRENCY.max}
               step={1}
               value={settings.segmentConcurrency}
+              style={rangeFill(settings.segmentConcurrency, SEGMENT_CONCURRENCY)}
               aria-describedby="segment-concurrency-desc"
               onChange={(event) => {
                 update({ segmentConcurrency: event.currentTarget.valueAsNumber });
@@ -149,6 +155,7 @@ export function SettingsPage() {
               max={ACTIVE_TASKS.max}
               step={1}
               value={settings.maxActiveTasks}
+              style={rangeFill(settings.maxActiveTasks, ACTIVE_TASKS)}
               aria-describedby="active-tasks-desc"
               onChange={(event) => {
                 update({ maxActiveTasks: event.currentTarget.valueAsNumber });
@@ -163,7 +170,7 @@ export function SettingsPage() {
           label="Default resolution"
           description="Picked when a stream offers several qualities. Falls back to the nearest lower one."
           control={
-            <select
+            <Select
               id="preferred-resolution"
               value={settings.preferredResolution}
               aria-describedby="preferred-resolution-desc"
@@ -171,14 +178,14 @@ export function SettingsPage() {
                 const value = event.currentTarget.value;
                 if (isOneOf(value, RESOLUTION_PREFERENCES)) update({ preferredResolution: value });
               }}
-              className={selectClass}
+              className="w-44"
             >
               {RESOLUTION_PREFERENCES.map((option) => (
                 <option key={option} value={option}>
                   {RESOLUTION_LABELS[option]}
                 </option>
               ))}
-            </select>
+            </Select>
           }
         />
 
@@ -187,7 +194,7 @@ export function SettingsPage() {
           label="Output format"
           description="Streams are copied without re-encoding. Auto saves MP4, or MKV when the streams cannot be stored in MP4."
           control={
-            <select
+            <Select
               id="output-format"
               value={settings.outputFormat}
               aria-describedby="output-format-desc"
@@ -195,14 +202,14 @@ export function SettingsPage() {
                 const value = event.currentTarget.value;
                 if (isOneOf(value, OUTPUT_FORMATS)) update({ outputFormat: value });
               }}
-              className={selectClass}
+              className="w-44"
             >
               {OUTPUT_FORMATS.map((option) => (
                 <option key={option} value={option}>
                   {FORMAT_LABELS[option]}
                 </option>
               ))}
-            </select>
+            </Select>
           }
         />
 
@@ -256,11 +263,7 @@ export function SettingsPage() {
         />
       </section>
 
-      <button
-        type="button"
-        onClick={reset}
-        className="mt-2 text-xs font-medium text-slate-500 underline-offset-2 hover:text-slate-800 hover:underline dark:text-slate-400 dark:hover:text-slate-200"
-      >
+      <button type="button" onClick={reset} className={`${BUTTON.ghost} mt-1 -ml-2.5`}>
         Reset to defaults
       </button>
     </div>

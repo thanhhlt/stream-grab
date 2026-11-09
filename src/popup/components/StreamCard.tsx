@@ -4,6 +4,9 @@ import { formatDuration, mediaFacts, qualityOptions, statusView, streamLabel, st
 import { withVariant, type Availability, type StreamChoice } from '../selection';
 import { Badge, ProtocolBadge } from './Badge';
 import { BUTTON } from './buttons';
+import { Icon } from './Icon';
+import { PosterTile } from './PosterTile';
+import { Select } from './Select';
 import { StreamOptions } from './StreamOptions';
 
 interface StreamCardProps {
@@ -31,6 +34,9 @@ function audioSummary(stream: DetectedStream, choice: StreamChoice): string {
   return names.length > 0 ? [...new Set(names)].join(', ') : 'No audio track';
 }
 
+/** Các phần nằm dưới tiêu đề trải từ cột ô poster tới mép phải (docs/DESIGN.md, "Detected rows"). */
+const WIDE = 'col-span-2 col-start-2';
+
 export function StreamCard(props: StreamCardProps) {
   const { stream, availability, selected, choice, expanded, error } = props;
   const status = statusView(stream);
@@ -38,9 +44,8 @@ export function StreamCard(props: StreamCardProps) {
   const site = hostnameOf(stream.pageUrl) || hostnameOf(stream.url);
   const file = fileNameOf(stream.url);
   const facts = mediaFacts(stream);
-  const meta = [site, props.showSource && file !== label ? file : '', facts.durationSec ? formatDuration(facts.durationSec) : '']
-    .filter(Boolean)
-    .join(' · ');
+  const duration = facts.durationSec ? formatDuration(facts.durationSec) : undefined;
+  const meta = [site, props.showSource && file !== label ? file : ''].filter(Boolean).join(' · ');
   const reason = availability.ok ? undefined : availability.reason;
   const checkboxId = `select-${stream.id}`;
   const variants = stream.media?.variants ?? [];
@@ -48,13 +53,16 @@ export function StreamCard(props: StreamCardProps) {
   const audioTracks = (stream.media?.audioTracks ?? []).filter((track) => variant?.audioTrackIds.includes(track.id));
   const optionsId = `opt-${stream.id}`;
   const ready = availability.ok && choice !== undefined;
+  const tags = streamTags(stream);
+  // DRM, lỗi hoặc không tải được (vd. live): ô khóa. Đang kiểm tra thì vẫn là ô phát.
+  const tile = availability.ok || stream.status === 'pending' ? 'play' : 'locked';
 
   return (
     <li
-      className={`relative flex gap-2.5 py-3 pr-3 pl-4 transition-colors ${
-        selected
-          ? 'bg-indigo-50/70 shadow-[inset_3px_0_0_var(--color-indigo-500)] dark:bg-indigo-500/10'
-          : 'hover:bg-slate-50 dark:hover:bg-slate-900/50'
+      data-stream-id={stream.id}
+      data-selected={selected}
+      className={`mx-1.5 grid grid-cols-[18px_52px_minmax(0,1fr)] items-start gap-x-2.5 rounded-row px-2.5 pt-2.5 pb-[11px] transition-colors duration-120 ease-out ${
+        selected ? 'bg-selected' : 'hover:bg-surface/60'
       }`}
     >
       <input
@@ -67,13 +75,14 @@ export function StreamCard(props: StreamCardProps) {
         onChange={(event) => {
           props.onSelect(event.currentTarget.checked);
         }}
-        className="mt-0.5 size-4 shrink-0 cursor-pointer accent-indigo-600 disabled:cursor-not-allowed disabled:opacity-40 dark:accent-indigo-400"
+        className="col-start-1 row-start-1 mt-[17px] size-[18px] cursor-pointer disabled:cursor-not-allowed disabled:opacity-40"
       />
-      <div className="min-w-0 flex-1">
+      {/* Tiêu đề đứng trước ô poster trong DOM (đọc trước), lưới đặt ô poster vào cột 2. */}
+      <div className="col-start-3 row-start-1 min-w-0">
         <div className="flex items-start gap-1">
           <label
             htmlFor={checkboxId}
-            className="line-clamp-2 min-w-0 flex-1 cursor-pointer text-[13px] leading-5 font-semibold break-words text-slate-900 dark:text-slate-50"
+            className={`line-clamp-2 min-w-0 flex-1 cursor-pointer text-title [overflow-wrap:anywhere] ${availability.ok ? 'text-ink' : 'text-muted'}`}
             title={label}
           >
             {label}
@@ -85,88 +94,97 @@ export function StreamCard(props: StreamCardProps) {
             }}
             aria-label={`Remove ${label}`}
             title="Remove from list"
-            className={`${BUTTON.icon} -mt-0.5 text-base`}
+            className={`${BUTTON.icon} -mt-1 -mr-1.5`}
           >
-            ×
+            <Icon name="close" />
           </button>
         </div>
-        <p className="mt-0.5 flex min-w-0 flex-wrap items-center gap-1.5 text-[11px] text-slate-500 dark:text-slate-400">
+        <p className="mt-0.5 truncate text-meta text-muted">
+          {meta && `${meta} · `}
           <ProtocolBadge protocol={stream.protocol} container={stream.progressive?.container} />
-          {meta && <span className="truncate">{meta}</span>}
+          {/* Thời lượng hiện trên ô poster (aria-hidden); trình đọc màn hình đọc ở đây. */}
+          {duration && <span className="sr-only">, {duration}</span>}
+        </p>
+      </div>
+      <span className="col-start-2 row-start-1 flex">
+        <PosterTile host={site} state={tile} duration={duration} />
+      </span>
+
+      {(stream.status !== 'ready' || tags.length > 0) && (
+        <p className={`${WIDE} mt-2 flex flex-wrap items-center gap-1.5`}>
           {stream.status !== 'ready' && <Badge tone={status.tone}>{status.label}</Badge>}
-          {streamTags(stream).map((tag) => (
+          {tags.map((tag) => (
             <Badge key={tag} tone="neutral">
               {tag}
             </Badge>
           ))}
         </p>
+      )}
 
-        {ready && (
-          <div className="mt-2 flex items-center gap-1.5">
-            <select
-              aria-label={`Quality of ${label}`}
-              title={facts.qualities ? `Available: ${facts.qualities}` : undefined}
-              value={choice.variantId}
-              onChange={(event) => {
-                props.onChoiceChange(withVariant(stream, choice, event.currentTarget.value));
-              }}
-              className="h-7 max-w-36 shrink-0 cursor-pointer rounded-md border border-slate-300 bg-white px-1.5 text-xs font-medium text-slate-800 hover:border-slate-400 focus-visible:outline-2 focus-visible:outline-indigo-500 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100 dark:hover:border-slate-500"
-            >
-              {qualityOptions(variants).map((option) => (
-                <option key={option.id} value={option.id}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
-            <button
-              type="button"
-              aria-expanded={expanded}
-              aria-controls={optionsId}
-              onClick={props.onToggleExpanded}
-              title={audioTracks.length > 0 ? 'Audio tracks and file name' : 'File name'}
-              className={`inline-flex h-7 min-w-0 items-center gap-1 rounded-md border px-2 text-xs transition-colors focus-visible:outline-2 focus-visible:outline-indigo-500 ${
-                expanded
-                  ? 'border-indigo-400 bg-indigo-50 text-indigo-800 dark:border-indigo-500/60 dark:bg-indigo-500/10 dark:text-indigo-200'
-                  : 'border-slate-300 text-slate-700 hover:border-slate-400 dark:border-slate-700 dark:text-slate-200 dark:hover:border-slate-500'
-              }`}
-            >
-              <span className="truncate">{audioTracks.length > 0 ? `Audio: ${audioSummary(stream, choice)}` : 'Options'}</span>
-              <span aria-hidden className="text-[10px] text-slate-400">
-                {expanded ? '▴' : '▾'}
-              </span>
-            </button>
-            <button
-              type="button"
-              disabled={props.busy}
-              onClick={props.onDownload}
-              aria-label={`Download ${label}`}
-              className={`${BUTTON.primary} ml-auto h-7`}
-            >
-              Download
-            </button>
-          </div>
-        )}
+      {ready && (
+        <div className={`${WIDE} mt-2 flex min-w-0 items-center gap-1.5`}>
+          <Select
+            aria-label={`Quality of ${label}`}
+            title={facts.qualities ? `Available: ${facts.qualities}` : undefined}
+            value={choice.variantId}
+            onChange={(event) => {
+              props.onChoiceChange(withVariant(stream, choice, event.currentTarget.value));
+            }}
+            className="max-w-36"
+          >
+            {qualityOptions(variants).map((option) => (
+              <option key={option.id} value={option.id}>
+                {option.label}
+              </option>
+            ))}
+          </Select>
+          <button
+            type="button"
+            aria-expanded={expanded}
+            aria-controls={optionsId}
+            onClick={props.onToggleExpanded}
+            title={audioTracks.length > 0 ? 'Audio tracks and file name' : 'File name'}
+            className="inline-flex h-[30px] min-w-0 cursor-pointer items-center gap-1 rounded-full bg-surface pr-[9px] pl-[11px] text-control text-ink transition-colors duration-120 ease-out hover:bg-line"
+          >
+            <span className="truncate">{audioTracks.length > 0 ? `Audio: ${audioSummary(stream, choice)}` : 'Options'}</span>
+            <Icon
+              name="chevron"
+              className={`size-[13px] text-muted transition-transform duration-200 ease-out ${expanded ? 'rotate-180' : ''}`}
+            />
+          </button>
+          <button
+            type="button"
+            disabled={props.busy}
+            onClick={props.onDownload}
+            aria-label={`Download ${label}`}
+            className={`${BUTTON.download} ml-auto`}
+          >
+            <Icon name="download" />
+            Download
+          </button>
+        </div>
+      )}
 
-        {stream.statusMessage && <p className="mt-1.5 text-xs leading-snug text-slate-600 dark:text-slate-400">{stream.statusMessage}</p>}
-        {stream.status === 'ready' && stream.manifest?.live && (
-          <p className="mt-1.5 text-xs leading-snug text-slate-600 dark:text-slate-400">Live stream: downloading live streams is not supported yet.</p>
-        )}
-        {error && (
-          <p role="alert" className="mt-1.5 rounded bg-red-50 px-2 py-1 text-xs leading-snug text-red-700 dark:bg-red-500/10 dark:text-red-300">
-            {error}
-          </p>
-        )}
-        {expanded && ready && (
-          <StreamOptions
-            id={optionsId}
-            stream={stream}
-            choice={choice}
-            onChange={props.onChoiceChange}
-            extension={props.extension}
-            codecs={facts.codecs}
-          />
-        )}
-      </div>
+      {stream.statusMessage && <p className={`${WIDE} mt-1.5 text-meta text-muted`}>{stream.statusMessage}</p>}
+      {stream.status === 'ready' && stream.manifest?.live && (
+        <p className={`${WIDE} mt-1.5 text-meta text-muted`}>Live stream: downloading live streams is not supported yet.</p>
+      )}
+      {error && (
+        <p role="alert" className={`${WIDE} mt-2 rounded-field bg-danger-surface px-2.5 py-[7px] text-meta text-danger`}>
+          {error}
+        </p>
+      )}
+      {expanded && ready && (
+        <StreamOptions
+          id={optionsId}
+          className={WIDE}
+          stream={stream}
+          choice={choice}
+          onChange={props.onChoiceChange}
+          extension={props.extension}
+          codecs={facts.codecs}
+        />
+      )}
     </li>
   );
 }

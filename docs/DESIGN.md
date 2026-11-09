@@ -1,6 +1,6 @@
 # StreamGrab design system: Claw
 
-Status: **approved 2026-11-09** for v0.5.0. Plan step 1 (tokens, fonts, shared components, toolbar icon) is implemented; steps 2 and 3 are not. This file is the
+Status: **approved 2026-11-09** for v0.5.0. Plan steps 1 (tokens, fonts, shared components, toolbar icon) and 2 (the four pages, the grab) are implemented; step 3 is not. This file is the
 source of truth for the popup's look and motion. Where it differs from the mockup, this file wins
 (its colors are contrast-checked).
 
@@ -119,7 +119,9 @@ feature.
   span from the tile column to the right edge. Rows sit 6 px from the popup edges with 10 px
   padding and 14 px radius when tinted, 2 px apart, no dividers.
 - **Selection bar:** the count ("2 of 3 selected") must never be cut off. If space runs out, the
-  Download selected button drops its icon first.
+  Download selected button drops its icon first (CSS only: the icon wraps onto a hidden second
+  line), then the count wraps between its two parts ("6 streams" / "on this page"). The bar is
+  52 px high in both cases, so the list does not move when a row is selected.
 - Radii: 999 for buttons, selects, chips and progress; 14 for rows and the summary panel; 12 for
   tiles and the Options panel; 10 for fields and messages; 16 for the dialog.
 - Elevation: none, except the menu and the dialog (one shadow token).
@@ -137,9 +139,9 @@ feature.
 | StreamOptions | `components/StreamOptions.tsx` | `bg` panel inside the tinted row. Labels "Audio", "File", then "Details" with protocol and codecs |
 | SelectionBar | `components/SelectionBar.tsx` | Tri-state checkbox in tangerine, count, Clear list (ghost), Download selected (primary) |
 | ProgressBar | `components/ProgressBar.tsx` | 8 px pill. `primary-strong` for downloading, `merge` for processing, `warning-bar` + "Stalled" text while stalled. Width transition only, no stripes or shimmer |
-| Queue rows | `pages/QueuePage.tsx` | Tile, title, meta. Then the bar, then a line with the percent (15/750), ETA and speed. Then the technical line (segments, sizes) in `muted`. Summary in a `surface` panel. Sections "Finished", "Failed or cancelled" in sentence case |
+| Queue rows | `pages/QueuePage.tsx` | Tile, title, meta with the status chip at its right end ("Downloading", "Stalled", "Processing", "Pending"…). Then the bar, then a line with the percent (15/750), ETA and speed (the speed's "Speed" label is for screen readers only). Then the technical line (segments, sizes) in `muted`, wrapping only between its parts. Failed rows: the reason in a `danger-surface` box, then Retry/Remove. Summary in a `surface` panel. Sections "Finished", "Failed or cancelled" in sentence case |
 | Completed rows | `pages/CompletedPage.tsx` | Tile with a check, title, "Saved as …", facts, date; Show in folder (`download` style) + ⋯ menu |
-| Settings | `pages/SettingsPage.tsx` | Same rows, range inputs and toggles in tangerine, selects as pills, the folder field as a 10 px field |
+| Settings | `pages/SettingsPage.tsx` | Same rows, range inputs and toggles in tangerine, selects as pills, the folder field as a 10 px field. Range inputs are drawn like the progress bar (`.range` in `styles.css`: 8 px `track` pill filled in `primary-strong` up to the value, same-colored thumb), because Chrome's own track turns dark gray with a light accent |
 | EmptyState | `components/EmptyState.tsx` | Detected "search": swinging claw. Other icons: line icons in a `surface` circle |
 | ConfirmDialog, Menu, Toggle | `components/*` | Radius 16 / 12 / pill, `danger` confirm button, tangerine toggle |
 
@@ -164,7 +166,11 @@ collapse), 350 ms (count bump), 1000 ms (grab).
   - At 1000 ms: the count bumps (scale 1 → 1.45 → 1, 350 ms spring).
 - **The count itself** always comes from the real task list; the animation never invents numbers.
 - **The ghost** is `position: fixed`, `pointer-events: none`, `aria-hidden`. The real row behaves
-  exactly as today.
+  exactly as today. It sits under the header (z-index 5 < 10), so the claw is drawn over it and the
+  prongs visibly grip its top half (tile center 50 px below the top of the claw). The landing point
+  is measured when the drop starts, since the Queue count may only just have appeared.
+- **Implementation:** `src/popup/grab.ts` (`playGrab`, `stopGrab`), started by `App` from Detected's
+  `onQueued` after the next render (a feedback message may have moved the rows).
 - **Never blocks, can be cut short:** input keeps working, and a new grab finishes the previous one
   immediately (ghosts removed).
 - `prefers-reduced-motion: reduce`: no flight, no claw motion, no bump; the count just updates.

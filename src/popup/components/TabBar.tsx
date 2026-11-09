@@ -1,4 +1,4 @@
-import type { KeyboardEvent } from 'react';
+import type { KeyboardEvent, Ref } from 'react';
 
 export const TABS = [
   { id: 'detected', label: 'Detected' },
@@ -14,9 +14,11 @@ interface TabBarProps {
   onChange: (tab: TabId) => void;
   /** Small count shown next to a tab label (e.g. active downloads). */
   counts?: Partial<Record<TabId, number>>;
+  /** Thanh tab: hiệu ứng gắp tìm điểm hạ cánh trong đó (`data-tab`, `data-tab-count`). */
+  ref?: Ref<HTMLDivElement> | undefined;
 }
 
-export function TabBar({ active, onChange, counts = {} }: TabBarProps) {
+export function TabBar({ active, onChange, counts = {}, ref }: TabBarProps) {
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
     event.preventDefault();
@@ -27,7 +29,7 @@ export function TabBar({ active, onChange, counts = {} }: TabBarProps) {
   };
 
   return (
-    <div role="tablist" aria-label="Sections" className="flex shrink-0 gap-0.5 border-b border-line px-2 pb-2" onKeyDown={onKeyDown}>
+    <div ref={ref} role="tablist" aria-label="Sections" className="flex shrink-0 gap-0.5 border-b border-line px-2 pb-2" onKeyDown={onKeyDown}>
       {TABS.map((tab) => {
         const selected = tab.id === active;
         return (
@@ -35,6 +37,7 @@ export function TabBar({ active, onChange, counts = {} }: TabBarProps) {
             key={tab.id}
             type="button"
             role="tab"
+            data-tab={tab.id}
             aria-selected={selected}
             tabIndex={selected ? 0 : -1}
             onClick={() => {

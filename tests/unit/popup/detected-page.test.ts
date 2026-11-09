@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { act } from 'react';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { detectionStorageKey } from '@/core/detection/detection-store';
 import type { DetectedStream } from '@/core/models/detected-stream';
 import { DetectedPage } from '@/popup/pages/DetectedPage';
@@ -169,7 +169,7 @@ describe('Detected tab', () => {
     expect(toggle?.getAttribute('aria-expanded')).toBe('true');
     const panel = rows()[2]?.textContent ?? '';
     expect(panel).toContain('Français');
-    expect(panel).toContain('Codecs: H.264 · AAC');
+    expect(panel).toContain('DetailsHLS · H.264 · AAC');
     await check([...(rows()[2]?.querySelectorAll('input[type="checkbox"]') ?? [])].find((input) => input.parentElement?.textContent?.startsWith('Français')));
 
     await click(view.container, 'Download Another video');
@@ -191,12 +191,48 @@ describe('Detected tab', () => {
     await check(rows()[2]?.querySelector('input[type="checkbox"]'));
     expect(view.container.textContent).toContain('2 of 3 selected');
     expect(bulk()?.textContent).toBe('Download selected (2)');
-    expect(rows()[0]?.className).toContain('bg-indigo-50');
-    expect(rows()[1]?.className).not.toContain('bg-indigo-50');
+    expect(rows()[0]?.dataset.selected).toBe('true');
+    expect(rows()[1]?.dataset.selected).toBe('false');
 
     await click(view.container, 'Download selected (2)');
     const request = sent.at(-1) as { type: string; payload: { requests: { streamId: string }[] } };
     expect(request.type).toBe('downloads/start');
     expect(request.payload.requests.map((entry) => entry.streamId)).toEqual(['first', 'other']);
+  });
+});
+
+describe('Detected tab: grab animation (0.5.0)', () => {
+  it('hands the poster tiles of the videos that were queued, and only those, to the animation', async () => {
+    const { session } = await installPopupChrome({
+      activeTab: TAB,
+      answers: {
+        'downloads/start': {
+          created: [{ taskId: 'task-1', streamId: 'first', baseName: 'Movie_Title' }],
+          failed: [{ streamId: 'other', message: 'The playlist could not be read.' }],
+        },
+      },
+    });
+    await session.set({ [detectionStorageKey(TAB.id)]: { version: 1, tabId: TAB.id, generation: 1, streams: [stream('first'), stream('other', { title: 'Another video' })], updatedAt: 1 } });
+    // happy-dom has no layout: give every element a visible box.
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue(new DOMRect(0, 0, 52, 52));
+    const queued: HTMLElement[][] = [];
+    const view = await render(DetectedPage, {
+      onShowQueue: () => undefined,
+      onQueued: (tiles: HTMLElement[]) => {
+        queued.push(tiles);
+      },
+    });
+    unmount = () => view.root.unmount();
+    const rows = () => [...view.container.querySelectorAll('li')];
+
+    await check(rows()[0]?.querySelector('input[type="checkbox"]'));
+    await check(rows()[1]?.querySelector('input[type="checkbox"]'));
+    await click(view.container, 'Download selected (2)');
+
+    expect(queued).toHaveLength(1);
+    expect(queued[0]?.map((tile) => tile.closest('li')?.dataset.streamId)).toEqual(['first']);
+    expect(queued[0]?.[0]?.getAttribute('data-poster')).toBe('play');
+    expect(rows()[1]?.textContent).toContain('The playlist could not be read.');
+    vi.restoreAllMocks();
   });
 });

@@ -1,5 +1,6 @@
 import type { DetectedStream } from '@/core/models/detected-stream';
 import { withAudioTrack, withFileName, type StreamChoice } from '../selection';
+import { ProtocolBadge } from './Badge';
 
 interface StreamOptionsProps {
   id: string;
@@ -10,36 +11,37 @@ interface StreamOptionsProps {
   extension: string;
   /** "H.264 · AAC": thông tin kỹ thuật, chỉ hiện trong phần mở rộng. */
   codecs: string | undefined;
+  /** Vị trí trong lưới của dòng. */
+  className?: string;
 }
 
-const fieldLabel = 'text-[11px] font-semibold tracking-wide text-slate-500 uppercase dark:text-slate-400';
-const control =
-  'rounded-md border border-slate-300 bg-white px-2 py-1 text-xs focus-visible:outline-2 focus-visible:outline-indigo-500 dark:border-slate-700 dark:bg-slate-900';
+/** Cột nhãn 44 px: "Audio", "File", "Details". */
+const fieldLabel = 'w-11 shrink-0 text-muted';
 
 /** Audio tracks and file name of one video (quality and Download stay on the card). */
-export function StreamOptions({ id, stream, choice, onChange, extension, codecs }: StreamOptionsProps) {
+export function StreamOptions({ id, stream, choice, onChange, extension, codecs, className = '' }: StreamOptionsProps) {
   const variant = stream.media?.variants.find((candidate) => candidate.id === choice.variantId);
   const tracks = (stream.media?.audioTracks ?? []).filter((track) => variant?.audioTrackIds.includes(track.id));
 
   return (
-    <div id={id} className="mt-2 space-y-2 rounded-md border border-slate-200 bg-slate-50 p-2.5 dark:border-slate-800 dark:bg-slate-900/60">
+    <div id={id} className={`mt-2 space-y-2 rounded-tile border border-line bg-bg px-3 py-2.5 text-control ${className}`}>
       {tracks.length > 0 && (
-        <fieldset className="flex gap-2">
-          <legend className={`${fieldLabel} float-left w-12 shrink-0 pt-0.5`}>Audio</legend>
-          <div className="flex min-w-0 flex-1 flex-wrap gap-x-3 gap-y-1">
+        <fieldset className="flex items-start gap-2">
+          <legend className={`${fieldLabel} float-left pt-px`}>Audio</legend>
+          <div className="flex min-w-0 flex-1 flex-wrap gap-x-3 gap-y-1.5">
             {tracks.map((track) => (
-              <label key={track.id} className="flex cursor-pointer items-center gap-1.5 text-xs">
+              <label key={track.id} className="flex cursor-pointer items-center gap-1.5 text-ink">
                 <input
                   type="checkbox"
                   checked={choice.audioTrackIds.includes(track.id)}
                   onChange={(event) => {
                     onChange(withAudioTrack(choice, track.id, event.currentTarget.checked));
                   }}
-                  className="size-3.5 accent-indigo-600 dark:accent-indigo-400"
+                  className="size-4 cursor-pointer"
                 />
                 <span>
                   {track.name}
-                  {track.isDefault ? <span className="text-slate-400"> (default)</span> : null}
+                  {track.isDefault ? <span className="text-muted"> (default)</span> : null}
                 </span>
               </label>
             ))}
@@ -48,10 +50,11 @@ export function StreamOptions({ id, stream, choice, onChange, extension, codecs 
       )}
 
       <div className="flex items-center gap-2">
-        <label htmlFor={`${id}-name`} className={`${fieldLabel} w-12 shrink-0`}>
+        <label htmlFor={`${id}-name`} className={fieldLabel}>
           File
         </label>
-        <div className="flex min-w-0 flex-1 items-center">
+        {/* Ô nhập 10 px bo góc; viền focus nằm trên cả ô (gồm phần đuôi file). */}
+        <div className="flex h-[30px] min-w-0 flex-1 items-center overflow-hidden rounded-field bg-surface outline-primary-text focus-within:outline-2 focus-within:outline-offset-2">
           <input
             id={`${id}-name`}
             type="text"
@@ -61,15 +64,19 @@ export function StreamOptions({ id, stream, choice, onChange, extension, codecs 
             onChange={(event) => {
               onChange(withFileName(choice, event.currentTarget.value));
             }}
-            className={`${control} min-w-0 flex-1 rounded-r-none`}
+            className="h-full min-w-0 flex-1 bg-transparent pl-2.5 text-ink outline-none"
           />
-          <span className="rounded-r-md border border-l-0 border-slate-300 bg-slate-100 px-1.5 py-1 text-xs text-slate-500 dark:border-slate-700 dark:bg-slate-800">
-            {extension}
-          </span>
+          <span className="shrink-0 pr-2.5 pl-1 text-muted">{extension}</span>
         </div>
       </div>
 
-      {codecs && <p className="text-[11px] text-slate-500 dark:text-slate-400">Codecs: {codecs}</p>}
+      <p className="flex items-baseline gap-2">
+        <span className={fieldLabel}>Details</span>
+        <span className="min-w-0 text-muted">
+          <ProtocolBadge protocol={stream.protocol} container={stream.progressive?.container} />
+          {codecs && ` · ${codecs}`}
+        </span>
+      </p>
     </div>
   );
 }

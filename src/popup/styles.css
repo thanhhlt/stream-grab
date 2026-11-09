@@ -40,7 +40,11 @@
   /* Titles in scripts the font does not cover (CJK, Arabic, Thai…) fall back to the system font. */
   --font-sans: 'Bricolage Grotesque', system-ui, 'Segoe UI', -apple-system, sans-serif;
 
-  /* Colors, light values. Dark values are below; both sets are contrast-checked in DESIGN.md. */
+  /*
+   * Colors, light values. Dark values are below; both sets are contrast-checked in DESIGN.md.
+   * The default Tailwind palette is removed, so a raw class such as bg-slate-50 generates nothing.
+   */
+  --color-*: initial;
   --color-bg: #ffffff;
   --color-surface: #f3f4f7;
   --color-line: #e5e7ec;
@@ -164,12 +168,44 @@
   :root {
     /* Native checkboxes and range inputs in tangerine. */
     accent-color: var(--color-primary);
+    /* Native controls (select lists, scrollbars) follow the system scheme like the tokens do. */
+    color-scheme: light dark;
   }
 
   /* Focus: 2 px primary-text outline with a 2 px offset on every interactive element. */
   :focus-visible {
     outline: 2px solid var(--color-primary-text);
     outline-offset: 2px;
+  }
+}
+
+@layer components {
+  /*
+   * Range inputs (Settings) look like the progress bar: an 8 px track pill filled up to the value
+   * (--fill, set by the page) in primary-strong, with a thumb of the same color. Chrome's own track
+   * turns dark gray with a light accent such as tangerine.
+   */
+  .range {
+    appearance: none;
+    height: 20px;
+    background: transparent;
+    cursor: pointer;
+  }
+
+  .range::-webkit-slider-runnable-track {
+    height: 8px;
+    border-radius: 999px;
+    background: linear-gradient(to right, var(--color-primary-strong) var(--fill, 0%), var(--color-track) var(--fill, 0%));
+  }
+
+  .range::-webkit-slider-thumb {
+    appearance: none;
+    width: 18px;
+    height: 18px;
+    margin-top: -5px;
+    border: 2px solid var(--color-bg);
+    border-radius: 50%;
+    background: var(--color-primary-strong);
   }
 }
 
