@@ -1,0 +1,533 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>StreamGrab popup design proposals</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400..800&family=Lexend:wght@300..700&family=Archivo:wdth,wght@62..125,400..800&display=swap">
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #d8d9dc; color: #1b1c1e; font: 14px/1.5 system-ui, 'Segoe UI', sans-serif; }
+  .page { max-width: 1360px; margin: 0 auto; padding: 24px 16px 64px; }
+  .page > h1 { font-size: 22px; margin: 0 0 4px; }
+  .page > p { margin: 0 0 20px; color: #4a4d52; max-width: 80ch; }
+  section.dir { background: #f4f4f5; border-radius: 10px; padding: 18px 18px 22px; margin-bottom: 28px; }
+  .dir-head { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: baseline; margin-bottom: 4px; }
+  .dir-head h2 { margin: 0; font-size: 18px; }
+  .ctl { margin-left: auto; display: flex; gap: 4px; flex-wrap: wrap; }
+  .ctl button { font: inherit; font-size: 12px; padding: 3px 10px; border: 1px solid #b9bbbf; background: #fff; border-radius: 6px; cursor: pointer; }
+  .ctl button[aria-pressed="true"] { background: #1b1c1e; color: #fff; border-color: #1b1c1e; }
+  .dir > p { margin: 0 0 14px; color: #4a4d52; max-width: 100ch; font-size: 13px; }
+  .frames { display: flex; flex-wrap: wrap; gap: 20px; align-items: flex-start; }
+  .side { width: 400px; display: flex; flex-direction: column; gap: 14px; }
+  .tokens { font-size: 12px; color: #3b3e43; }
+  .tokens h3 { font-size: 12px; margin: 0 0 6px; }
+  .sw { display: grid; grid-template-columns: 22px 1fr auto; gap: 6px; align-items: center; margin-bottom: 4px; }
+  .sw i { width: 22px; height: 22px; border-radius: 4px; border: 1px solid rgba(0,0,0,.15); }
+  .sw code { font-size: 11px; color: #6b6e73; }
+  .tokens .type { margin-top: 10px; padding-top: 8px; border-top: 1px solid #d5d6d8; }
+
+  /* ---------- shared popup frame ---------- */
+  .pop { position: relative; width: 400px; height: 560px; overflow: hidden; display: flex; flex-direction: column; border-radius: 6px; box-shadow: 0 1px 0 rgba(0,0,0,.08), 0 8px 24px rgba(0,0,0,.14); background: var(--bg); color: var(--ink); font-family: var(--font); font-size: 13px; }
+  .pop.short { height: 300px; }
+  .pop ul { list-style: none; margin: 0; padding: 0; }
+  .pop button { font: inherit; cursor: pointer; color: inherit; }
+  .ico { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round; flex: none; }
+  .tnum { font-variant-numeric: tabular-nums; }
+  .grow { flex: 1; min-width: 0; }
+  .trunc { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .clamp { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  .cb { width: 18px; height: 18px; flex: none; border-radius: 5px; display: inline-grid; place-items: center; border: 1.6px solid var(--muted); }
+  .cb.on { background: var(--cb, var(--pri)); border-color: var(--cb, var(--pri)); color: var(--on-cb, var(--on-pri)); }
+  .cb.mid { background: var(--cb, var(--pri)); border-color: var(--cb, var(--pri)); }
+  .cb.mid::after { content: ''; width: 8px; height: 2px; border-radius: 1px; background: var(--on-cb, var(--on-pri)); }
+  .cb.off { opacity: .35; }
+  .cb .ico { width: 12px; height: 12px; stroke-width: 2.6; }
+  .row { display: flex; align-items: center; gap: 6px; }
+  .muted { color: var(--muted); }
+  .flyer { position: fixed; z-index: 99; pointer-events: none; }
+  @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
+
+  /* =====================================================================
+     1 — CLAW
+     ===================================================================== */
+  .K { --font: 'Bricolage Grotesque', system-ui, sans-serif;
+       --bg:#FFFFFF; --sur:#F3F4F7; --line:#E5E7EC; --ink:#1B2030; --muted:#5B6274; --faint:#7A8091;
+       --pri:#FF7A1A; --pri-strong:#E0600A; --on-pri:#1B1206; --pri-text:#B04600; --tint:#FFF1E6; --merge:#0C8784; --ok:#17824A; --bad:#C22E2E; --bad-tint:#FDECEC; --track:#F0F1F4; }
+  .K.dark { --bg:#171A21; --sur:#21252E; --line:#2F343F; --ink:#EEF0F4; --muted:#A3A9B7; --faint:#6E7584;
+       --pri:#FF8A33; --pri-strong:#FF8A33; --on-pri:#1B1206; --pri-text:#FF9F57; --tint:#2D241B; --merge:#3CC9C3; --ok:#4CC985; --bad:#FF6B6B; --bad-tint:#3A2224; --track:#2B303A; }
+  .K header { position: relative; z-index: 5; display: flex; align-items: center; gap: 8px; height: 50px; padding: 0 14px 0 10px; }
+  .K .wm { font-weight: 800; font-size: 18px; letter-spacing: -.02em; font-variation-settings: 'opsz' 30; }
+  .K .ver { margin-left: auto; font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 6px; }
+  .K .ver i { width: 7px; height: 7px; border-radius: 50%; background: var(--ok); }
+  .K .claw { width: 30px; height: 50px; overflow: visible; align-self: flex-start; }
+  .K .claw .rig { transform-box: view-box; }
+  .K .claw .pl { transform-origin: 13px 31px; transform: rotate(20deg); }
+  .K .claw .pr { transform-origin: 19px 31px; transform: rotate(-20deg); }
+  .K .claw.grab .rig { animation: k-drop .9s cubic-bezier(.45,0,.25,1); }
+  .K .claw.grab .pl { animation: k-pl .9s ease; }
+  .K .claw.grab .pr { animation: k-pr .9s ease; }
+  @keyframes k-drop { 0% { transform: translateY(0) } 35%,55% { transform: translateY(9px) } 100% { transform: translateY(0) } }
+  @keyframes k-pl { 0%,30% { transform: rotate(20deg) } 42%,80% { transform: rotate(0) } 100% { transform: rotate(20deg) } }
+  @keyframes k-pr { 0%,30% { transform: rotate(-20deg) } 42%,80% { transform: rotate(0) } 100% { transform: rotate(-20deg) } }
+  .K nav { display: flex; gap: 2px; padding: 0 8px 8px; border-bottom: 1px solid var(--line); }
+  .K nav a { display: flex; align-items: center; gap: 6px; padding: 5px 12px; border-radius: 999px; font-weight: 600; font-size: 13.5px; color: var(--muted); }
+  .K nav a.on { background: var(--sur); color: var(--ink); }
+  .K .count { display: inline-grid; place-items: center; min-width: 19px; height: 19px; padding: 0 5px; border-radius: 999px; background: var(--pri); color: var(--on-pri); font-size: 11px; font-weight: 700; }
+  .K .btn { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 13px; border-radius: 999px; font-weight: 600; font-size: 13px; border: 1.5px solid transparent; background: none; white-space: nowrap; }
+  .K .btn.pri { background: var(--pri); color: var(--on-pri); }
+  .K .btn.out { border-color: var(--line); background: var(--bg); }
+  .K .btn.dl { border-color: var(--pri-strong); color: var(--pri-text); padding: 0 11px 0 9px; }
+  .K .btn.txt { color: var(--muted); padding: 0 8px; }
+  .K .pill { display: inline-flex; align-items: center; gap: 4px; height: 30px; padding: 0 9px 0 11px; border-radius: 999px; background: var(--sur); font-weight: 500; font-size: 12.5px; white-space: nowrap; max-width: 150px; }
+  .K .pill .ico { width: 13px; color: var(--muted); }
+  .K .bar { display: flex; align-items: center; gap: 8px; padding: 9px 12px 9px 16px; }
+  .K .bar b { font-weight: 700; } .pop .bar .grow { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; } .pop .bar .btn.txt { padding: 0 6px; }
+  .K .tile { position: relative; width: 52px; height: 52px; border-radius: 12px; flex: none; display: grid; place-items: center; color: #fff; background: var(--c); }
+  .K .tile svg { width: 18px; height: 18px; fill: currentColor; stroke: none; }
+  .K .tile .d { position: absolute; right: 3px; bottom: 3px; font-size: 10px; font-weight: 700; line-height: 14px; padding: 0 4px; border-radius: 5px; background: rgba(0,0,0,.45); }
+  .K .tile.na { background: var(--sur); color: var(--faint); }
+  .K .tile.na svg { fill: none; stroke: currentColor; stroke-width: 1.9; }
+  .K li.v { display: grid; grid-template-columns: 18px 52px 1fr; gap: 0 10px; align-items: start; margin: 0 6px; padding: 10px 10px 11px; border-radius: 14px; }
+  .K li.v.sel { background: var(--tint); }
+  .K li.v + li.v { margin-top: 2px; }
+  .K li.v > .cb { margin-top: 17px; } .K li.v .ctrls, .K li.v .opts { grid-column: 2 / -1; }
+  .K .t { font-weight: 650; font-size: 14px; line-height: 1.3; }
+  .K .m { font-size: 12px; color: var(--muted); margin-top: 2px; }
+  .K .ctrls { display: flex; gap: 6px; margin-top: 8px; align-items: center; }
+  .K .opts { margin-top: 8px; padding: 10px 12px; border-radius: 12px; background: var(--bg); display: grid; grid-template-columns: 44px 1fr; gap: 8px; align-items: center; font-size: 12.5px; }
+  .K .opts .k { color: var(--muted); }
+  .K .opts label { display: inline-flex; gap: 6px; align-items: center; margin-right: 12px; }
+  .K .opts .cb { width: 16px; height: 16px; }
+  .K .field { display: flex; height: 30px; border-radius: 10px; background: var(--sur); overflow: hidden; }
+  .K .field span:first-child { flex: 1; padding: 0 10px; display: flex; align-items: center; }
+  .K .field span:last-child { padding: 0 10px; display: flex; align-items: center; color: var(--muted); }
+  .K .chip { font-size: 11.5px; font-weight: 600; padding: 2px 8px; border-radius: 999px; background: var(--sur); color: var(--muted); }
+  .K .chip.bad { background: var(--bad-tint); color: var(--bad); }
+  .K .sum { margin: 2px 12px 6px; padding: 12px 14px; border-radius: 14px; background: var(--sur); }
+  .K .sum .l { display: flex; justify-content: space-between; font-size: 13px; margin-bottom: 8px; }
+  .K .prog { height: 8px; border-radius: 999px; background: var(--track); overflow: hidden; }
+  .K .sum .prog { background: var(--bg); }
+  .K .prog i { display: block; height: 100%; border-radius: 999px; background: var(--pri-strong); transition: width .4s; }
+  .K .prog.m i { background: var(--merge); }
+  .K li.q { display: flex; gap: 10px; padding: 10px 16px 12px; }
+  .K .stat { display: flex; gap: 10px; align-items: baseline; margin-top: 8px; font-size: 12.5px; }
+  .K .stat b { font-size: 15px; font-weight: 750; }
+  .K .tech { font-size: 11.5px; color: var(--muted); margin-top: 2px; }
+  .K .sec { display: flex; padding: 12px 16px 4px; font-weight: 700; font-size: 13px; color: var(--muted); }
+  .K .sec a { margin-left: auto; color: var(--pri-text); font-size: 12.5px; }
+  .K .msg { margin-top: 7px; padding: 7px 10px; border-radius: 10px; background: var(--bad-tint); color: var(--bad); font-size: 12px; line-height: 1.4; }
+  .K footer { margin-top: auto; padding: 8px 16px; font-size: 12px; color: var(--muted); border-top: 1px solid var(--line); }
+  .K .empty { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; padding: 0 40px 10px; }
+  .K .empty .big { width: 64px; height: 92px; overflow: visible; }
+  .K .empty .swing { transform-origin: 32px 0; animation: k-swing 2.8s ease-in-out infinite; }
+  @keyframes k-swing { 0%,100% { transform: rotate(-5deg) } 50% { transform: rotate(5deg) } }
+  .K .empty h4 { margin: 10px 0 4px; font-size: 15px; font-weight: 700; }
+  .K .empty p { margin: 0; font-size: 12.5px; color: var(--muted); line-height: 1.5; }
+  .K .bump { animation: k-bump .35s cubic-bezier(.3,1.6,.5,1); }
+  @keyframes k-bump { 0% { transform: scale(1) } 45% { transform: scale(1.45) } 100% { transform: scale(1) } }
+
+  /* =====================================================================
+     2 — CURRENT
+     ===================================================================== */
+  .W { --font: 'Lexend', system-ui, sans-serif;
+       --bg:#F6FAFA; --sur:#FFFFFF; --line:#DDE7E8; --ink:#12262B; --muted:#53676D; --faint:#8CA0A5;
+       --pri:#087A7F; --on-pri:#FFFFFF; --water:#22AFAC; --water2:#7CD9D3; --audio:#F0A73A; --tint:#E3F4F3; --ok:#2C9A5F; --warn:#B87B00; --bad:#CF4339; --bad-tint:#FBEAE8; --track:#E2ECEC; }
+  .W.dark { --bg:#0E1719; --sur:#152226; --line:#22343A; --ink:#E7F1F1; --muted:#95ABAF; --faint:#5E767B;
+       --pri:#3CC7C4; --on-pri:#052022; --water:#3CC7C4; --water2:#1E6E70; --audio:#F2B457; --tint:#16302F; --ok:#5ED197; --warn:#E8B040; --bad:#FF7468; --bad-tint:#3A2321; --track:#1D2E33; }
+  .W header { display: flex; align-items: center; gap: 9px; height: 48px; padding: 0 16px; }
+  .W .logo { width: 24px; height: 24px; }
+  .W .wm { font-weight: 600; font-size: 16px; letter-spacing: -.01em; }
+  .W .ver { margin-left: auto; font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 6px; }
+  .W .ver i { width: 7px; height: 7px; border-radius: 50%; background: var(--water); }
+  .W nav { display: flex; gap: 20px; padding: 0 16px; border-bottom: 1px solid var(--line); }
+  .W nav a { position: relative; padding: 6px 0 10px; font-size: 13.5px; font-weight: 400; color: var(--muted); display: flex; gap: 6px; align-items: center; }
+  .W nav a.on { color: var(--ink); font-weight: 500; }
+  .W nav a.on::after { content: ''; position: absolute; left: 0; right: 0; bottom: -1px; height: 3px; border-radius: 3px 3px 0 0; background: var(--water); }
+  .W .count { font-size: 11px; font-weight: 600; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px; display: inline-grid; place-items: center; background: var(--tint); color: var(--pri); }
+  .W .btn { display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 14px; border-radius: 10px; font-weight: 500; font-size: 13px; border: 1px solid transparent; background: none; white-space: nowrap; }
+  .W .btn.pri { background: var(--pri); color: var(--on-pri); }
+  .W .btn.out { border-color: var(--line); background: var(--sur); }
+  .W .btn.soft { background: var(--tint); color: var(--pri); }
+  .W .btn.txt { color: var(--muted); padding: 0 8px; }
+  .W .sel { display: inline-flex; align-items: center; gap: 4px; height: 32px; padding: 0 9px 0 11px; border-radius: 10px; border: 1px solid var(--line); background: var(--sur); font-size: 12.5px; white-space: nowrap; max-width: 150px; }
+  .W .sel .ico { width: 13px; color: var(--muted); }
+  .W .bar { display: flex; align-items: center; gap: 10px; padding: 10px 12px 10px 16px; }
+  .W li.v { display: flex; gap: 11px; margin: 0 8px; padding: 11px 10px 12px; border-radius: 14px; }
+  .W li.v.on { background: var(--tint); } .W li.v.on .btn.soft { background: var(--sur); }
+  .W li.v .cb { margin-top: 2px; --cb: var(--pri); }
+  .W .t { font-weight: 500; font-size: 14px; line-height: 1.35; }
+  .W .m { font-size: 12px; color: var(--muted); margin-top: 2px; display: flex; gap: 8px; align-items: center; }
+  .W .dur { display: inline-flex; align-items: center; gap: 4px; }
+  .W .dur svg { width: 12px; height: 12px; }
+  .W .ctrls { display: flex; gap: 6px; margin-top: 9px; }
+  .W .opts { margin-top: 9px; padding: 10px 12px; border-radius: 12px; background: var(--sur); border: 1px solid var(--line); display: grid; grid-template-columns: 44px 1fr; gap: 8px; align-items: center; font-size: 12.5px; }
+  .W .opts .k { color: var(--muted); }
+  .W .opts label { display: inline-flex; gap: 6px; align-items: center; margin-right: 12px; }
+  .W .opts .cb { width: 16px; height: 16px; }
+  .W .field { display: flex; height: 32px; border-radius: 10px; border: 1px solid var(--line); overflow: hidden; background: var(--bg); }
+  .W .field span:first-child { flex: 1; padding: 0 10px; display: flex; align-items: center; }
+  .W .field span:last-child { padding: 0 10px; display: flex; align-items: center; color: var(--muted); }
+  .W .chip.bad { font-size: 12px; color: var(--bad); }
+  /* liquid tube */
+  .W .tube { position: relative; height: 12px; border-radius: 999px; background: var(--track); overflow: hidden; }
+  .W .fill { position: absolute; left: 0; top: 0; bottom: 0; background: var(--water); border-radius: 999px 0 0 999px; transition: width .6s cubic-bezier(.3,.7,.4,1), background-color .4s; }
+  .W .fill::before { content: ''; position: absolute; left: 6px; right: 10px; top: 2px; height: 2px; border-radius: 2px; background: rgba(255,255,255,.35); }
+  .W .fill::after { content: ''; position: absolute; top: 0; right: -7px; width: 8px; height: 200%; background: inherit;
+       -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='12'%3E%3Cpath d='M0 0H3Q8 3 3 6Q-2 9 3 12H0Z'/%3E%3C/svg%3E") 0 0/8px 12px repeat-y;
+       mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='12'%3E%3Cpath d='M0 0H3Q8 3 3 6Q-2 9 3 12H0Z'/%3E%3C/svg%3E") 0 0/8px 12px repeat-y;
+       animation: w-slosh .9s linear infinite; }
+  @keyframes w-slosh { from { transform: translateY(-12px) } to { transform: translateY(0) } }
+  .W .tube.stall .fill { background: var(--warn); }
+  .W .tube.stall .fill::after { animation-play-state: paused; }
+  .W .tube.big { height: 14px; }
+  .W .merge { height: 26px; width: 100%; overflow: visible; }
+  .W .merge path { fill: none; stroke-linecap: round; }
+  .W .merge .a { stroke: var(--water); stroke-width: 3; stroke-dasharray: 6 5; animation: w-flow 1s linear infinite; }
+  .W .merge .b { stroke: var(--audio); stroke-width: 3; stroke-dasharray: 6 5; animation: w-flow 1s linear infinite; }
+  .W .merge .c { stroke: var(--ink); stroke-width: 5; opacity: .85; }
+  .W .merge .bg { stroke: var(--track); stroke-width: 5; }
+  @keyframes w-flow { to { stroke-dashoffset: -11 } }
+  .W .sum { margin: 4px 12px 8px; padding: 12px 14px 13px; border-radius: 14px; background: var(--sur); border: 1px solid var(--line); }
+  .W .sum .l { display: flex; justify-content: space-between; font-size: 13px; margin-bottom: 9px; }
+  .W li.q { padding: 10px 16px 13px; }
+  .W li.q + li.q { border-top: 1px solid var(--line); }
+  .W .qh { display: flex; gap: 8px; align-items: baseline; }
+  .W .stat { display: flex; gap: 12px; align-items: center; margin-top: 8px; font-size: 12.5px; color: var(--muted); }
+  .W .stat b { color: var(--ink); font-weight: 600; font-size: 14px; }
+  .W .state { font-size: 12px; font-weight: 500; display: inline-flex; gap: 5px; align-items: center; }
+  .W .state.dl { color: var(--pri); } .W .state.st { color: var(--warn); } .W .state.wt { color: var(--muted); } .W .state.bad { color: var(--bad); }
+  .W .tech { font-size: 11.5px; color: var(--faint); margin-top: 3px; }
+  .W .sec { display: flex; padding: 12px 16px 6px; font-size: 13px; font-weight: 500; color: var(--muted); border-top: 1px solid var(--line); }
+  .W .sec a { margin-left: auto; color: var(--pri); }
+  .W .msg { margin-top: 7px; padding: 8px 10px; border-radius: 10px; background: var(--bad-tint); color: var(--bad); font-size: 12px; line-height: 1.45; }
+  .W footer { margin-top: auto; padding: 8px 16px; font-size: 12px; color: var(--muted); border-top: 1px solid var(--line); }
+  .W .empty { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; padding: 0 40px 10px; }
+  .W .pond { position: relative; width: 96px; height: 96px; display: grid; place-items: center; }
+  .W .pond i { position: absolute; inset: 30px; border-radius: 50%; border: 2px solid var(--water); opacity: 0; animation: w-ripple 3s ease-out infinite; }
+  .W .pond i:nth-child(2) { animation-delay: 1s; } .W .pond i:nth-child(3) { animation-delay: 2s; }
+  @keyframes w-ripple { 0% { transform: scale(.6); opacity: .7 } 100% { transform: scale(2.2); opacity: 0 } }
+  .W .pond svg { position: relative; width: 30px; height: 30px; color: var(--water); }
+  .W .empty h4 { margin: 8px 0 4px; font-size: 15px; font-weight: 500; }
+  .W .empty p { margin: 0; font-size: 12.5px; color: var(--muted); line-height: 1.55; }
+  .W .drip { animation: w-drip .6s ease-out; }
+  @keyframes w-drip { 0% { transform: scale(1) } 40% { transform: scale(1.3) } 100% { transform: scale(1) } }
+
+  /* =====================================================================
+     3 — TICKET
+     ===================================================================== */
+  .T { --font: 'Archivo', system-ui, sans-serif;
+       --bg:#ECEDF1; --paper:#FFFFFF; --line:#DADCE2; --perf:#C5C8D0; --ink:#1C1F26; --muted:#5E6472; --faint:#9499A5;
+       --pri:#F2B705; --on-pri:#1C1A10; --pri-text:#8A6A00; --ok:#21885A; --bad:#CC3838; --bad-tint:#FBE9E9; --track:#E6E8EC; --stamp:#C2362F; }
+  .T.dark { --bg:#121318; --paper:#1E2027; --line:#2E313A; --perf:#3D414B; --ink:#EEEFF2; --muted:#A1A6B2; --faint:#6B707C;
+       --pri:#FFC83D; --on-pri:#1C1606; --pri-text:#FFD36A; --ok:#53C98B; --bad:#FF6F6F; --bad-tint:#3A2224; --track:#2C2F37; --stamp:#FF7A6E; }
+  .T header { display: flex; align-items: center; gap: 9px; height: 48px; padding: 0 14px; }
+  .T .logo { width: 26px; height: 26px; }
+  .T .wm { font-weight: 800; font-size: 17px; font-stretch: 112%; letter-spacing: -.01em; }
+  .T .ver { margin-left: auto; font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 6px; }
+  .T .ver i { width: 7px; height: 7px; border-radius: 50%; background: var(--ok); }
+  .T nav { display: flex; gap: 4px; padding: 0 10px 8px; }
+  .T nav a { display: flex; gap: 6px; align-items: center; padding: 5px 11px; border-radius: 8px; font-weight: 600; font-size: 13px; color: var(--muted); }
+  .T nav a.on { background: var(--paper); color: var(--ink); box-shadow: 0 1px 0 var(--line); }
+  .T .count { font-size: 11px; font-weight: 800; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 4px; display: inline-grid; place-items: center; background: var(--pri); color: var(--on-pri); }
+  .T .btn { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 12px; border-radius: 8px; font-weight: 700; font-size: 12.5px; border: 1.5px solid transparent; background: none; white-space: nowrap; }
+  .T .btn.pri { background: var(--pri); color: var(--on-pri); }
+  .T .btn.out { border-color: var(--line); background: var(--paper); }
+  .T .btn.txt { color: var(--muted); padding: 0 8px; font-weight: 600; }
+  .T .bar { display: flex; align-items: center; gap: 8px; padding: 4px 12px 10px 14px; }
+  .T .list { padding: 0 10px; display: flex; flex-direction: column; gap: 8px; }
+  .T .tk { --cut: calc(100% - 96px); position: relative; display: flex; background: var(--paper); border-radius: 10px;
+       -webkit-mask: radial-gradient(circle 8px at var(--cut) 0, #0000 98%, #000) top/100% 51% no-repeat, radial-gradient(circle 8px at var(--cut) 100%, #0000 98%, #000) bottom/100% 51% no-repeat;
+       mask: radial-gradient(circle 8px at var(--cut) 0, #0000 98%, #000) top/100% 51% no-repeat, radial-gradient(circle 8px at var(--cut) 100%, #0000 98%, #000) bottom/100% 51% no-repeat; }
+  .T .tk.on { box-shadow: inset 0 0 0 2px var(--pri); }
+  .T .tk .main { flex: 1; min-width: 0; padding: 11px 12px 11px 12px; display: flex; gap: 10px; }
+  .T .tk .stub { width: 96px; flex: none; padding: 10px 10px 10px 12px; border-left: 2px dashed var(--perf); display: flex; flex-direction: column; justify-content: space-between; align-items: flex-start; gap: 6px; }
+  .T .q { font-weight: 800; font-size: 20px; line-height: 1; font-stretch: 75%; letter-spacing: -.01em; display: flex; align-items: center; gap: 2px; }
+  .T .q .ico { width: 13px; color: var(--muted); }
+  .T .q.sm { font-size: 14px; font-stretch: 85%; }
+  .T .ql { font-size: 10.5px; color: var(--muted); font-weight: 600; }
+  .T .t { font-weight: 700; font-size: 14px; line-height: 1.3; }
+  .T .m { font-size: 12px; color: var(--muted); margin-top: 2px; }
+  .T .ctrls { display: flex; gap: 4px; margin-top: 7px; margin-left: -8px; }
+  .T .opts { margin: 0 0 0; padding: 10px 12px; border-top: 1.5px dashed var(--perf); display: grid; grid-template-columns: 44px 1fr; gap: 8px; align-items: center; font-size: 12.5px; }
+  .T .opts .k { color: var(--muted); font-weight: 600; }
+  .T .opts label { display: inline-flex; gap: 6px; align-items: center; margin-right: 12px; }
+  .T .opts .cb { width: 16px; height: 16px; }
+  .T .field { display: flex; height: 30px; border-radius: 8px; border: 1px solid var(--line); overflow: hidden; }
+  .T .field span:first-child { flex: 1; padding: 0 9px; display: flex; align-items: center; }
+  .T .field span:last-child { padding: 0 9px; display: flex; align-items: center; color: var(--muted); background: var(--bg); }
+  .T .stamp { position: absolute; right: 108px; top: 50%; translate: 0 -50%; rotate: -9deg; padding: 2px 8px; border: 2px solid var(--stamp); border-radius: 6px; color: var(--stamp); font-weight: 800; font-size: 13px; font-stretch: 90%; opacity: 0; pointer-events: none; }
+  .T .stamp.show { animation: t-stamp 1.5s ease forwards; }
+  @keyframes t-stamp { 0% { opacity: 0; scale: 1.6 } 18% { opacity: 1; scale: .95 } 26%,80% { opacity: 1; scale: 1 } 100% { opacity: 0; scale: 1 } }
+  .T .tk.torn .stub { visibility: hidden; }
+  .T .sum { margin: 0 10px 8px; padding: 11px 13px 12px; border-radius: 10px; background: var(--paper); }
+  .T .sum .l { display: flex; justify-content: space-between; font-size: 13px; margin-bottom: 8px; }
+  .T .prog { height: 8px; border-radius: 4px; background: var(--track); overflow: hidden; }
+  .T .prog i { display: block; height: 100%; background: var(--pri); transition: width .4s; }
+  .T .prog.m i { background: var(--ok); }
+  .T .qi { position: relative; background: var(--paper); border-radius: 10px 0 0 10px; padding: 10px 18px 12px 12px;
+       -webkit-mask: linear-gradient(#000,#000) left/calc(100% - 7px) 100% no-repeat, conic-gradient(from -135deg at right, #0000 90deg, #000 0) right/7px 12px repeat-y;
+       mask: linear-gradient(#000,#000) left/calc(100% - 7px) 100% no-repeat, conic-gradient(from -135deg at right, #0000 90deg, #000 0) right/7px 12px repeat-y; }
+  .T .stat { display: flex; gap: 10px; align-items: baseline; margin-top: 8px; font-size: 12.5px; }
+  .T .stat b { font-weight: 800; font-size: 15px; font-stretch: 90%; }
+  .T .tech { font-size: 11.5px; color: var(--faint); margin-top: 2px; }
+  .T .sec { display: flex; padding: 6px 4px 0; font-weight: 700; font-size: 12.5px; color: var(--muted); }
+  .T .sec a { margin-left: auto; color: var(--pri-text); }
+  .T .msg { margin-top: 7px; padding: 7px 9px; border-radius: 8px; background: var(--bad-tint); color: var(--bad); font-size: 12px; line-height: 1.4; }
+  .T .saved { position: absolute; right: 22px; top: 10px; rotate: -8deg; padding: 1px 7px; border: 2px solid var(--ok); color: var(--ok); border-radius: 6px; font-weight: 800; font-size: 12px; font-stretch: 90%; }
+  .T footer { margin-top: auto; padding: 8px 14px; font-size: 12px; color: var(--muted); }
+  .T .empty { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; padding: 0 40px 10px; }
+  .T .slot { position: relative; width: 120px; height: 70px; }
+  .T .slot::before { content: ''; position: absolute; left: 10px; right: 10px; top: 0; height: 6px; border-radius: 3px; background: var(--ink); opacity: .85; }
+  .T .slot .blank { position: absolute; left: 22px; right: 22px; top: 3px; height: 54px; border-radius: 0 0 8px 8px; background: var(--paper); border: 1.5px solid var(--line); border-top: none; animation: t-print 3.2s ease-in-out infinite; transform-origin: top; }
+  .T .slot .blank::after { content: ''; position: absolute; left: 8px; right: 8px; bottom: 14px; border-top: 2px dashed var(--perf); }
+  @keyframes t-print { 0%,15% { transform: translateY(-48px) } 45%,75% { transform: translateY(0) } 100% { transform: translateY(-48px) } }
+  .T .empty h4 { margin: 8px 0 4px; font-size: 15px; font-weight: 700; }
+  .T .empty p { margin: 0; font-size: 12.5px; color: var(--muted); line-height: 1.5; }
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute">
+  <symbol id="chev" viewBox="0 0 16 16"><path d="M4.5 6.5 8 10l3.5-3.5"/></symbol>
+  <symbol id="x" viewBox="0 0 16 16"><path d="M4.5 4.5l7 7m0-7l-7 7"/></symbol>
+  <symbol id="tick" viewBox="0 0 16 16"><path d="M3.5 8.5l3 3 6-7"/></symbol>
+  <symbol id="down" viewBox="0 0 16 16"><path d="M8 2.5v8m-3.5-3.5L8 10.5 11.5 7M3 13.5h10"/></symbol>
+  <symbol id="lock" viewBox="0 0 16 16"><rect x="3.5" y="7" width="9" height="6.5" rx="1.5"/><path d="M5.5 7V5.2a2.5 2.5 0 0 1 5 0V7"/></symbol>
+  <symbol id="clock" viewBox="0 0 16 16"><circle cx="8" cy="8" r="5.8"/><path d="M8 5v3.2l2 1.3"/></symbol>
+  <symbol id="play" viewBox="0 0 16 16"><path d="M5 3.2v9.6a.6.6 0 0 0 .9.5l7.6-4.8a.6.6 0 0 0 0-1L5.9 2.7a.6.6 0 0 0-.9.5Z"/></symbol>
+  <symbol id="warn" viewBox="0 0 16 16"><path d="M8 5.5v3.5m0 2.3v.1M7 2.6 1.6 12.2A1.2 1.2 0 0 0 2.6 14h10.8a1.2 1.2 0 0 0 1-1.8L9 2.6a1.2 1.2 0 0 0-2 0Z"/></symbol>
+  <symbol id="drop" viewBox="0 0 24 24"><path d="M12 2.8c3.6 4.1 6.4 7.7 6.4 11.1a6.4 6.4 0 0 1-12.8 0c0-3.4 2.8-7 6.4-11.1Z" fill="currentColor" stroke="none"/><path d="M12 10v6m-2.6-2.6L12 16l2.6-2.6" stroke="#fff" stroke-width="1.8" fill="none"/></symbol>
+</svg>
+
+<div class="page">
+  <h1>StreamGrab popup — design proposals (November 2026)</h1>
+  <p><b>Chosen: 1 · Claw</b> (2026-11-09), specified in <a href="../DESIGN.md">docs/DESIGN.md</a>. Directions 2 and 3 are kept as alternatives, described in <a href="ALTERNATIVES.md">ALTERNATIVES.md</a>. Each direction shows Detected, Queue and the empty state. Press <b>Download</b> in a mockup to play its signature animation; Light/Dark switches the color mode. Sample titles are in several languages on purpose; the UI text stays as it is in the extension. Fonts load from Google Fonts here only; the extension bundles them.</p>
+
+  <section class="dir" data-dir="K">
+    <div class="dir-head"><h2>1 · Claw (chosen)</h2><span>playful, memorable, tied to the word “Grab”</span>
+      <div class="ctl"><button data-act="grab">▶ Play animation</button><button data-m="light" aria-pressed="true">Light</button><button data-m="dark">Dark</button></div></div>
+    <p>The logo is a small arcade claw. On Download the video tile flies up, the claw drops, grabs it and drops it on the Queue tab, whose count bumps: the motion shows where the video went. The empty page shows the claw swinging while it waits. Bricolage Grotesque, pill buttons, tangerine.</p>
+    <div class="frames" data-frames></div>
+  </section>
+
+  <section class="dir" data-dir="W">
+    <div class="dir-head"><h2>2 · Current (alternative)</h2><span>calm, soft, reassuring</span>
+      <div class="ctl"><button data-act="stall">Simulate “Stalled”</button><button data-act="grab">▶ Play animation</button><button data-m="light" aria-pressed="true">Light</button><button data-m="dark">Dark</button></div></div>
+    <p>A stream is water. Progress is a tube of liquid whose wave edge moves while data arrives and stops, turning amber, when the download stalls, so anyone can tell whether it is still working. Merging shows two streams (picture and sound) joining into one. The empty page shows ripples. Lexend, a typeface designed for easier reading.</p>
+    <div class="frames" data-frames></div>
+  </section>
+
+  <section class="dir" data-dir="T">
+    <div class="dir-head"><h2>3 · Ticket (alternative)</h2><span>tactile, witty, a cinema metaphor</span>
+      <div class="ctl"><button data-act="grab">▶ Play animation</button><button data-m="light" aria-pressed="true">Light</button><button data-m="dark">Dark</button></div></div>
+    <p>Each video is a ticket whose tear-off stub holds the quality and Download. On Download the stub tears along the perforation and flies to Queue while the ticket gets a “Queued” stamp; queued tickets have a torn edge and saved files get a “Saved” stamp. The empty page prints a blank ticket from a slot. Archivo with its width axis (condensed numbers on the stub).</p>
+    <div class="frames" data-frames></div>
+  </section>
+</div>
+
+<script>
+const S = [
+  { id: 's1', title: 'Sintel – Official trailer', host: 'media.example.org', dur: '0:52', q: '1080p', audio: 'Audio: en', sel: true, opts: true, c: '#E8613C' },
+  { id: 's2', title: '東京の夜景 — Tokyo night walk 4K', host: 'video.example.jp', dur: '24:10', q: '2160p', audio: 'Audio: 日本語', sel: true, c: '#3C6FE8' },
+  { id: 's3', title: 'Morning yoga for beginners', host: 'cdn.example.com', dur: '20:05', q: 'Single quality', audio: 'Options', sel: false, c: '#1E9E8A' },
+  { id: 's4', title: 'Premium episode 4', host: 'tv.example.net', drm: true },
+];
+const Q = [
+  { title: 'Sintel – Official trailer', meta: '1080p · en · 0:52', st: 'dl', pct: 61.7, eta: '2 min 37 s', speed: '2.1 MB/s', tech: '682 / 1,106 segments · 412 MB / ~742 MB', c: '#E8613C' },
+  { title: '東京の夜景 — Tokyo night walk 4K', meta: '2160p · 日本語 · 24:10', st: 'mg', pct: 72, tech: 'H.264 · AAC · MP4', c: '#3C6FE8' },
+  { title: 'Morning yoga for beginners', meta: '720p · 20:05', st: 'wt', c: '#1E9E8A' },
+];
+const F = { title: 'Cours de cuisine : la pâte brisée', meta: '720p · français', msg: 'The server refused segment 215 (HTTP 403). Reload the page, then press Retry.', c: '#B5477A' };
+const i = (id, cls = 'ico', style = '') => `<svg class="${cls}" style="${style}"><use href="#${id}"/></svg>`;
+const tick = `<span class="cb on">${i('tick')}</span>`;
+const tabs = (on, count) => ['Detected', 'Queue', 'Completed', 'Settings'].map((t) => `<a class="${t === on ? 'on' : ''}" data-tab="${t}">${t}${t === 'Queue' ? ` <span class="count">${count}</span>` : ''}</a>`).join('');
+
+/* ---------------- 1 CLAW ---------------- */
+const claw = (cls = 'claw') => `<svg class="${cls}" viewBox="0 0 32 50"><g class="rig"><line x1="16" y1="-60" x2="16" y2="25" stroke="var(--ink)" stroke-width="1.6"/>
+  <rect x="10" y="24" width="12" height="8" rx="3" fill="var(--ink)"/>
+  <path class="pl" d="M13 31c-5 3-6.5 8-3.5 12l3.2-1.6" stroke="var(--pri)" stroke-width="3" fill="none" stroke-linecap="round"/>
+  <path class="pr" d="M19 31c5 3 6.5 8 3.5 12l-3.2-1.6" stroke="var(--pri)" stroke-width="3" fill="none" stroke-linecap="round"/></g></svg>`;
+const kHead = `<header>${claw()}<span class="wm">StreamGrab</span><span class="ver"><i></i>v0.4.0</span></header>`;
+const kTile = (s, big) => s.drm ? `<span class="tile na">${i('lock')}</span>` : `<span class="tile" style="--c:${s.c}">${i('play', '')}${s.dur ? `<span class="d">${s.dur}</span>` : ''}</span>`;
+function kDetected() {
+  return `<div class="pop K">${kHead}<nav>${tabs('Detected', 2)}</nav>
+  <div class="bar"><span class="cb mid"></span><span class="grow"><b>2</b> of 3 selected</span><button class="btn txt">Clear list</button><button class="btn pri">${i('down')}Download selected (2)</button></div>
+  <ul>${S.map((s) => `<li class="v ${s.sel ? 'sel' : ''}" data-id="${s.id}">${s.drm ? '<span class="cb off"></span>' : s.sel ? tick : '<span class="cb"></span>'}${kTile(s)}
+    <div class="grow"><div class="row" style="align-items:flex-start"><span class="t clamp grow" ${s.drm ? 'style="color:var(--muted)"' : ''}>${s.title}</span><span class="muted" style="width:22px;height:22px;display:grid;place-items:center">${i('x')}</span></div>
+    <div class="m">${s.host}</div></div>
+    ${s.drm ? `<div class="ctrls"><span class="chip bad">DRM · not supported</span></div>` : `<div class="ctrls"><span class="pill">${s.q} ${i('chev')}</span><span class="pill">${s.audio} ${i('chev')}</span><button class="btn dl" data-dl style="margin-left:auto">${i('down')}Download</button></div>`}
+    ${s.opts ? `<div class="opts"><span class="k">Audio</span><span><label>${tick}en (default)</label></span><span class="k">File</span><span class="field"><span class="trunc">Sintel_Official_trailer_1080p</span><span>.mp4</span></span><span class="k">Details</span><span class="muted">DASH · H.264 · AAC</span></div>` : ''}
+    </li>`).join('')}</ul></div>`;
+}
+function kQueue() {
+  return `<div class="pop K">${kHead}<nav>${tabs('Queue', 2)}</nav>
+  <div class="sum"><div class="l"><span><b>Downloading 2 videos</b> · 46.2%</span><span class="tnum muted">3.4 MB/s</span></div><div class="prog"><i style="width:46.2%"></i></div></div>
+  <ul>${Q.map((q) => `<li class="q">${kTile({ c: q.c, dur: '' })}<div class="grow"><div class="t trunc">${q.title}</div><div class="m">${q.meta}</div>
+    ${q.st === 'dl' ? `<div class="prog" style="margin-top:8px"><i data-live style="width:${q.pct}%"></i></div><div class="stat tnum"><b data-pct>${q.pct}%</b><span>ETA ${q.eta}</span><span class="muted">${q.speed}</span><button class="btn out" style="margin-left:auto;height:28px">Cancel</button></div><div class="tech tnum">${q.tech}</div>`
+      : q.st === 'mg' ? `<div class="prog m" style="margin-top:8px"><i style="width:${q.pct}%"></i></div><div class="stat tnum"><b>${q.pct}%</b><span>Merging video and audio</span><button class="btn out" style="margin-left:auto;height:28px">Cancel</button></div><div class="tech">${q.tech}</div>`
+      : `<div class="stat"><span class="chip">Pending</span><span class="muted">Waiting for a free slot</span><button class="btn out" style="margin-left:auto;height:28px">Remove</button></div>`}</div></li>`).join('')}</ul>
+  <div class="sec">Failed or cancelled</div>
+  <ul><li class="q"><span class="tile" style="--c:var(--bad)">${i('warn', 'ico', 'stroke:#fff;width:20px;height:20px')}</span><div class="grow"><div class="t trunc">${F.title}</div><div class="m">${F.meta}</div><div class="msg">${F.msg}</div><div class="row" style="justify-content:flex-end;margin-top:8px"><button class="btn out" style="height:28px">Remove</button><button class="btn pri" style="height:28px">Retry</button></div></div></li></ul>
+  <footer class="tnum">Stored segments 476 MB · 212 GB free</footer></div>`;
+}
+function kEmpty() {
+  return `<div class="pop K short">${kHead}<nav>${tabs('Detected', 0).replace('<span class="count">0</span>', '')}</nav>
+  <div class="empty"><svg class="big" viewBox="0 0 64 92"><g class="swing"><line x1="32" y1="0" x2="32" y2="46" stroke="var(--ink)" stroke-width="2"/><rect x="22" y="44" width="20" height="13" rx="5" fill="var(--ink)"/>
+    <path d="M27 56c-9 5-11 14-6 21l5-2.5" stroke="var(--pri)" stroke-width="4.5" fill="none" stroke-linecap="round"/><path d="M37 56c9 5 11 14 6 21l-5-2.5" stroke="var(--pri)" stroke-width="4.5" fill="none" stroke-linecap="round"/></g></svg>
+  <h4>No streams detected on this page yet</h4><p>Start playing a video. Supported streams appear here as soon as the page loads them.</p></div></div>`;
+}
+
+/* ---------------- 2 CURRENT ---------------- */
+const wHead = `<header>${i('drop', 'logo', 'color:var(--water)')}<span class="wm">StreamGrab</span><span class="ver"><i></i>v0.4.0</span></header>`;
+function wDetected() {
+  return `<div class="pop W">${wHead}<nav>${tabs('Detected', 2)}</nav>
+  <div class="bar"><span class="cb mid" style="--cb:var(--pri)"></span><span class="grow"><b style="font-weight:600">2</b> of 3 selected</span><button class="btn txt">Clear list</button><button class="btn pri">Download selected (2)</button></div>
+  <ul>${S.map((s) => `<li class="v ${s.sel ? 'on' : ''}" data-id="${s.id}">${s.drm ? '<span class="cb off"></span>' : s.sel ? tick : '<span class="cb"></span>'}
+    <div class="grow"><div class="row" style="align-items:flex-start"><span class="t clamp grow" ${s.drm ? 'style="color:var(--muted)"' : ''}>${s.title}</span><span class="muted" style="width:22px;height:22px;display:grid;place-items:center">${i('x')}</span></div>
+    <div class="m"><span>${s.host}</span>${s.dur ? `<span class="dur">${i('clock')}${s.dur}</span>` : ''}</div>
+    ${s.drm ? `<div class="ctrls"><span class="chip bad">${i('lock', 'ico', 'width:13px;height:13px;vertical-align:-2px')} DRM · not supported</span></div>` : `<div class="ctrls"><span class="sel">${s.q} ${i('chev')}</span><span class="sel">${s.audio} ${i('chev')}</span><button class="btn soft" data-dl style="margin-left:auto">Download</button></div>`}
+    ${s.opts ? `<div class="opts"><span class="k">Audio</span><span><label>${tick}en (default)</label></span><span class="k">File</span><span class="field"><span class="trunc">Sintel_Official_trailer_1080p</span><span>.mp4</span></span><span class="k">Details</span><span class="muted">DASH · H.264 · AAC</span></div>` : ''}
+    </div></li>`).join('')}</ul></div>`;
+}
+const mergeSvg = (pct) => `<svg class="merge" viewBox="0 0 352 26" preserveAspectRatio="none"><path class="bg" d="M120 13H346"/><path class="a" d="M6 5C60 5 80 13 120 13"/><path class="b" d="M6 21C60 21 80 13 120 13"/><path class="c" d="M120 13H${120 + (226 * pct) / 100}"/></svg>`;
+function wQueue() {
+  return `<div class="pop W">${wHead}<nav>${tabs('Queue', 2)}</nav>
+  <div class="sum"><div class="l"><span><b style="font-weight:600">Downloading 2 videos</b> · 46.2%</span><span class="tnum muted">3.4 MB/s</span></div><div class="tube big"><div class="fill" style="width:46.2%"></div></div></div>
+  <ul>${Q.map((q) => `<li class="q"><div class="qh"><span class="t trunc grow">${q.title}</span></div><div class="m">${q.meta}</div>
+    ${q.st === 'dl' ? `<div class="tube" style="margin-top:9px" data-tube><div class="fill" data-live style="width:${q.pct}%"></div></div><div class="stat tnum"><span class="state dl" data-state>Downloading</span><b data-pct>${q.pct}%</b><span>ETA ${q.eta}</span><button class="btn out" style="margin-left:auto;height:28px">Cancel</button></div><div class="tech tnum">${q.tech}</div>`
+      : q.st === 'mg' ? `<div style="margin-top:6px">${mergeSvg(q.pct)}</div><div class="stat tnum"><span class="state dl">Merging video and audio</span><b>${q.pct}%</b><button class="btn out" style="margin-left:auto;height:28px">Cancel</button></div>`
+      : `<div class="stat"><span class="state wt">${i('clock', 'ico', 'width:13px;height:13px')}Pending</span><span>Waiting for a free slot</span><button class="btn out" style="margin-left:auto;height:28px">Remove</button></div>`}</li>`).join('')}</ul>
+  <div class="sec">Failed or cancelled</div>
+  <ul><li class="q"><div class="t trunc">${F.title}</div><div class="m">${F.meta}</div><div class="msg">${F.msg}</div><div class="row" style="justify-content:flex-end;margin-top:8px"><button class="btn out" style="height:28px">Remove</button><button class="btn pri" style="height:28px">Retry</button></div></li></ul>
+  <footer class="tnum">Stored segments 476 MB · 212 GB free</footer></div>`;
+}
+function wEmpty() {
+  return `<div class="pop W short">${wHead}<nav>${tabs('Detected', 0).replace('<span class="count">0</span>', '')}</nav>
+  <div class="empty"><div class="pond"><i></i><i></i><i></i>${i('drop', '', '')}</div><h4>No streams detected on this page yet</h4><p>Start playing a video. Supported streams appear here as soon as the page loads them.</p></div></div>`;
+}
+
+/* ---------------- 3 TICKET ---------------- */
+const tLogo = `<svg class="logo" viewBox="0 0 26 26"><path d="M3 7a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v3a3 3 0 0 0 0 6v3a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-3a3 3 0 0 0 0-6Z" fill="var(--pri)"/><path d="M17 6v14" stroke="var(--on-pri)" stroke-width="1.6" stroke-dasharray="2 2"/><path d="M10 9v6m-2.5-2.5L10 15l2.5-2.5" stroke="var(--on-pri)" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+const tHead = `<header>${tLogo}<span class="wm">StreamGrab</span><span class="ver"><i></i>v0.4.0</span></header>`;
+function tDetected() {
+  return `<div class="pop T">${tHead}<nav>${tabs('Detected', 2)}</nav>
+  <div class="bar"><span class="cb mid" style="--cb:var(--ink);--on-cb:var(--paper)"></span><span class="grow"><b>2</b> of 3 selected</span><button class="btn txt">Clear list</button><button class="btn pri">Download selected (2)</button></div>
+  <div class="list">${S.map((s) => `<div data-id="${s.id}"><div class="tk ${s.sel ? 'on' : ''}"><div class="main">${s.drm ? '<span class="cb off"></span>' : s.sel ? `<span class="cb on" style="--cb:var(--ink);--on-cb:var(--paper)">${i('tick')}</span>` : '<span class="cb"></span>'}
+      <div class="grow"><div class="t clamp" ${s.drm ? 'style="color:var(--muted)"' : ''}>${s.title}</div><div class="m">${s.host}${s.dur ? ` · ${s.dur}` : ''}</div>
+      ${s.drm ? '' : `<div class="ctrls"><button class="btn txt">${s.audio} ${i('chev', 'ico', 'width:13px')}</button></div>`}</div></div>
+    <div class="stub">${s.drm ? `<span class="q sm" style="color:var(--bad)">${i('lock', 'ico', 'width:14px;color:var(--bad)')} DRM</span><span class="ql">not supported</span>` : `<span><span class="q ${s.q.length > 6 ? 'sm' : ''}">${s.q} ${i('chev')}</span><span class="ql">${s.q.length > 6 ? '' : 'quality'}</span></span><button class="btn pri" data-dl style="height:28px;padding:0 10px">Download</button>`}</div>
+    <span class="stamp">Queued</span></div>
+    ${s.opts ? `<div class="tk" style="--cut:-20px;margin-top:-6px;border-radius:0 0 10px 10px"><div class="opts" style="flex:1"><span class="k">Audio</span><span><label><span class="cb on" style="--cb:var(--ink);--on-cb:var(--paper)">${i('tick')}</span>en (default)</label></span><span class="k">File</span><span class="field"><span class="trunc">Sintel_Official_trailer_1080p</span><span>.mp4</span></span><span class="k">Details</span><span class="muted">DASH · H.264 · AAC</span></div></div>` : ''}</div>`).join('')}</div></div>`;
+}
+function tQueue() {
+  return `<div class="pop T">${tHead}<nav>${tabs('Queue', 2)}</nav>
+  <div class="sum"><div class="l"><span><b>Downloading 2 videos</b> · 46.2%</span><span class="tnum muted">3.4 MB/s</span></div><div class="prog"><i style="width:46.2%"></i></div></div>
+  <div class="list">${Q.map((q) => `<div class="qi"><div class="t trunc">${q.title}</div><div class="m">${q.meta}</div>
+    ${q.st === 'dl' ? `<div class="prog" style="margin-top:8px"><i data-live style="width:${q.pct}%"></i></div><div class="stat tnum"><b data-pct>${q.pct}%</b><span>ETA ${q.eta}</span><span class="muted">${q.speed}</span><button class="btn out" style="margin-left:auto;height:28px">Cancel</button></div><div class="tech tnum">${q.tech}</div>`
+      : q.st === 'mg' ? `<div class="prog m" style="margin-top:8px"><i style="width:${q.pct}%"></i></div><div class="stat tnum"><b>${q.pct}%</b><span>Merging video and audio</span><button class="btn out" style="margin-left:auto;height:28px">Cancel</button></div>`
+      : `<div class="stat"><span class="muted">Pending · waiting for a free slot</span><button class="btn out" style="margin-left:auto;height:28px">Remove</button></div>`}</div>`).join('')}
+    <div class="qi"><div class="t trunc" style="padding-right:56px">Big Buck Bunny (2008)</div><div class="m">1080p · 9:56 · 151 MB</div><span class="saved">Saved</span></div>
+    <div class="sec">Failed or cancelled</div>
+    <div class="qi"><div class="t trunc">${F.title}</div><div class="m">${F.meta}</div><div class="msg">${F.msg}</div><div class="row" style="justify-content:flex-end;margin-top:8px"><button class="btn out" style="height:28px">Remove</button><button class="btn pri" style="height:28px">Retry</button></div></div>
+  </div></div>`;
+}
+function tEmpty() {
+  return `<div class="pop T short">${tHead}<nav>${tabs('Detected', 0).replace('<span class="count">0</span>', '')}</nav>
+  <div class="empty"><div class="slot"><span class="blank"></span></div><h4>No streams detected on this page yet</h4><p>Start playing a video. Supported streams appear here as soon as the page loads them.</p></div></div>`;
+}
+
+const TOKENS = {
+  K: { sw: [['#FFFFFF / #171A21', 'Background'], ['#1B2030 / #EEF0F4', 'Ink (text)'], ['#FF7A1A / #FF8A33', 'Tangerine: claw, primary action'], ['#FFF1E6 / #2D241B', 'Selected row'], ['#0C8784 / #3CC9C3', 'Merging'], ['#C22E2E / #FF6B6B', 'Error']],
+       type: `<b style="font:800 18px 'Bricolage Grotesque'">Bricolage Grotesque</b>: one family with an optical-size axis; Latin + Vietnamese, other scripts (CJK, Arabic, Thai) fall back to the system font<br>Pill buttons, 12px video tiles, no card borders` },
+  W: { sw: [['#F6FAFA / #0E1719', 'Background'], ['#12262B / #E7F1F1', 'Ink'], ['#22AFAC / #3CC7C4', 'Water: progress'], ['#087A7F / #3CC7C4', 'Primary button'], ['#F0A73A', 'Sound stream (merge), Stalled'], ['#CF4339 / #FF7468', 'Error']],
+       type: `<b style="font:600 18px Lexend">Lexend</b>: designed for easier reading; Latin + Vietnamese, other scripts use the system font<br>10–14px radii, soft surfaces, few rules` },
+  T: { sw: [['#ECEDF1 / #121318', 'Lobby (background)'], ['#FFFFFF / #1E2027', 'Ticket paper'], ['#F2B705 / #FFC83D', 'Ticket gold: primary action'], ['#1C1F26 / #EEEFF2', 'Ink'], ['#21885A / #53C98B', 'Saved, merging'], ['#C2362F / #FF7A6E', 'Stamp, error']],
+       type: `<b style="font-family:Archivo;font-weight:800;font-stretch:112%;font-size:18px">Archivo</b>: width axis 75–112%; Latin + Vietnamese<br>10px tickets with notches, dashed perforation` },
+};
+const R = { K: [kDetected, kQueue, kEmpty], W: [wDetected, wQueue, wEmpty], T: [tDetected, tQueue, tEmpty] };
+
+for (const sec of document.querySelectorAll('section.dir')) {
+  const d = sec.dataset.dir, [det, que, emp] = R[d], tk = TOKENS[d];
+  sec.querySelector('[data-frames]').innerHTML = det() + que() +
+    `<div class="side">${emp()}<div class="tokens"><h3>Palette (light / dark)</h3>${tk.sw.map(([v, n]) => `<div class="sw"><i style="background:${v.split(' / ')[0]}"></i><span>${n}</span><code>${v}</code></div>`).join('')}<div class="type">${tk.type}</div></div></div>`;
+  sec.querySelectorAll('[data-m]').forEach((b) => b.addEventListener('click', () => {
+    sec.querySelectorAll('.pop').forEach((p) => p.classList.toggle('dark', b.dataset.m === 'dark'));
+    sec.querySelectorAll('[data-m]').forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
+  }));
+  const pop = sec.querySelector('.pop');
+  const run = (btn) => grab[d](pop, btn.closest('[data-id]'));
+  sec.querySelectorAll('[data-dl]').forEach((b) => b.addEventListener('click', () => run(b)));
+  sec.querySelector('[data-act="grab"]').addEventListener('click', () => run(pop.querySelector('[data-dl]')));
+  sec.querySelector('[data-act="stall"]')?.addEventListener('click', (e) => {
+    const t = sec.querySelectorAll('.pop')[1].querySelector('[data-tube]'), s = t.parentElement.querySelector('[data-state]');
+    const on = t.classList.toggle('stall'); s.textContent = on ? 'Stalled' : 'Downloading'; s.className = `state ${on ? 'st' : 'dl'}`;
+    e.currentTarget.setAttribute('aria-pressed', String(on));
+  });
+}
+
+const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
+const rect = (el) => el.getBoundingClientRect();
+function bump(pop) {
+  const c = pop.querySelector('[data-tab="Queue"] .count'); c.textContent = Number(c.textContent) + 1;
+  c.classList.remove('bump', 'drip'); void c.offsetWidth; c.classList.add(pop.classList.contains('W') ? 'drip' : 'bump');
+}
+function fly(el, to, frames, ms) {
+  const r = rect(el), ghost = el.cloneNode(true);
+  Object.assign(ghost.style, { left: `${r.left}px`, top: `${r.top}px`, width: `${r.width}px`, height: `${r.height}px`, margin: 0 });
+  ghost.classList.add('flyer'); ghost.style.position = 'fixed'; ghost.querySelectorAll('[data-dl]').forEach((b) => b.removeAttribute('data-dl'));
+  (el.closest('.pop')).appendChild(ghost);
+  const dx = to.left + to.width / 2 - (r.left + r.width / 2), dy = to.top + to.height / 2 - (r.top + r.height / 2);
+  return ghost.animate(frames(dx, dy), { duration: ms, easing: 'cubic-bezier(.45,0,.2,1)', fill: 'forwards' }).finished.then(() => ghost.remove());
+}
+const grab = {
+  K(pop, item) {
+    if (reduce) return bump(pop);
+    const tile = item.querySelector('.tile'), c = pop.querySelector('.claw'), cr = rect(c);
+    c.classList.remove('grab'); void c.getBoundingClientRect(); c.classList.add('grab');
+    const clawPoint = { left: cr.left, top: cr.top + 30, width: cr.width, height: 20 }, tab = rect(pop.querySelector('[data-tab="Queue"] .count'));
+    const r = rect(tile), cx = clawPoint.left + 15 - (r.left + r.width / 2), cy = clawPoint.top + 14 - (r.top + r.height / 2);
+    const tx = tab.left + tab.width / 2 - (r.left + r.width / 2), ty = tab.top + tab.height / 2 - (r.top + r.height / 2);
+    fly(tile, tab, () => [
+      { transform: 'translate(0,0) scale(1)' },
+      { offset: .38, transform: `translate(${cx}px,${cy}px) scale(.42)` },
+      { offset: .62, transform: `translate(${cx}px,${cy - 6}px) scale(.42)` },
+      { transform: `translate(${tx}px,${ty}px) scale(.2)`, opacity: .2 },
+    ], 1000).then(() => bump(pop));
+  },
+  W(pop, item) {
+    if (reduce) return bump(pop);
+    const tab = rect(pop.querySelector('[data-tab="Queue"] .count')), r = rect(item);
+    const dot = document.createElement('span');
+    Object.assign(dot.style, { left: `${r.left + r.width - 60}px`, top: `${r.top + r.height - 30}px`, width: '14px', height: '18px', background: 'var(--water)', borderRadius: '50% 50% 50% 50% / 60% 60% 40% 40%' });
+    dot.className = 'flyer'; pop.appendChild(dot);
+    item.animate([{ backgroundColor: 'var(--tint)' }, { backgroundColor: 'transparent' }], { duration: 700 });
+    const dx = tab.left - (r.left + r.width - 60), dy = tab.top - (r.top + r.height - 30);
+    dot.animate([{ transform: 'translate(0,0) scale(.4)' }, { offset: .25, transform: 'translate(0,-10px) scale(1)' }, { transform: `translate(${dx}px,${dy}px) scale(.6)`, opacity: .4 }],
+      { duration: 800, easing: 'cubic-bezier(.5,0,.3,1)', fill: 'forwards' }).finished.then(() => { dot.remove(); bump(pop); });
+  },
+  T(pop, item) {
+    if (reduce) return bump(pop);
+    const tk = item.querySelector('.tk'), stub = tk.querySelector('.stub'), stamp = tk.querySelector('.stamp'), tab = rect(pop.querySelector('[data-tab="Queue"] .count'));
+    const r = rect(stub), ghost = document.createElement('div');
+    Object.assign(ghost.style, { left: `${r.left}px`, top: `${r.top}px`, width: `${r.width}px`, height: `${r.height}px`, background: 'var(--paper)', borderRadius: '0 10px 10px 0', borderLeft: '2px dashed var(--perf)', boxShadow: '0 6px 16px rgba(0,0,0,.18)' });
+    ghost.innerHTML = stub.innerHTML; ghost.className = 'flyer'; ghost.style.padding = '10px 10px 10px 12px'; ghost.style.display = 'flex'; ghost.style.flexDirection = 'column'; ghost.style.justifyContent = 'space-between';
+    pop.appendChild(ghost); tk.classList.add('torn');
+    stamp.classList.remove('show'); void stamp.offsetWidth; stamp.classList.add('show');
+    const dx = tab.left + tab.width / 2 - (r.left + r.width / 2), dy = tab.top + tab.height / 2 - (r.top + r.height / 2);
+    ghost.animate([{ transform: 'translate(0,0) rotate(0)' }, { offset: .3, transform: 'translate(14px,-6px) rotate(9deg)' }, { transform: `translate(${dx}px,${dy}px) rotate(20deg) scale(.15)`, opacity: .3 }],
+      { duration: 900, easing: 'cubic-bezier(.5,0,.3,1)', fill: 'forwards' }).finished.then(() => { ghost.remove(); bump(pop); setTimeout(() => tk.classList.remove('torn'), 700); });
+  },
+};
+
+// Live progress in the Queue mockups.
+setInterval(() => {
+  document.querySelectorAll('[data-live]').forEach((bar) => {
+    const tube = bar.closest('[data-tube]'); if (tube?.classList.contains('stall')) return;
+    let p = parseFloat(bar.style.width) + 0.4; if (p > 98) p = 12; bar.style.width = `${p}%`;
+    const label = bar.closest('li, .qi')?.querySelector('[data-pct]'); if (label) label.textContent = `${p.toFixed(1)}%`;
+  });
+}, 600);
+</script>
+</body>
+</html>
