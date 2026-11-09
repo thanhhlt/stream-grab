@@ -34,6 +34,15 @@ Version 0.3.0 (progressive MP4/WebM) was built in four further phases on top of 
 | 3     | Progressive download integration                   | Done   |
 | 4     | Regression testing and release                     | Done   |
 
+Version 0.4.0 (storage and housekeeping) in four phases:
+
+| Phase | Scope                                              | Status |
+| ----- | -------------------------------------------------- | ------ |
+| 1     | Analysis and Chrome spikes (OPFS, downloads into a subfolder) | Done |
+| 2     | Live streams not listed; Completed *Remove all*; Downloads subfolder | Done |
+| 3     | Merge output to OPFS                               | Done   |
+| 4     | Regression testing and release                     | Done    |
+
 ## Execution contexts
 
 ```
@@ -191,6 +200,8 @@ content script: <video>/<source> manifests ──▶ content/domSources ──�
    updates the URL and context to the freshest ones. Variant and rendition playlists of an
    inspected master are removed from the list and ignored afterwards, whichever order they
    arrive in, so a player loading 1 master + N playlists shows one video.
+   **Live manifests are not listed** (0.4.0, see *Version 0.4.0* below): a live player reloads
+   its playlist every few seconds, often with a query `dedupeKey` keeps.
 5. **Statuses.** `pending` → `ready` | `drm` (never downloaded, reason shown) | `error` (HTTP
    status explained; retried when the page requests the manifest again with a new URL or
    context, e.g. a re-signed link). Bodies that turn out not to be manifests are dropped.
@@ -266,7 +277,7 @@ core/models/                         StreamingManifest, VideoVariant, AudioTrack
   variants or audio tracks). A multivariant playlist whose first variant cannot be read is still
   described (no duration).
 - **Live.** Live playlists are parsed and `getSegments` returns the current window, with
-  `isLive` set; the popup says live download is not supported yet. Whether to record live
+  `isLive` set; detection does not list them (0.4.0) and the engine refuses them. Whether to record live
   streams is a later decision, not a parser concern.
 
 ## DASH parsing (Phase 4)
@@ -299,7 +310,7 @@ core/models/                         StreamingManifest, VideoVariant, AudioTrack
   it into ranged requests for parallel download.
 - **Dynamic MPDs.** Parsed with the current wall clock, so the segment window is "now"; cached
   only until the next `minimumUpdatePeriod` (1–5 s), so each `getSegments` sees a fresh window.
-  The popup marks them live; downloading live streams is not supported yet.
+  Detection does not list them (0.4.0); downloading live streams is not supported yet.
 - **Caching and requests** work as for HLS (shared `ManifestCache`, post-redirect aliases,
   `prefetched` body from detection, page request context replayed): one MPD is fetched and
   parsed once for detection, variant listing and segment lists of every representation.
@@ -572,7 +583,7 @@ offscreen document: Engine = DownloadManager + MediaManager
        ▼  FfmpegService (main thread)  ── postMessage {run, coreUrl, job: tool, args, input Blobs} ──▶
   workers/media-worker.js (module worker)
        MediaWorkerHost → import('/ffmpeg/ffmpeg-core.js') once → FfmpegSession
-         InputFs /in (mounted Blobs, read in 4 MiB chunks)   SinkFs /out (outputs streamed into Blob parts)
+         InputFs /in (mounted Blobs, read in 4 MiB chunks)   SinkFs /out (merge → OPFS file; else Blob parts)
        ◀── started / progress / done {stdout, stderr tail, output Blobs} / failed {kind}
   ◀── engine/mediaReport (stage, step, percent; outcome failed | cancelled)
   ── engine/save (merged file, Phase 9) ──▶ service worker
@@ -596,8 +607,9 @@ offscreen document: Engine = DownloadManager + MediaManager
   command with named input Blobs and output names. Inputs are mounted read-only (WORKERFS until
   Phase 10, now InputFs, which reads larger chunks)
   under `/in`: FFmpeg reads them on demand through `FileReaderSync`, so a multi-GB track is never
-  copied into the heap. Outputs are written to `/out`, which streams them into Blob parts
-  (SinkFs, Phase 9; Phase 8 used MEMFS). Every command unmounts its inputs and clears `/out`, and its
+  copied into the heap. Outputs are written to `/out` (SinkFs, Phase 9; Phase 8 used MEMFS): to
+  a file on disk in OPFS when the job names one (`outputFiles`, the merge since 0.4.0), otherwise
+  streamed into Blob parts. Every command unmounts its inputs and clears `/out`, and its
   logger/progress handlers are scoped to it. Names, argument counts and input counts are
   validated. Behaviour of the core that was checked rather than assumed: `exec()` returns 0/1
   and calls `onAbort("")` after every run; `ffprobe()` always returns −1, so its stdout (JSON)
@@ -710,7 +722,7 @@ supports only `<6.1` today.
 | Track layout                 | IndexedDB (with the plan) | Init segments, discontinuities, containers per track; no URLs. Media processing reads it |
 | Media analysis               | `chrome.storage.local`    | On the task: what FFmpeg found and the container chosen |
 | FFmpeg.wasm core             | Extension package         | `dist/ffmpeg/`, loaded by the media worker only while processing |
-| Merged file while saving     | Blob (offscreen document) | Streamed out of FFmpeg in parts; a blob: URL Chrome reads; released after the save |
+| Merged file while saving     | OPFS `merges/` (0.4.0)    | `<taskId>.<attempt>.mp4\|mkv`, written by the media worker; a blob: URL of its File Chrome reads; deleted after the save, orphans at startup. Blob parts if OPFS fails |
 | Progressive file (0.3.0)     | Downloads folder (Chrome) | Chrome writes it there itself; with the engine fallback, a Blob of parts until Chrome saved it. Never IndexedDB |
 | Saved file                   | Downloads folder          | Path, size and download ID on the task (`output.saved`), for the Completed tab |
 
@@ -718,7 +730,7 @@ supports only `<6.1` today.
 
 ```
 offscreen: MediaManager job ─ analyseTask ─ mergeTask ─────────────────────────────▶ blob: URL
-             tracks → runs (init / discontinuity) → FFmpeg -c copy → SinkFs → Blob ─ ffprobe check
+             tracks → runs (init / discontinuity) → FFmpeg -c copy → SinkFs → OPFS File ─ ffprobe check
              ── engine/save {taskId, url, container, size, media} ──▶
 service worker: DownloadCoordinator.startSave
              chrome.downloads.download({url, filename: baseName + .mp4|.mkv, conflictAction: 'uniquify'})
@@ -726,7 +738,7 @@ service worker: DownloadCoordinator.startSave
 chrome.downloads.onChanged (complete | interrupted) ──▶ #settleSave
              complete: task completed (saved path, size), segments deleted, notification, pump
              interrupted: task failed with Chrome's reason, segments kept
-             pump → engine/sync without the task → MediaManager revokes the blob: URL
+             pump → engine/sync without the task → MediaManager revokes the blob: URL, deletes the OPFS file
 ```
 
 - **Runs** (`merge-plan.ts`, `trackRuns`). Byte-joining a track's segments is valid only within
@@ -747,7 +759,9 @@ chrome.downloads.onChanged (complete | interrupted) ──▶ #settleSave
   name as `title` and, in MP4, as `handler_name` (what players show for MP4 tracks; a name that
   is only the language code is left out), the first audio stream as default. HEVC in MP4 is
   tagged `hvc1`. No `faststart`: moving the index to the front means rewriting the file.
-- **Streaming output** (`output-sink.ts`, `sink-fs.ts`). `/out` is a custom Emscripten
+- **Streaming output** (`output-sink.ts`, `sink-fs.ts`). Since 0.4.0 the merged file is a file
+  on disk (FileSink, see "Merged files on disk"); what follows is the fallback when OPFS cannot
+  be used. `/out` is a custom Emscripten
   filesystem whose files are BlobSinks: the first 1 MiB stays in memory (muxers patch sizes and
   durations there at the end), the most recent ≤ 64 MiB too, everything older is flushed into
   32 MiB Blob parts, which Chrome's Blob storage holds (in its own memory up to a limit, then on
@@ -765,7 +779,8 @@ chrome.downloads.onChanged (complete | interrupted) ──▶ #settleSave
   does and keeps it alive (`MediaManager` holds it) until the service worker drops the task from
   its work list; the offscreen document stays open meanwhile, since processing tasks count as
   work. `chrome.downloads.download` gets the task's file name (`baseName` + the analysed
-  container's extension) in the Downloads folder, `conflictAction: 'uniquify'` (an existing file
+  container's extension) in the Downloads folder (or its subfolder from Settings, 0.4.0),
+  `conflictAction: 'uniquify'` (an existing file
   is never overwritten: Chrome adds " (1)"), `saveAs: false`. The merged Blob carries the
   container's MIME type (`video/mp4`, `video/x-matroska`): Chrome names a download after the
   response's type and replaces an extension that does not belong to it, and an untyped Blob was
@@ -1091,6 +1106,110 @@ three end-to-end scenarios in Chrome for Testing: detection on `/files`, byte-fo
 next to an HLS stream with the Referer fallback, and cancel/retry/crash/quit on `/files/slow`
 (a 6 MiB file served at 1 MiB/s). Coverage: 90 % of lines of `src/`.
 
+## Version 0.4.0
+
+### Live streams are not listed (Phase 2)
+
+On a live page the Detected list and the badge used to grow to 99+: live manifests were listed
+(tagged *Live*, download refused), and each reload with a changing query (LL-HLS
+`_HLS_msn`/`_HLS_part`, `t=`, unknown tokens) got a new `dedupeKey`, so a new entry and a new
+inspection, until `maxStreamsPerTab` (100) evicted real videos.
+
+`DetectionManager` now drops a manifest whose inspection says live (HLS without
+`#EXT-X-ENDLIST`, a master by its first variant; DASH `type="dynamic"`), from an inspection or a
+content probe. It remembers its `liveKey` (host + exact path, query ignored) and those of a live
+master's playlists in the tab's in-memory `liveKeys`, drops entries of those keys still `pending`
+or in `error` (never `ready` ones: they are downloadable videos), and skips later candidates with
+those keys before any fetch. An inspection waiting for a slot looks its entry up when its turn
+comes and is applied before the slot is freed, so reloads queued behind the first one are not
+fetched once it says live. `urlShape` is not used: its collapsed digits would also hide a VOD
+such as `/hls/456/index.m3u8` next to a live `/hls/123/index.m3u8`. The keys are cleared with the
+list (navigation, *Clear list*) and with the worker (the next reload is inspected once more). A
+page that plays a VOD and a live lists the VOD, before and after any number of live reloads.
+
+Trade-offs: a live whose path changes per reload is still fetched once per reload, but never
+listed; an entry of the same path as a live, only by query, is not listed either (it is ignored
+like a reload); a broken VOD playlist without `#EXT-X-ENDLIST` counts as live and is now hidden
+(it could not be downloaded before either). End-to-end: the fixture site's `/live` page (a VOD
+and 30 live reloads) lists the VOD only, badge 1, at most a few live fetches by the extension.
+The popup's live guards (`selection.ts`, the card's
+message) and the engine's refusals stay for a future live feature.
+
+### Completed tab: Remove all, Remove missing (Phase 2)
+
+The Completed tab's summary bar has *Remove all* (a confirmation dialog first:
+`ConfirmDialog`, focus on Cancel, Tab kept inside, Escape or a click outside cancels) and, only
+while files are missing, *Remove missing (N)*. Both send the existing `downloads/remove` with the
+task IDs: entries go, files stay on disk. *Remove all* is named so on purpose: the Queue's
+*Clear all* only hides finished tasks from the Queue.
+
+### Merged files on disk: OPFS (Phase 3)
+
+Until 0.4.0 a merge streamed into 32 MiB Blob parts (BlobSink), which Chrome keeps in its browser
+process up to about 1–2 GB before paging to disk, so a multi-GB merge raised Chrome's memory by
+that much until the save completed (Phase 1 spike: +0.5–1.0 GiB for 1 GiB). The media worker now
+writes the merged file to the extension's origin private file system (`output-files.ts`):
+
+- **Name.** `merges/<taskId>.<attempt>.mp4|mkv` (`mergeFileName`; attempt = MediaManager's clock
+  and a counter in base 36): every attempt gets a new file, so a file whose blob: URL Chrome may
+  still be reading is never written again. Chrome types the File from its extension
+  (`video/mp4`, `video/matroska`); `mergeTask` slices it to `video/x-matroska` for MKV as before
+  (slicing copies nothing).
+- **Writing** (`FileSink`, `FfmpegSession`). FFmpeg's file calls are synchronous; synchronous
+  access handles exist only in dedicated workers, and opening one is asynchronous. So the job
+  names the file (`FfmpegJob.outputFiles`: output → file name), the session opens it (created or
+  emptied) before `exec()`, and SinkFs creates the output's node on it: every write and read goes
+  straight to the file (`write(data, { at })`), nothing is kept in memory, and a muxer may read
+  back (MP4 `faststart` works on it; not used). After the command the handle is flushed and
+  closed, and its File is the output; it reaches the offscreen document by `postMessage` (a
+  reference, no copy) and is mounted again for the ffprobe check. The session deletes the file of
+  a failed command. `FfmpegSession.run()` is asynchronous now (opening, reading back).
+- **Failures.** A write the disk cannot hold (`QuotaExceededError`) becomes EIO for FFmpeg and a
+  `disk` error for the task: "There is not enough disk space to write the merged file. Free up
+  disk space, then press Retry; the downloaded segments are kept." The check before merging (2 ×
+  the tracks + 256 MiB) is unchanged: `navigator.storage.estimate()` counts OPFS, and so does the
+  popup's storage figure while a merged file exists. A file that cannot be opened (no OPFS)
+  makes the output stream into Blob parts as before (`fileError`, logged by MediaManager).
+- **Lifetime.** MediaManager holds the blob: URL and the file while Chrome saves, and deletes the
+  file when the service worker drops the task (saved or interrupted) or on cancel, never sooner:
+  a download Chrome has not started yet fails (`NETWORK_FAILED`) once its file is gone, one that
+  has started completes (Phase 1). A merge that fails its check, is cancelled or is refused
+  deletes its file at once; a file still open (its worker just terminated) is retried for 3 s.
+  Whatever is left (the browser closed mid-merge, a deletion cut short by the document closing)
+  goes with the coordinator's orphan cleanup (`#removeOrphanFiles`, at startup and whenever the
+  engine closes): every file of `merges/` except those of `processing` tasks, skipping files
+  still open. The service worker can list and delete OPFS files, not write them.
+- **Tested.** Unit: FileSink (patches, reads past the end, full disk), real FFmpeg into a file
+  byte for byte like MEMFS (MP4, Matroska) and MP4 faststart, the session's files (kept for the
+  caller, deleted on failure, full disk → `disk`, fallback with its reason), `OpfsOutputFiles`
+  against a fake OPFS (locks, retry, missing), MediaManager (a file per attempt, typed, deleted
+  after the save, a failed check, cancel during the merge and while saving, a refused save) and
+  the coordinator's cleanup. End-to-end: each of the three demo merges appears in OPFS as
+  `<taskId>.*.mp4` with exactly the size Chrome saved, and `merges/` is empty afterwards (an
+  orphan placed there first included).
+
+Memory was measured in the Phase 1 spike with the same mechanism (Chrome's private bytes: OPFS
+write of 4.5 GiB +13 MiB, saving it +3–12 MiB), not again with the extension on a multi-GB video.
+Not tested: Chrome 116 (the minimum; sync handle methods are synchronous since Chrome 108) and a
+disk that really fills up.
+
+### Downloads subfolder (Phase 2)
+
+Setting *Save in a subfolder* (`downloadFolder`, default empty = Chrome's download folder as
+before). `parseDownloadFolder` (`core/download/file-name.ts`) normalises what the user types:
+trim, `\` → `/`, empty and `.` segments dropped, each segment cleaned with the file-name rules
+(reserved characters, trailing dots/spaces, device names such as `CON`), at most 80 characters
+(folder + name must stay under Windows' 260); `..` and absolute paths (`C:\…`, `\\server`) are
+refused with a reason in the Settings field and never saved (Chrome throws "Invalid filename"
+for them, checked in Chrome 157). The coordinator reads the setting when Chrome starts saving
+(`#inFolder`, merged and progressive files alike) and passes `folder/name` to
+`chrome.downloads.download`, which creates the folders and uniquifies per folder. Two failures
+only a subfolder causes get their own message (`folderFailureMessage`): `FILE_FAILED` (a file has
+the folder's name) and `USER_CANCELED` before Chrome chose a path (the full path is too long).
+End-to-end: the real Settings field takes `StreamGrab\Phim Việt`, stores `StreamGrab/Phim Việt`,
+and a WebM (Chrome's download) and a merged HLS video land in that folder; the real Completed
+tab's *Remove all* then empties the list after its dialog, with every file still on disk.
+
 ## Known limitations
 
 - **Progressive files.** Chrome's own downloads carry no Referer/Origin; the engine fallback
@@ -1115,21 +1234,25 @@ next to an HLS stream with the Referer fallback, and cancel/retry/crash/quit on 
   Packed-audio tracks (HLS `.aac` segments) carry their timestamps in ID3 tags that FFmpeg's
   demuxer ignores, so such a track starts at 0 and may be off by the video's start offset.
 - MP4 files have their index at the end (no faststart): players that stream from a network
-  need the whole file first; local playback is unaffected.
-- **Memory while merging and saving a large video.** The merged file lives in Chrome's Blob
-  storage until Chrome has saved it. Chrome keeps Blob data in its own (browser process) memory
-  up to a limit that depends on the machine's RAM (on desktops it can reach about 1–2 GB) and
-  pages the rest to disk, so merging a multi-GB video raises Chrome's memory use by up to that
-  much until the save completes; it is released when the task is completed (blob URL revoked,
-  FFmpeg worker ended after 10 s idle, offscreen document closed). Writing the output to the
-  origin-private file system (OPFS) instead would keep it on disk; not done yet.
-- FFmpeg's heap is 2 GiB, but the merge does not depend on it: outputs stream into Blob parts.
-  Chrome's own Blob storage limits remain (it pages large Blobs to disk; the disk needs room for
-  the stored segments, the merged file while saving, and the saved copy at once, about three
-  times the video's size at the peak; checked before merging). A 1.5 GB merge takes about 5 s
-  in Chromium on a fast machine; slower disks and CPUs scale it.
-- Saving uses the Downloads folder (Chrome's setting; "Ask where to save each file" may still
-  show a dialog). There is no "Open file" button: it needs the `downloads.open` permission.
+  need the whole file first; local playback is unaffected. The OPFS output could move it (it
+  reads back fine); not done.
+- **Memory while merging and saving a large video.** Since 0.4.0 the merged file is written to
+  OPFS, on disk, and Chrome's memory hardly grows. Only when OPFS cannot be used does the output
+  stream into Blob parts as before: Chrome keeps Blob data in its own (browser process) memory up
+  to a limit that depends on the machine's RAM (on desktops about 1–2 GB) and pages the rest to
+  disk, so such a merge raises Chrome's memory use by up to that much until the task is completed
+  (blob URL revoked, FFmpeg worker ended after 10 s idle, offscreen document closed).
+- FFmpeg's heap is 2 GiB, but the merge does not depend on it: outputs go to a file on disk (or
+  stream into Blob parts). The disk needs room for the stored segments, the merged file while
+  saving, and the saved copy at once, about three times the video's size at the peak (checked
+  before merging). A 1.5 GB merge takes about 5 s in Chromium on a fast machine; slower disks
+  and CPUs scale it.
+- Saving uses the Downloads folder (Chrome's setting) or a subfolder of it (Settings, 0.4.0);
+  a folder elsewhere cannot be chosen, and "Ask where to save each file" may still show a
+  dialog. The subfolder is read when Chrome starts saving, so a change applies to saves that
+  start afterwards.
+- **Live streams** are not listed at all (0.4.0) until live download exists; a broken VOD
+  playlist without `#EXT-X-ENDLIST` looks live and is hidden too. There is no "Open file" button: it needs the `downloads.open` permission.
 - The merged file lives in the offscreen document until Chrome has saved it: a browser restart in
   that window means merging again (from the stored segments).
 - The core is FFmpeg 5.1 from `@ffmpeg/core` 0.12.10, single-threaded, without SIMD; the
@@ -1138,8 +1261,9 @@ next to an HLS stream with the Referer fallback, and cancel/retry/crash/quit on 
   package, which is why StreamGrab itself is licensed GPL-3.0-or-later (compatible with both
   FFmpeg's GPL-2.0-or-later and the Apache-2.0 manifest parsers). It adds 32 MB to the extension.
 - The end-to-end tests run the installed extension in Chrome for Testing, headless, against the
-  local fixture site: notifications are not inspected, the Settings tab is only checked by hand
-  (the Detected tab by component tests), and real sites are not part of any automated test.
+  local fixture site: notifications are not inspected, the Settings tab is checked by hand
+  except its subfolder field (0.4.0; the Detected tab by component tests), and real sites are
+  not part of any automated test.
 - Size estimates are lower bounds (`+`) while a track has no samples: the audio tracks start
   after the video track, so for most of a download with separate audio its size is not
   included. Audio is usually a few percent of a video, but for low-bitrate video it can be a

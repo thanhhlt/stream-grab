@@ -187,7 +187,7 @@ describe('Completed tab', () => {
     expect(rows[1]).toContain('Saved as Lecture.mkv');
     expect(rows[1]).toContain('774 MB');
     expect(rows[1]).toContain('File missing');
-    expect(view.container.textContent).toContain('2 videos·779 MB1 file missing');
+    expect(view.container.textContent).toContain('2 videos·779 MBRemove missing (1)Remove all');
 
     await click(view.container, 'Show Movie.mp4 in its folder');
     expect(shown).toEqual([9]);
@@ -199,6 +199,49 @@ describe('Completed tab', () => {
     await click(view.container, 'Remove from list');
     expect(sent.at(-1)).toEqual({ type: 'downloads/remove', payload: { taskIds: ['newer'] } });
     expect(view.container.querySelector('[role="menu"]')).toBeNull();
+  });
+
+  it('removes the entries whose file is missing, and all entries only after a confirmation; files are never touched', async () => {
+    const { sent } = await installPopupChrome({ missingDownloads: [3, 5] });
+    const tasks = [
+      saved('a', 3, '/Downloads/A.mp4', 1_000, 1),
+      saved('b', 5, '/Downloads/B.mp4', 1_000, 2),
+      saved('c', 9, '/Downloads/C.mp4', 1_000, 3),
+    ];
+    const view = await render(CompletedPage, { tasks });
+    unmount = () => view.root.unmount();
+    const dialog = () => view.container.querySelector<HTMLElement>('[role="alertdialog"]');
+
+    await click(view.container, 'Remove missing (2)');
+    expect(sent).toEqual([{ type: 'downloads/remove', payload: { taskIds: ['b', 'a'] } }]);
+
+    // Remove all asks first; Cancel and Escape leave the list as it is.
+    await click(view.container, 'Remove all');
+    expect(dialog()?.textContent).toContain('All 3 entries are removed from this list. The saved files stay in your Downloads folder.');
+    expect(document.activeElement?.textContent).toBe('Cancel');
+    await click(dialog() ?? view.container, 'Cancel');
+    expect(dialog()).toBeNull();
+    expect(document.activeElement?.textContent).toBe('Remove all');
+    await click(view.container, 'Remove all');
+    await act(async () => {
+      dialog()?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      await Promise.resolve();
+    });
+    expect(dialog()).toBeNull();
+    expect(sent).toHaveLength(1);
+
+    await click(view.container, 'Remove all');
+    await click(dialog() ?? view.container, 'Remove all');
+    expect(dialog()).toBeNull();
+    expect(sent.at(-1)).toEqual({ type: 'downloads/remove', payload: { taskIds: ['c', 'b', 'a'] } });
+  });
+
+  it('offers Remove missing only when a file is missing', async () => {
+    await installPopupChrome();
+    const view = await render(CompletedPage, { tasks: [saved('a', 3, '/Downloads/A.mp4', 1_000, 1)] });
+    unmount = () => view.root.unmount();
+    expect(view.container.textContent).toContain('Remove all');
+    expect(view.container.textContent).not.toContain('Remove missing');
   });
 
   it('explains where videos will appear when there are none', async () => {

@@ -1,3 +1,4 @@
+import { parseDownloadFolder } from '@/core/download/file-name';
 import { ACTIVE_TASKS, SEGMENT_CONCURRENCY, type IntRange } from '@/shared/constants';
 import { isOneOf, isRecord } from '@/shared/utils/guards';
 
@@ -24,6 +25,8 @@ export interface Settings {
   autoDetect: boolean;
   /** Drop finished tasks from the queue view automatically (they stay in Completed). */
   autoRemoveCompleted: boolean;
+  /** Subfolder of Chrome's download folder files are saved in, e.g. "StreamGrab/Movies"; '' saves in the folder itself. */
+  downloadFolder: string;
 }
 
 export const DEFAULT_SETTINGS: Readonly<Settings> = Object.freeze({
@@ -33,6 +36,7 @@ export const DEFAULT_SETTINGS: Readonly<Settings> = Object.freeze({
   outputFormat: 'auto',
   autoDetect: true,
   autoRemoveCompleted: false,
+  downloadFolder: '',
 });
 
 export function clampInt(value: unknown, range: IntRange, fallback: number = range.default): number {
@@ -60,7 +64,14 @@ export function normalizeSettings(raw: unknown, fallback: Readonly<Settings> = D
     outputFormat: isOneOf(input['outputFormat'], OUTPUT_FORMATS) ? input['outputFormat'] : fallback.outputFormat,
     autoDetect: bool('autoDetect'),
     autoRemoveCompleted: bool('autoRemoveCompleted'),
+    downloadFolder: folder(input['downloadFolder'], fallback.downloadFolder),
   };
+}
+
+function folder(value: unknown, fallback: string): string {
+  if (typeof value !== 'string') return fallback;
+  const parsed = parseDownloadFolder(value);
+  return parsed.ok ? parsed.folder : fallback;
 }
 
 export function settingsEqual(a: Readonly<Settings>, b: Readonly<Settings>): boolean {

@@ -4,6 +4,7 @@ import {
   DOWNLOADED_MESSAGE,
   DownloadCoordinator,
   FILE_REMOVED_MESSAGE,
+  folderFailureMessage,
   saveFailureMessage,
   type CoordinatorDeps,
   type EngineChannel,
@@ -16,6 +17,7 @@ import type { DetectedStream, RequestContext } from '@/core/models/detected-stre
 import type { DownloadTask, EngineTaskSpec, EngineWork, MediaProgress, MediaTaskSpec, TaskProgress } from '@/core/models/download-task';
 import { DEFAULT_SETTINGS, type Settings } from '@/shared/settings/settings';
 import { FakeStorageArea } from '@tests/fakes/fake-storage';
+import { MemoryOutputFiles } from '@tests/fakes/output-files';
 import { FakeFiles, FakeNotifier } from '@tests/fakes/fake-files';
 import { ANALYSED_MEDIA, makeTask } from '@tests/fakes/tasks';
 
@@ -79,6 +81,8 @@ async function setup(
     stored?: Record<string, StoredSummary>;
     /** Streams listed in other tabs (findStreams). */
     elsewhere?: DetectedStream[];
+    /** Merged files on disk (OPFS). */
+    mergeFiles?: MemoryOutputFiles;
   } = {},
 ) {
   const store = new TaskStore(new FakeStorageArea('local'), new FakeStorageArea('session'));
@@ -114,6 +118,7 @@ async function setup(
     storage,
     engine,
     files,
+    ...(options.mergeFiles ? { mergeFiles: options.mergeFiles } : {}),
     notifier,
     acquireContext,
     getSettings: () => Promise.resolve({ ...DEFAULT_SETTINGS, ...options.settings }),
@@ -343,6 +348,44 @@ describe('DownloadCoordinator', () => {
       files.refuse = 'Invalid filename';
       await expect(coordinator.startSave(saveRequest('r'))).resolves.toBe(false);
       expect(await taskOf('r')).toMatchObject({ status: 'failed', statusMessage: expect.stringContaining('Chrome could not save the file: Invalid filename') as string });
+    });
+
+    it('saves in the subfolder of Downloads the settings name (0.4.0)', async () => {
+      const { coordinator, files, taskOf } = await setup([{ task: makeTask('sub', { status: 'processing', processing: mediaProgress('saving') }) }], {
+        settings: { downloadFolder: 'StreamGrab/Movies' },
+      });
+      await coordinator.startSave(saveRequest('sub'));
+      expect(files.entries.get(1)?.path).toBe('/Downloads/StreamGrab/Movies/Movie_sub.mp4');
+      expect(await taskOf('sub')).toMatchObject({ status: 'completed', output: { saved: { path: '/Downloads/StreamGrab/Movies/Movie_sub.mp4' } } });
+    });
+
+    it('explains a save the subfolder made fail: the folder name is taken, or the path is too long (0.4.0)', async () => {
+      const { coordinator, files, deleted, taskOf } = await setup(
+        [
+          { task: makeTask('taken', { status: 'processing', processing: mediaProgress('saving') }) },
+          { task: makeTask('long', { status: 'processing', processing: mediaProgress('saving') }) },
+          { task: makeTask('user', { status: 'processing', processing: mediaProgress('saving') }) },
+        ],
+        { settings: { downloadFolder: 'Videos' } },
+      );
+      files.manual = true;
+      await coordinator.startSave(saveRequest('taken'));
+      await coordinator.startSave(saveRequest('long'));
+      await coordinator.startSave(saveRequest('user'));
+      files.finish(1, 'FILE_FAILED');
+      // Chrome gives up before it chose the file's path when the path is too long (Chrome 157, Windows).
+      const long = files.entries.get(2);
+      if (long) long.path = '';
+      files.finish(2, 'USER_CANCELED');
+      files.finish(3, 'USER_CANCELED');
+      for (const id of [1, 2, 3]) await coordinator.handleFileChange(id);
+      expect((await taskOf('taken'))?.statusMessage).toBe(
+        'Chrome could not save the file in the folder "Videos" of Downloads (a file with that name may be in the way). Change the folder in Settings. The downloaded segments are kept: press Retry to merge and save again.',
+      );
+      expect((await taskOf('long'))?.statusMessage).toContain('full path in the folder "Videos" of Downloads is too long. Choose a shorter folder in Settings.');
+      // Cancelled in Chrome's downloads by the user: the usual message.
+      expect((await taskOf('user'))?.statusMessage).toBe(saveFailureMessage('USER_CANCELED'));
+      expect(deleted).toEqual([]);
     });
 
     it('refuses files of tasks that are no longer processing', async () => {
@@ -721,6 +764,42 @@ describe('DownloadCoordinator', () => {
       await coordinator.pump();
       expect(deleted).toEqual(['ghost', 'a']);
     });
+
+    it('deletes merged files on disk no merge needs, keeping a processing task’s and any still open (0.4.0)', async () => {
+      const mergeFiles = new MemoryOutputFiles();
+      for (const name of ['p.k1.mp4', 'c.k2.mp4', 'f.k3.mkv', 'gone.k4.mp4', 'stray.bin']) mergeFiles.leave(name);
+      mergeFiles.leave('d.k5.mp4', true); // still being written (or its worker not gone yet)
+      const { coordinator, deleted } = await setup(
+        [
+          { task: makeTask('p', { status: 'processing', processing: mediaProgress('saving') }) },
+          { task: makeTask('c', { status: 'completed' }) },
+          { task: makeTask('f', { status: 'failed' }) },
+          { task: makeTask('d', { status: 'downloaded' }) },
+        ],
+        { mergeFiles, stored: { gone: kept(1) } },
+      );
+      await expect(coordinator.cleanup()).resolves.toEqual(['gone']);
+      expect(deleted).toEqual(['gone']);
+      expect((await mergeFiles.names()).sort()).toEqual(['d.k5.mp4', 'p.k1.mp4']);
+      expect(mergeFiles.removed.sort()).toEqual(['c.k2.mp4', 'f.k3.mkv', 'gone.k4.mp4', 'stray.bin']);
+    });
+
+    it('deletes merged files when the engine closes, and stored segments even when the files cannot be listed (0.4.0)', async () => {
+      const mergeFiles = new MemoryOutputFiles();
+      mergeFiles.leave('a.k1.mp4');
+      const { coordinator, store } = await setup([{ task: makeTask('a', { status: 'processing', processing: mediaProgress('merging', 50) }) }], { mergeFiles });
+      await coordinator.cleanup();
+      expect(await mergeFiles.names()).toEqual(['a.k1.mp4']);
+      await store.update('a', (task) => ({ ...task, status: 'completed' }));
+      await coordinator.pump();
+      expect(await mergeFiles.names()).toEqual([]);
+
+      const unlistable = new MemoryOutputFiles();
+      unlistable.names = () => Promise.reject(new DOMException('denied', 'SecurityError'));
+      const { coordinator: other, deleted } = await setup([], { mergeFiles: unlistable, stored: { ghost: kept(1) } });
+      await expect(other.cleanup()).resolves.toEqual(['ghost']);
+      expect(deleted).toEqual(['ghost']);
+    });
   });
 });
 
@@ -929,6 +1008,25 @@ describe('DownloadCoordinator: progressive files (0.3.0)', () => {
     expect(await taskOf('g')).toMatchObject({ status: 'failed', statusMessage: FILE_REMOVED_MESSAGE });
   });
 
+  it('saves a file in the subfolder of Downloads, and says when that folder cannot be used (0.4.0)', async () => {
+    const { coordinator, files, taskOf } = await setup([{ task: fileTask('f', { createdAt: 1 }) }, { task: fileTask('g', { createdAt: 2 }) }], {
+      settings: { downloadFolder: 'Clips' },
+    });
+    files.manual = true;
+    await coordinator.pump();
+    expect(files.entries.get(1)?.path).toBe('/Downloads/Clips/Movie_f.mp4');
+    expect(files.entries.get(2)?.path).toBe('/Downloads/Clips/Movie_g.mp4');
+    files.finish(1);
+    files.interrupt(2, 'FILE_FAILED', false);
+    await coordinator.handleFileChange(1);
+    await coordinator.handleFileChange(2);
+    expect(await taskOf('f')).toMatchObject({ status: 'completed', output: { saved: { path: '/Downloads/Clips/Movie_f.mp4' } } });
+    expect(await taskOf('g')).toMatchObject({
+      status: 'failed',
+      statusMessage: 'Chrome could not save the file in the folder "Clips" of Downloads (a file with that name may be in the way). Change the folder in Settings. Press Retry to download it again.',
+    });
+  });
+
   it('fails a file Chrome refuses to start, and the next task takes its slot', async () => {
     const { coordinator, files, statusOf, taskOf } = await setup([{ task: fileTask('z', { createdAt: 1 }) }, queued('a', 2)], { settings: { maxActiveTasks: 1 } });
     files.refuse = 'Invalid filename';
@@ -957,5 +1055,14 @@ describe('DownloadCoordinator: progressive files (0.3.0)', () => {
     expect(files.resumed).toEqual([2]);
     expect(await taskOf('closed')).toMatchObject({ status: 'downloading', output: { downloadId: 2 } });
     expect(await taskOf('broken')).toMatchObject({ status: 'failed', statusMessage: expect.stringContaining('disk space') as string });
+  });
+});
+
+describe('folderFailureMessage (0.4.0)', () => {
+  it('only explains failures a subfolder can cause, and only with a subfolder', () => {
+    expect(folderFailureMessage({ error: 'FILE_FAILED', path: '/Downloads/x.mp4' }, '', 'Retry.')).toBeUndefined();
+    expect(folderFailureMessage({ error: 'FILE_NO_SPACE', path: '' }, 'A', 'Retry.')).toBeUndefined();
+    expect(folderFailureMessage({ error: 'USER_CANCELED', path: '/Downloads/A/x.mp4' }, 'A', 'Retry.')).toBeUndefined();
+    expect(folderFailureMessage({ error: 'FILE_FAILED', path: '' }, 'A', 'Retry.')).toMatch(/folder "A" .* Retry\.$/);
   });
 });

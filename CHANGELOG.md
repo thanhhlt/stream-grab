@@ -7,6 +7,36 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-09
+
+### Added
+
+- **Save in a subfolder** (Settings): videos go to a folder inside Chrome's download folder, such
+  as `StreamGrab` or `Videos/StreamGrab` (default empty: the download folder itself, as before).
+  What is typed is cleaned like file names; `..` and full paths are refused with a reason. Chrome
+  creates the folder; a folder that cannot be created or a path that is too long fails the task
+  with a message saying so (Retry after changing the folder).
+- **Completed tab: Remove all** (after a confirmation) and **Remove missing (N)** (only while
+  saved files are missing). Both remove entries only; the files stay on disk.
+
+### Changed
+
+- **Merging a large video no longer takes 1–2 GB of Chrome's memory**: FFmpeg writes the merged
+  file straight to disk, in the extension's private file system (OPFS), instead of Blob parts
+  Chrome kept in its browser process until the save completed. The file is deleted once Chrome
+  has saved its copy, when the merge fails or is cancelled, and, if the browser closed mid-merge,
+  at the next start. A disk that fills up while merging now says so ("Free up disk space, then
+  press Retry"). Where OPFS cannot be used, merging works in memory as before.
+
+### Fixed
+
+- **Live pages no longer flood the Detected list**: a live stream's playlist reloads (LL-HLS
+  `_HLS_msn`/`_HLS_part`, `t=` and other changing queries) each became a new entry and a new
+  request, up to 99+ on the badge, evicting the page's real videos. Live manifests (they cannot be
+  downloaded yet) are no longer listed, and their reloads are not fetched again until the next
+  page. A page with both a VOD and a live still lists the VOD. A broken VOD playlist without
+  `#EXT-X-ENDLIST` counts as live and is hidden too.
+
 ## [0.3.0] - 2026-11-06
 
 Format release: progressive MP4 and WebM files are detected and downloaded as they are, through
@@ -174,7 +204,8 @@ Notably: merging is stream copy only (no re-encoding); SAMPLE-AES and DRM-protec
 not supported; subtitles are ignored; the bundled FFmpeg.wasm core is licensed
 GPL-2.0-or-later and adds 32 MB to the extension.
 
-[Unreleased]: https://github.com/thanhhlt/stream-grab/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/thanhhlt/stream-grab/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/thanhhlt/stream-grab/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/thanhhlt/stream-grab/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/thanhhlt/stream-grab/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/thanhhlt/stream-grab/releases/tag/v0.1.0

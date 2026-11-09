@@ -61,6 +61,31 @@ export const EMBED_PAGE = `<!doctype html><html><head><meta charset="utf-8"><tit
 <script>fetch('/dash/sintel/stream.mpd').then((r) => r.text());</script>
 </body></html>`;
 
+/** A page with a VOD and a live channel whose player reloads its playlist with a changing query (0.4.0). */
+export const LIVE_PAGE_PATH = '/live';
+export const LIVE_VOD_PATH = '/channel/replay/master.m3u8';
+export const LIVE_PATH = '/channel/live/index.m3u8';
+export const LIVE_RELOADS = 30;
+
+export const LIVE_PAGE = `<!doctype html><html><head><meta charset="utf-8"><title>Live channel and replay</title></head>
+<body style="font:14px system-ui;padding:16px">
+<h1>Live channel and replay</h1>
+<p>The replay (VOD) is requested once; the live playlist ${LIVE_RELOADS} times, every 100 ms, with LL-HLS
+<code>_HLS_msn</code>/<code>_HLS_part</code>. StreamGrab lists the replay only.</p>
+<p id="status">Reloading…</p>
+<script>
+(async () => {
+  await fetch('${LIVE_VOD_PATH}').then((r) => r.text());
+  for (let n = 0; n < ${LIVE_RELOADS}; n++) {
+    await fetch('${LIVE_PATH}?_HLS_msn=' + (2680 + n) + '&_HLS_part=' + (n % 3)).then((r) => r.text());
+    await new Promise((done) => setTimeout(done, 100));
+  }
+  document.getElementById('status').textContent = 'Done';
+  document.body.dataset.done = 'true';
+})();
+</script>
+</body></html>`;
+
 const HLS = 'application/vnd.apple.mpegurl';
 const DASH = 'application/dash+xml';
 
@@ -83,6 +108,8 @@ export function createFixtureRouter(
     if (pathname === '/files' || pathname.startsWith('/files/')) return progressive(pathname, request) ?? notFound;
     if (pathname === '/requests.json') return ok('application/json', JSON.stringify(PAGE_REQUESTS));
     if (pathname === '/embed/dash') return ok('text/html; charset=utf-8', EMBED_PAGE);
+    if (pathname === LIVE_PAGE_PATH) return ok('text/html; charset=utf-8', LIVE_PAGE);
+    if (pathname === LIVE_PATH) return ok(HLS, files.manifest('hls/media-live.m3u8'));
     if (pathname.endsWith('/master.m3u8')) return ok(HLS, files.manifest('hls/master.m3u8'));
     if (pathname.endsWith('/prog_index.m3u8')) return ok(HLS, files.manifest('hls/media-ts.m3u8'));
     if (pathname.endsWith('.ts')) return ok('video/mp2t', new Uint8Array(188).fill(0x47));

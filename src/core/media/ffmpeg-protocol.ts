@@ -37,7 +37,22 @@ function parseFiles(raw: unknown): FfmpegOutput[] | null {
   const files: FfmpegOutput[] = [];
   for (const item of raw) {
     if (!isRecord(item) || typeof item['name'] !== 'string' || !(item['data'] instanceof Blob)) return null;
-    files.push({ name: item['name'], data: item['data'] });
+    const file: FfmpegOutput = { name: item['name'], data: item['data'] };
+    if (typeof item['file'] === 'string') file.file = item['file'];
+    if (typeof item['fileError'] === 'string') file.fileError = item['fileError'];
+    files.push(file);
+  }
+  return files;
+}
+
+/** Output name → file name; undefined when absent, null when malformed. */
+function parseOutputFiles(raw: unknown): Record<string, string> | undefined | null {
+  if (raw === undefined) return undefined;
+  if (!isRecord(raw)) return null;
+  const files: Record<string, string> = {};
+  for (const [output, file] of Object.entries(raw)) {
+    if (typeof file !== 'string') return null;
+    files[output] = file;
   }
   return files;
 }
@@ -47,12 +62,13 @@ export function parseRunRequest(raw: unknown): RunRequest | null {
   const job = raw['job'];
   if (!isRecord(job) || (job['tool'] !== 'ffmpeg' && job['tool'] !== 'ffprobe')) return null;
   const inputs = parseFiles(job['inputs']);
-  if (!inputs || !isStringArray(job['args']) || !isStringArray(job['outputs'])) return null;
+  const outputFiles = parseOutputFiles(job['outputFiles']);
+  if (!inputs || outputFiles === null || !isStringArray(job['args']) || !isStringArray(job['outputs'])) return null;
   const request: RunRequest = {
     type: 'run',
     id: raw['id'],
     coreUrl: raw['coreUrl'],
-    job: { tool: job['tool'], args: job['args'], inputs, outputs: job['outputs'] },
+    job: { tool: job['tool'], args: job['args'], inputs, outputs: job['outputs'], ...(outputFiles ? { outputFiles } : {}) },
   };
   if (isNumber(raw['timeoutMs']) && raw['timeoutMs'] > 0) request.timeoutMs = raw['timeoutMs'];
   return request;

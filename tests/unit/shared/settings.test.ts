@@ -50,6 +50,15 @@ describe('normalizeSettings', () => {
     expect(normalizeSettings({ autoRemoveCompleted: 1 }).autoRemoveCompleted).toBe(false);
   });
 
+  it('keeps a Downloads subfolder in the form Chrome accepts, and an invalid one falls back (0.4.0)', () => {
+    expect(DEFAULT_SETTINGS.downloadFolder).toBe('');
+    expect(normalizeSettings({ downloadFolder: ' Videos\\StreamGrab/ ' }).downloadFolder).toBe('Videos/StreamGrab');
+    expect(normalizeSettings({ downloadFolder: 42 }).downloadFolder).toBe('');
+    const current = { ...DEFAULT_SETTINGS, downloadFolder: 'Clips' };
+    expect(normalizeSettings({ ...current, downloadFolder: '../Desktop' }, current).downloadFolder).toBe('Clips');
+    expect(normalizeSettings({ ...current, downloadFolder: '' }, current).downloadFolder).toBe('');
+  });
+
   it('drops unknown keys', () => {
     expect(normalizeSettings({ ...DEFAULT_SETTINGS, legacyOption: 1 })).toEqual(DEFAULT_SETTINGS);
   });

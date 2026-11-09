@@ -5,9 +5,11 @@ import type { MediaAnalysis } from '@/core/models/media-info';
 import { formatBytes } from '@/shared/utils/bytes';
 import type { MediaProgress, MediaReport, MediaStage, MediaTaskSpec, SaveRequest } from '@/core/models/download-task';
 import { errorMessage } from '@/shared/utils/errors';
+import type { Logger } from '@/shared/utils/logger';
 import { FfmpegError, type FfmpegRunner } from './ffmpeg-job';
 import { analyseTask, MediaFailure } from './media-analysis';
 import { mergeTask } from './media-merge';
+import { mergeFileName, type OutputFileStore } from './output-files';
 
 export interface MediaManagerDeps {
   storage: SegmentStorage;
@@ -34,13 +36,22 @@ export interface MediaManagerDeps {
   estimateStorage?: EstimateStorage;
   /** Merging stops short of leaving less than this free. */
   reserveBytes?: number;
+  /**
+   * The files on disk merges write to (OPFS; the media worker opens them):
+   * deleted here once Chrome has saved its copy, or when the merge failed or
+   * was cancelled. Without it merged files stream into Blob parts.
+   */
+  files?: Pick<OutputFileStore, 'remove'>;
+  /** A file still open when it is deleted (its worker was just terminated) is retried this long. */
+  fileLockWaitMs?: number;
+  logger?: Logger;
 }
 
 /**
  * Disk space a merge needs on top of the stored segments: the merged file
- * (about their size; Chrome keeps large Blobs on disk) and the copy Chrome
- * saves in the Downloads folder (the same size, and most often on the same
- * disk).
+ * (about their size; on disk in OPFS, or Blob parts Chrome keeps on disk) and
+ * the copy Chrome saves in the Downloads folder (the same size, and most
+ * often on the same disk).
  */
 export function mergeSpaceNeeded(media: MediaAnalysis): number {
   return 2 * media.tracks.reduce((sum, track) => sum + track.bytes, 0);
@@ -61,6 +72,8 @@ export function describeFfmpegFailure(error: FfmpegError): string {
       return `${error.message} Press Retry to try again.`;
     case 'memory':
       return `${error.message} Press Retry to try again after closing other tabs; the downloaded segments are kept.`;
+    case 'disk':
+      return `${error.message} Free up disk space, then press Retry; the downloaded segments are kept.`;
     case 'timeout':
     case 'crashed':
     case 'invalid-job':
@@ -91,13 +104,15 @@ function percentAt(stage: MediaStage, fraction = 0): number {
  * manager, with the same convergence contract: `sync()` runs exactly the
  * listed jobs, cancelled jobs delete their task's data and say so once.
  *
- * A job analyses the stored data (analyseTask), merges it (mergeTask), and
- * hands the file to the service worker as a blob: URL (`save`). From then on
- * the job only holds that URL alive, because Chrome reads the file from it
- * while saving; the service worker follows the save and drops the task from
- * its work list when it is over, which releases the URL. Stored segments are
- * the service worker's to delete after a save; the engine deletes them only
- * on cancel, or when they turned out to be unusable.
+ * A job analyses the stored data (analyseTask), merges it (mergeTask) into a
+ * file on disk of its own (`files`, one name per attempt), and hands the file
+ * to the service worker as a blob: URL (`save`). From then on the job only
+ * holds that URL and file alive, because Chrome reads the file from it while
+ * saving; the service worker follows the save and drops the task from its
+ * work list when it is over, which releases the URL and deletes the file (not
+ * sooner: a download Chrome has not started yet fails when its file is gone).
+ * Stored segments are the service worker's to delete after a save; the engine
+ * deletes them only on cancel, or when they turned out to be unusable.
  *
  * FFmpeg commands run through one FfmpegRunner, which serialises them; the
  * service worker hands over one task at a time anyway (FFmpeg's heap is large).
@@ -108,8 +123,10 @@ export class MediaManager {
   readonly #createUrl: (blob: Blob) => string;
   readonly #revokeUrl: (url: string) => void;
   readonly #jobs = new Map<string, Job>();
-  /** Merged files Chrome is saving: task → blob: URL. */
-  readonly #held = new Map<string, string>();
+  /** Merged files Chrome is saving: task → blob: URL and file on disk. */
+  readonly #held = new Map<string, { url: string; file: string | undefined }>();
+  /** Makes each merge's file name unique, also within one millisecond. */
+  #attempts = 0;
 
   constructor(deps: MediaManagerDeps) {
     this.#deps = deps;
@@ -164,9 +181,30 @@ export class MediaManager {
   }
 
   #release(taskId: string): void {
-    const url = this.#held.get(taskId);
+    const held = this.#held.get(taskId);
     this.#held.delete(taskId);
-    if (url !== undefined) this.#revokeUrl(url);
+    if (!held) return;
+    this.#revokeUrl(held.url);
+    void this.#removeFile(held.file);
+  }
+
+  /** Deletes a merged file on disk; one that cannot be deleted now is left to the service worker's cleanup. */
+  async #removeFile(file: string | undefined): Promise<void> {
+    const files = this.#deps.files;
+    if (file === undefined || !files) return;
+    try {
+      const outcome = await files.remove(file, { waitLockedMs: this.#deps.fileLockWaitMs ?? 3_000 });
+      if (outcome === 'locked') this.#deps.logger?.warn('A merged file is still open and was left for cleanup', { file });
+    } catch (error) {
+      this.#deps.logger?.warn('Could not delete a merged file', { file, error: errorMessage(error) });
+    }
+  }
+
+  /** The name of a merge's file on disk, new for every attempt; undefined without `files`. */
+  #fileFor(taskId: string, media: MediaAnalysis): string | undefined {
+    if (!this.#deps.files) return undefined;
+    const attempt = `${Math.max(0, Math.floor(this.#now())).toString(36)}${(this.#attempts++ % 1296).toString(36)}`;
+    return mergeFileName(taskId, media.container, attempt.slice(-13));
   }
 
   async #settle(taskIds: readonly string[]): Promise<void> {
@@ -237,6 +275,7 @@ export class MediaManager {
     const { storage, ffmpeg } = this.#deps;
     const signal = controller.signal;
     let url: string | undefined;
+    let file: string | undefined;
     try {
       const { media, layout } = await analyseTask(spec.taskId, {
         storage,
@@ -252,6 +291,7 @@ export class MediaManager {
         },
       });
       await this.#checkSpace(media);
+      file = this.#fileFor(spec.taskId, media);
       const merged = await mergeTask(spec.taskId, {
         storage,
         ffmpeg,
@@ -260,11 +300,15 @@ export class MediaManager {
         layout,
         ...(spec.title !== '' ? { title: spec.title } : {}),
         ...(this.#deps.stallTimeoutMs !== undefined ? { stallTimeoutMs: this.#deps.stallTimeoutMs } : {}),
+        ...(file !== undefined ? { outputFile: file } : {}),
         progress: (update) => {
           if (update.stage === 'merging') this.#update(job, 'merging', update.fraction);
           else this.#update(job, 'verifying', 1);
         },
       });
+      if (merged.fileError !== undefined) {
+        this.#deps.logger?.warn('The merged file could not be written to disk, so it was kept in memory', { error: merged.fileError });
+      }
       signal.throwIfAborted();
       url = this.#createUrl(merged.data);
       this.#update(job, 'saving', 1);
@@ -273,12 +317,15 @@ export class MediaManager {
       if (!accepted) {
         // Cancelled or removed while merging: the service worker no longer wants it.
         this.#revokeUrl(url);
+        await this.#removeFile(file);
         this.#deps.report({ taskId: spec.taskId, progress: job.progress, outcome: { status: 'cancelled' } });
         return;
       }
-      this.#held.set(spec.taskId, url);
+      this.#held.set(spec.taskId, { url, file });
     } catch (error) {
       if (url !== undefined) this.#revokeUrl(url);
+      // Whatever went wrong, the file (complete or not) is of no use: Retry merges into a new one.
+      await this.#removeFile(file);
       if (signal.aborted || isAbortError(error)) {
         // Cancelled or removed: nobody wants this data any more.
         await storage.deleteTask(spec.taskId).catch(() => undefined);

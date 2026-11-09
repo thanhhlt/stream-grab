@@ -17,6 +17,11 @@ const RESERVED = /^(?:con|prn|aux|nul|com[0-9¹²³]|lpt[0-9¹²³])$/i;
 
 /** A safe base name (no extension); empty input yields "video". */
 export function sanitizeBaseName(input: string, maxLength: number = MAX_BASE_NAME_LENGTH): string {
+  return sanitizeName(input, maxLength) || FALLBACK_NAME;
+}
+
+/** The same rules as `sanitizeBaseName`, but nothing left is '' (a folder name that is only dots or reserved characters). */
+function sanitizeName(input: string, maxLength: number): string {
   let name = input
     .normalize('NFC')
     .replace(FORBIDDEN, ' ')
@@ -27,10 +32,44 @@ export function sanitizeBaseName(input: string, maxLength: number = MAX_BASE_NAM
   if (name.length > maxLength) {
     name = [...name].slice(0, maxLength).join('').replace(/[.\s]+$/g, '');
   }
-  if (name === '') return FALLBACK_NAME;
+  if (name === '') return '';
   // "CON", "nul.txt" etc. are device names on Windows, even with an extension.
   if (RESERVED.test(name.split('.')[0] ?? '')) name = `${name}_`;
   return name;
+}
+
+/** Longest subfolder of Downloads, so that folder + name (≤ 120) + Downloads' own path stay under Windows' 260 characters. */
+export const MAX_FOLDER_LENGTH = 80;
+const MAX_FOLDER_SEGMENT_LENGTH = 60;
+
+export type FolderResult = { ok: true; folder: string } | { ok: false; reason: string };
+
+/**
+ * The "Save in a subfolder of Downloads" setting as chrome.downloads accepts
+ * it ('' = Downloads itself): segments joined by '/', each a safe name
+ * (same rules as file names), empty and '.' segments dropped. A path that
+ * leaves Downloads ('..', 'C:\\…') is refused: Chrome rejects it ("Invalid
+ * filename"), and a folder elsewhere cannot be chosen by an extension.
+ */
+export function parseDownloadFolder(input: string): FolderResult {
+  const path = input.normalize('NFC').trim().replaceAll('\\', '/');
+  if (/^[a-z]:/i.test(path) || path.startsWith('//')) {
+    return { ok: false, reason: 'Enter a folder inside Downloads, such as StreamGrab or Videos/StreamGrab, not a full path.' };
+  }
+  const segments = path.split('/').map((segment) => segment.trim());
+  if (segments.includes('..')) return { ok: false, reason: '".." is not allowed: the folder must be inside Downloads.' };
+  const folder = segments
+    .filter((segment) => segment !== '' && segment !== '.')
+    .map((segment) => sanitizeName(segment, MAX_FOLDER_SEGMENT_LENGTH))
+    .filter((segment) => segment !== '')
+    .join('/');
+  if (folder.length > MAX_FOLDER_LENGTH) return { ok: false, reason: `Use at most ${MAX_FOLDER_LENGTH} characters: longer paths fail on Windows.` };
+  return { ok: true, folder };
+}
+
+/** `fileName` inside the Downloads subfolder `folder` ('' = Downloads itself), as chrome.downloads takes it. */
+export function inDownloadFolder(folder: string, fileName: string): string {
+  return folder === '' ? fileName : `${folder}/${fileName}`;
 }
 
 /**

@@ -1,9 +1,10 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import type { DownloadTask } from '@/core/models/download-task';
 import { sendToBackground } from '@/shared/messaging/client';
 import { errorMessage } from '@/shared/utils/errors';
 import { Badge, ProtocolBadge } from '../components/Badge';
 import { BUTTON } from '../components/buttons';
+import { ConfirmDialog } from '../components/ConfirmDialog';
 import { EmptyState } from '../components/EmptyState';
 import { Menu } from '../components/Menu';
 import { completedFacts, completedSummary, completedTasks, formatBytes, formatCompletedDate, formatSavedAt, outputFileName } from '../format';
@@ -75,9 +76,15 @@ function CompletedRow({ task, exists, onRemove }: { task: DownloadTask; exists: 
   );
 }
 
-/** Saved videos: what each file is, its real size, and a way to find it. Removing an entry never deletes the file. */
+/**
+ * Saved videos: what each file is, its real size, and a way to find it.
+ * Removing entries (one, those whose file is missing, or all after a
+ * confirmation) never deletes a file.
+ */
 export function CompletedPage({ tasks }: { tasks: DownloadTask[] | null }) {
   const [error, setError] = useState<string | null>(null);
+  const [confirming, setConfirming] = useState(false);
+  const removeAllButton = useRef<HTMLButtonElement>(null);
   const completed = completedTasks(tasks ?? []);
   const exists = useSavedFiles(completed.flatMap((task) => (task.output.downloadId !== undefined ? [task.output.downloadId] : [])));
   if (tasks === null) return null;
@@ -89,26 +96,53 @@ export function CompletedPage({ tasks }: { tasks: DownloadTask[] | null }) {
     );
   }
   const summary = completedSummary(completed, exists);
-  const remove = (task: DownloadTask) => {
+  const remove = (taskIds: string[]) => {
     setError(null);
-    sendToBackground('downloads/remove', { taskIds: [task.id] }).catch((cause: unknown) => {
+    sendToBackground('downloads/remove', { taskIds }).catch((cause: unknown) => {
       setError(errorMessage(cause));
     });
   };
+  const missingIds = completed.flatMap((task) =>
+    task.output.downloadId !== undefined && exists.get(task.output.downloadId) === false ? [task.id] : [],
+  );
+  const closeDialog = () => {
+    setConfirming(false);
+    removeAllButton.current?.focus();
+  };
   return (
     <div className="flex h-full flex-col">
-      <p className="flex items-center gap-1.5 border-b border-slate-200 px-4 py-2 text-xs text-slate-600 tabular-nums dark:border-slate-800 dark:text-slate-300">
+      <div className="flex items-center gap-1.5 border-b border-slate-200 py-1.5 pr-2 pl-4 text-xs text-slate-600 tabular-nums dark:border-slate-800 dark:text-slate-300">
         <span className="font-semibold text-slate-800 dark:text-slate-100">
           {summary.count} {summary.count === 1 ? 'video' : 'videos'}
         </span>
         <span aria-hidden>·</span>
         <span title="Total size of the saved files">{formatBytes(summary.bytes)}</span>
-        {summary.missing > 0 && (
-          <span className="ml-auto text-amber-700 dark:text-amber-300">
-            {summary.missing} {summary.missing === 1 ? 'file' : 'files'} missing
-          </span>
-        )}
-      </p>
+        <span className="ml-auto flex items-center gap-1">
+          {missingIds.length > 0 && (
+            <button
+              type="button"
+              onClick={() => {
+                remove(missingIds);
+              }}
+              title="Removes the entries whose file was moved, renamed or deleted"
+              className={`${BUTTON.ghost} text-amber-700 dark:text-amber-300`}
+            >
+              Remove missing ({missingIds.length})
+            </button>
+          )}
+          <button
+            ref={removeAllButton}
+            type="button"
+            onClick={() => {
+              setConfirming(true);
+            }}
+            title="Removes every entry from this list; the files stay where they are"
+            className={BUTTON.ghost}
+          >
+            Remove all
+          </button>
+        </span>
+      </div>
       {error && (
         <p role="alert" className="bg-red-50 px-4 py-2 text-xs text-red-700 dark:bg-red-500/10 dark:text-red-300">
           {error}
@@ -120,10 +154,26 @@ export function CompletedPage({ tasks }: { tasks: DownloadTask[] | null }) {
             key={task.id}
             task={task}
             exists={task.output.downloadId !== undefined ? exists.get(task.output.downloadId) : undefined}
-            onRemove={remove}
+            onRemove={(entry) => {
+              remove([entry.id]);
+            }}
           />
         ))}
       </ul>
+      {confirming && (
+        <ConfirmDialog
+          title="Remove all completed downloads?"
+          confirmLabel="Remove all"
+          onCancel={closeDialog}
+          onConfirm={() => {
+            setConfirming(false);
+            remove(completed.map((task) => task.id));
+          }}
+        >
+          {summary.count === 1 ? 'The entry is' : `All ${summary.count} entries are`} removed from this list. The saved files stay in
+          your Downloads folder.
+        </ConfirmDialog>
+      )}
     </div>
   );
 }

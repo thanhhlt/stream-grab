@@ -5,6 +5,8 @@ const base =
 export const BUTTON = {
   /** Hành động chính (Download, Show in folder, Retry). */
   primary: `${base} bg-indigo-600 px-2.5 py-1 font-semibold text-white hover:bg-indigo-500 active:bg-indigo-700 disabled:hover:bg-indigo-600`,
+  /** Xác nhận một hành động khó hoàn tác (Remove all trong hộp thoại xác nhận). */
+  danger: `${base} bg-red-600 px-2.5 py-1 font-semibold text-white hover:bg-red-500 active:bg-red-700`,
   /** Hành động phụ có viền (Cancel, Remove). */
   secondary: `${base} border border-slate-300 px-2 py-[3px] text-slate-700 hover:bg-slate-100 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800`,
   /** Hành động nhẹ dạng chữ (Clear list, Clear all). */

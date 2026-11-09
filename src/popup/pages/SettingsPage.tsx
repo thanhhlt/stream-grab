@@ -1,3 +1,5 @@
+import { useState } from 'react';
+import { MAX_FOLDER_LENGTH, parseDownloadFolder } from '@/core/download/file-name';
 import { ACTIVE_TASKS, SEGMENT_CONCURRENCY } from '@/shared/constants';
 import {
   OUTPUT_FORMATS,
@@ -31,6 +33,70 @@ const selectClass =
   'w-44 rounded-md border border-slate-300 bg-white px-2 py-1.5 text-[13px] focus-visible:outline-2 focus-visible:outline-indigo-500 dark:border-slate-700 dark:bg-slate-900';
 
 const rangeClass = 'w-full accent-indigo-600 dark:accent-indigo-400';
+
+const inputClass =
+  'w-full rounded-md border border-slate-300 bg-white px-2 py-1.5 text-[13px] focus-visible:outline-2 focus-visible:outline-indigo-500 aria-invalid:border-red-500 dark:border-slate-700 dark:bg-slate-900';
+
+/**
+ * The Downloads subfolder: saved on Enter or when the field loses focus, in
+ * the form Chrome accepts (shown back in the field); a path outside
+ * Downloads stays in the field with the reason, unsaved.
+ */
+function DownloadFolderInput({ value, onSave }: { value: string; onSave: (folder: string) => void }) {
+  /** What the user is typing; null shows the saved value (also after Reset to defaults). */
+  const [draft, setDraft] = useState<string | null>(null);
+  const [problem, setProblem] = useState<string | null>(null);
+  const commit = () => {
+    if (draft === null) return;
+    const parsed = parseDownloadFolder(draft);
+    if (!parsed.ok) {
+      setProblem(parsed.reason);
+      return;
+    }
+    setProblem(null);
+    setDraft(null);
+    if (parsed.folder !== value) onSave(parsed.folder);
+  };
+  const shown = draft ?? value;
+  return (
+    <div className="flex flex-col gap-1">
+      <input
+        id="download-folder"
+        type="text"
+        value={shown}
+        placeholder="Empty: the download folder itself"
+        maxLength={MAX_FOLDER_LENGTH * 2}
+        spellCheck={false}
+        autoComplete="off"
+        aria-invalid={problem !== null}
+        aria-describedby={problem !== null ? 'download-folder-desc download-folder-error' : 'download-folder-desc'}
+        onChange={(event) => {
+          setDraft(event.currentTarget.value);
+          setProblem(null);
+        }}
+        onBlur={commit}
+        onKeyDown={(event) => {
+          if (event.key === 'Enter') commit();
+          if (event.key === 'Escape' && draft !== null) {
+            event.preventDefault();
+            setDraft(null);
+            setProblem(null);
+          }
+        }}
+        className={inputClass}
+      />
+      {problem !== null ? (
+        <p id="download-folder-error" role="alert" className="text-xs text-red-700 dark:text-red-300">
+          {problem}
+        </p>
+      ) : (
+        <p className="truncate text-[11px] text-slate-500 dark:text-slate-400" title={`Downloads/${value}`}>
+          Saving to: Downloads{value === '' ? '' : `/${value}`}
+        </p>
+      )}
+    </div>
+  );
+}
 
 export function SettingsPage() {
   const { settings, error, update, reset } = useSettings();
@@ -137,6 +203,21 @@ export function SettingsPage() {
                 </option>
               ))}
             </select>
+          }
+        />
+
+        <SettingRow
+          id="download-folder"
+          label="Save in a subfolder"
+          description="A folder inside Chrome's download folder, such as StreamGrab or Videos/StreamGrab. Chrome creates it when it saves the first video there."
+          stacked
+          control={
+            <DownloadFolderInput
+              value={settings.downloadFolder}
+              onSave={(folder) => {
+                update({ downloadFolder: folder });
+              }}
+            />
           }
         />
 

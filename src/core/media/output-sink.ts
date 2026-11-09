@@ -1,6 +1,10 @@
 /**
- * Where FFmpeg writes its outputs: a write-mostly file that streams into Blob
- * parts instead of living in memory.
+ * Where FFmpeg writes its outputs (SinkFs): a FileSink, a file of the origin
+ * private file system written through a synchronous access handle (0.4.0;
+ * see output-files.ts), or, when that is not available, a BlobSink.
+ *
+ * A BlobSink is a write-mostly file that streams into Blob parts instead of
+ * living in memory.
  *
  * Emscripten's MEMFS keeps every file in one JavaScript array that grows by
  * copying, so a 3 GB merge would need several GB of memory at once. Muxers,
@@ -19,6 +23,17 @@
  * records why. Memory stays at about head + window whatever the output size.
  */
 
+/** A file FFmpeg writes, as SinkFs sees it. */
+export interface OutputSink {
+  readonly size: number;
+  /** Set once an access was refused or failed: FFmpeg got an I/O error, and the file is not usable. */
+  readonly failure: SinkError | undefined;
+  write(data: Uint8Array, position: number): void;
+  /** Copies bytes at `position` into `target`; returns how many (fewer at the end of the file). */
+  read(target: Uint8Array, position: number): number;
+  truncate(size: number): void;
+}
+
 export interface SinkOptions {
   headBytes?: number;
   windowBytes?: number;
@@ -27,14 +42,34 @@ export interface SinkOptions {
 
 const DEFAULTS = { headBytes: 1024 * 1024, windowBytes: 64 * 1024 * 1024, flushBytes: 32 * 1024 * 1024 };
 
-export class SinkAccessError extends Error {
+/** An output access that could not be served; SinkFs turns it into EIO for FFmpeg. */
+export abstract class SinkError extends Error {}
+
+export class SinkAccessError extends SinkError {
   constructor(position: number) {
     super(`FFmpeg went back to byte ${position} of its output, which had already been written out`);
     this.name = 'SinkAccessError';
   }
 }
 
-export class BlobSink {
+/** Writing an output file failed; `diskFull` when the disk (or the browser's quota) has no room left. */
+export class SinkStorageError extends SinkError {
+  readonly diskFull: boolean;
+
+  constructor(cause: unknown) {
+    const diskFull = cause instanceof Error && cause.name === 'QuotaExceededError';
+    super(
+      diskFull
+        ? 'There is not enough disk space to write the merged file'
+        : `Writing the merged file failed: ${cause instanceof Error ? cause.message : String(cause)}`,
+      { cause },
+    );
+    this.name = 'SinkStorageError';
+    this.diskFull = diskFull;
+  }
+}
+
+export class BlobSink implements OutputSink {
   readonly #head: number;
   readonly #window: number;
   readonly #flush: number;
@@ -163,5 +198,86 @@ export class BlobSink {
   #refuse(position: number): SinkAccessError {
     this.failure ??= new SinkAccessError(position);
     return this.failure;
+  }
+}
+
+/** The parts of FileSystemSyncAccessHandle a FileSink uses (all synchronous). */
+export interface SyncFileHandle {
+  read(buffer: Uint8Array, options: { at: number }): number;
+  write(buffer: Uint8Array, options: { at: number }): number;
+  truncate(size: number): void;
+  getSize(): number;
+  flush(): void;
+  close(): void;
+}
+
+/**
+ * An output written straight to a file on disk through a synchronous access
+ * handle: FFmpeg may write and read anywhere in it (MP4 "faststart" included),
+ * and nothing of it stays in memory. A failed access (the disk is full) is
+ * recorded and refused like BlobSink's.
+ */
+export class FileSink implements OutputSink {
+  readonly #handle: SyncFileHandle;
+  #size: number;
+  #closed = false;
+  failure: SinkStorageError | undefined;
+
+  constructor(handle: SyncFileHandle) {
+    this.#handle = handle;
+    this.#size = handle.getSize();
+  }
+
+  get size(): number {
+    return this.#size;
+  }
+
+  write(data: Uint8Array, position: number): void {
+    this.#io(() => {
+      const written = this.#handle.write(data, { at: position });
+      if (written !== data.length) throw new Error(`only ${written} of ${data.length} bytes were written`);
+    });
+    this.#size = Math.max(this.#size, position + data.length);
+  }
+
+  read(target: Uint8Array, position: number): number {
+    if (position >= this.#size) return 0;
+    const wanted = Math.min(target.length, this.#size - position);
+    return this.#io(() => this.#handle.read(target.subarray(0, wanted), { at: position }));
+  }
+
+  truncate(size: number): void {
+    this.#io(() => {
+      this.#handle.truncate(size);
+    });
+    this.#size = size;
+  }
+
+  /** Writes everything out and releases the file, once; a failure to write out is recorded. */
+  close(): void {
+    if (this.#closed) return;
+    this.#closed = true;
+    try {
+      this.#io(() => {
+        this.#handle.flush();
+      });
+    } catch {
+      // Recorded in `failure`.
+    }
+    try {
+      this.#handle.close();
+    } catch {
+      // Already released (its worker is going away): nothing is left to write.
+    }
+  }
+
+  #io<T>(operation: () => T): T {
+    if (this.failure) throw this.failure;
+    try {
+      return operation();
+    } catch (error) {
+      this.failure = new SinkStorageError(error);
+      throw this.failure;
+    }
   }
 }

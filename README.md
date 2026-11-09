@@ -4,7 +4,7 @@ Browser extension (Chrome, Manifest V3) that detects, downloads and merges onlin
 entirely in the browser. No server, no native helper. It is built to support several streaming
 formats and protocols; see [Supported formats](#supported-formats) for what works today.
 
-Current version: **0.3.0** — see [CHANGELOG.md](CHANGELOG.md) and the
+Current version: **0.4.0** — see [CHANGELOG.md](CHANGELOG.md) and the
 [releases](https://github.com/thanhhlt/stream-grab/releases).
 
 Status: **all 10 phases done** (Phase 10: error handling, performance, testing). Streams are
@@ -13,12 +13,15 @@ quality, audio tracks and file name; queued tasks are downloaded in the backgrou
 parallel, with retries, AES-128 decryption, cancel and retry) into IndexedDB, and resume after
 Retry, a browser restart or an extension reload. Once downloaded, FFmpeg.wasm (bundled, loaded on
 demand in a Web Worker) checks the segments and merges video and audio by stream copy into one
-MP4 (or MKV when MP4 cannot hold the codecs), streamed out of FFmpeg without holding the file in
-memory; Chrome saves it to the Downloads folder (never overwriting a file), the temporary
+MP4 (or MKV when MP4 cannot hold the codecs), written straight to a file on disk (the
+extension's private file system) instead of memory, so a multi-GB video does not raise Chrome's
+RAM; Chrome saves it to the Downloads folder or a subfolder chosen in Settings (never
+overwriting a file), that file and the temporary
 segments are deleted and a notification says so. The Queue tab shows each download's
 percentage, segments, downloaded / estimated total and remaining size, speed and ETA, with
 FFmpeg's processing shown separately; the Completed tab lists saved videos compactly (resolution,
-duration, real file size, codecs, container) with *Show in folder*. A 1.5 GB video merges in
+duration, real file size, codecs, container) with *Show in folder*, *Remove missing* and
+*Remove all* (entries only; files stay on disk). A 1.5 GB video merges in
 about 5 seconds. Since 0.3.0, plain MP4 and WebM files played by a page are listed too and saved
 as they are (byte for byte, no FFmpeg), downloaded by Chrome itself or, when the server wants the
 page's Referer, by the extension. Besides unit and integration tests, an
@@ -37,7 +40,9 @@ FFmpeg.wasm (`@ffmpeg/core`) is licensed GPL-2.0-or-later and adds 32 MB to the 
 | MPEG-DASH (`.mpd`): SegmentTemplate, SegmentList, SegmentBase    | 0.1.0 |
 | Progressive MP4 and WebM files played by `<video>` (saved as is) | 0.3.0 |
 
-DRM-protected streams are detected and flagged but never downloaded. Progressive files are listed
+DRM-protected streams are detected and flagged but never downloaded. Live streams are not
+listed (0.4.0): they cannot be downloaded yet, and a live player's playlist reloads would flood
+the list. Progressive files are listed
 when a media element plays or references them; files a player fetches by script (Media Source
 Extensions) are parts of a stream, not videos, and are not listed.
 
@@ -87,7 +92,7 @@ This rebuilds `dist/` on every change. Press the reload icon on the extension ca
 npm run fixtures
 ```
 
-Serves a test site bound to 127.0.0.1, with two pages:
+Serves a test site bound to 127.0.0.1, with these pages:
 
 - <http://localhost:5180/>: **detection**. The page loads manifests the way players do: an HLS
   master with its variant playlists, extensionless manifests, a DASH player in an iframe, a
@@ -109,6 +114,9 @@ Serves a test site bound to 127.0.0.1, with two pages:
   Referer (downloaded through the extension's fallback), and an MP4 behind a redirect; the page
   also fetches an `.mp4` by script, which must not be listed. <http://localhost:5180/files/slow>
   serves a 6 MiB file at 1 MiB/s, to cancel, retry or close Chrome during the download.
+- <http://localhost:5180/live>: **a live channel next to a replay** (0.4.0). The page requests a
+  VOD once and a live playlist 30 times with a changing LL-HLS query; only the VOD is listed and
+  the badge stays at 1.
 
 ## Scripts
 

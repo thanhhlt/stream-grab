@@ -23,7 +23,13 @@ export class NodeFfmpegRunner implements FfmpegRunner {
   runs = 0;
   loads = 0;
   readonly jobs: FfmpegJob[] = [];
+  readonly #options: SessionOptions;
   #session: FfmpegSession | undefined;
+
+  /** `options.files`: where outputs named in outputFiles go (a MemoryOutputFiles, like OPFS in the media worker). */
+  constructor(options: SessionOptions = {}) {
+    this.#options = options;
+  }
 
   async run(job: FfmpegJob, options: FfmpegRunOptions = {}): Promise<FfmpegResult> {
     options.signal?.throwIfAborted();
@@ -32,7 +38,7 @@ export class NodeFfmpegRunner implements FfmpegRunner {
     let loadMs = 0;
     if (!this.#session) {
       const started = performance.now();
-      this.#session = await loadNodeSession();
+      this.#session = await loadNodeSession(this.#options);
       this.loads += 1;
       loadMs = Math.round(performance.now() - started);
     }
@@ -40,7 +46,7 @@ export class NodeFfmpegRunner implements FfmpegRunner {
     options.onStarted?.();
     this.runs += 1;
     try {
-      const result = this.#session.run(
+      const result = await this.#session.run(
         { ...job, inputs },
         {
           ...(options.onProgress ? { onProgress: options.onProgress } : {}),

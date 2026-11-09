@@ -5,7 +5,9 @@
  * A job runs one command. Its inputs are Blobs mounted read-only under
  * INPUT_DIR (InputFs: FFmpeg reads them on demand, they are never copied
  * into the WebAssembly heap); the files it names in `outputs` are written to
- * OUTPUT_DIR (SinkFs: streamed into Blob parts) and handed back as Blobs.
+ * OUTPUT_DIR (SinkFs) and handed back as Blobs: into a file on disk when the
+ * job names one in `outputFiles` (output-files.ts), otherwise streamed into
+ * Blob parts.
  */
 
 export const INPUT_DIR = '/in';
@@ -26,11 +28,23 @@ export interface FfmpegJob {
   inputs: FfmpegInput[];
   /** Names of the files under OUTPUT_DIR to return. */
   outputs: string[];
+  /**
+   * Outputs written to a file on disk (the origin private file system's
+   * MERGE_DIRECTORY): output name → file name (FILE_NAME). The file is
+   * created or emptied before the command and handed back as a File; a failed
+   * command deletes it, otherwise the caller does. When the file cannot be
+   * opened, the output streams into Blob parts instead.
+   */
+  outputFiles?: Record<string, string>;
 }
 
 export interface FfmpegOutput {
   name: string;
   data: Blob;
+  /** The file on disk `data` is (outputFiles). */
+  file?: string;
+  /** Why the file named in outputFiles could not be used (the output streamed into Blob parts). */
+  fileError?: string;
 }
 
 /** What a command produced. A non-zero exit code is a result, not an exception: the caller words it. */
@@ -70,12 +84,13 @@ export interface FfmpegRunner {
   run(job: FfmpegJob, options?: FfmpegRunOptions): Promise<FfmpegResult>;
 }
 
-export const FFMPEG_ERROR_KINDS = ['load', 'memory', 'timeout', 'crashed', 'invalid-job'] as const;
+export const FFMPEG_ERROR_KINDS = ['load', 'memory', 'disk', 'timeout', 'crashed', 'invalid-job'] as const;
 export type FfmpegErrorKind = (typeof FFMPEG_ERROR_KINDS)[number];
 
 /**
  * FFmpeg itself failed, as opposed to a command that ran and reported an
- * error: it could not be loaded, ran out of memory, hung, or crashed.
+ * error: it could not be loaded, ran out of memory or disk space, hung, or
+ * crashed.
  */
 export class FfmpegError extends Error {
   readonly kind: FfmpegErrorKind;

@@ -10,8 +10,10 @@ import { inspectManifest } from '@/core/detection/manifest-inspector';
 import type { InspectionOutcome } from '@/core/detection/stream-inspector';
 import { PROGRESSIVE_VARIANT_ID, type ProgressiveInfo, type RequestContext } from '@/core/models/detected-stream';
 import dashDrm from '@tests/fixtures/manifests/dash/drm.mpd?raw';
+import dashDynamic from '@tests/fixtures/manifests/dash/dynamic.mpd?raw';
 import dashStatic from '@tests/fixtures/manifests/dash/static-separate-av.mpd?raw';
 import hlsMaster from '@tests/fixtures/manifests/hls/master.m3u8?raw';
+import hlsLive from '@tests/fixtures/manifests/hls/media-live.m3u8?raw';
 import hlsTs from '@tests/fixtures/manifests/hls/media-ts.m3u8?raw';
 import { FakeStorageArea } from '@tests/fakes/fake-storage';
 
@@ -40,7 +42,7 @@ function deferred<T>() {
 type Outcomes = Record<string, InspectionOutcome | (() => Promise<InspectionOutcome>)>;
 
 function setup(
-  options: { outcomes?: Outcomes; pageInfo?: PageInfo; limits?: Partial<DetectionLimits>; area?: FakeStorageArea } = {},
+  options: { outcomes?: Outcomes; pageInfo?: PageInfo; limits?: Partial<DetectionLimits>; area?: FakeStorageArea; concurrency?: number } = {},
 ) {
   const outcomes: Outcomes = options.outcomes ?? {};
   const area = options.area ?? new FakeStorageArea('session');
@@ -60,6 +62,7 @@ function setup(
     now: () => clock,
     flushDelayMs: 0,
     ...(options.limits ? { limits: options.limits } : {}),
+    ...(options.concurrency !== undefined ? { inspectionConcurrency: options.concurrency } : {}),
   });
   return {
     manager,
@@ -517,5 +520,132 @@ describe('DetectionManager: progressive files (0.3.0)', () => {
     expect(streams.map((stream) => stream.protocol)).toEqual(['hls', 'progressive']);
     expect(streams[1]).toMatchObject({ status: 'ready', requestContext: CONTEXT, progressive: { container: 'mp4', bytes: 734_003_200 } });
     expect(second.inspect).not.toHaveBeenCalled();
+  });
+});
+
+describe('DetectionManager: live streams (0.4.0)', () => {
+  const LIVE = 'https://live.example.com/hls/123/index.m3u8';
+  const reload = (n: number) => `${LIVE}?_HLS_msn=${2680 + n}&_HLS_part=${n % 3}&t=${n}`;
+  /** A master as the adapter reports it in production: `live` comes from its first variant. */
+  const liveMaster = (url: string): InspectionOutcome => {
+    const outcome = manifest(hlsMaster, url);
+    if (outcome.kind !== 'manifest') throw new Error('not a manifest');
+    return { ...outcome, info: { ...outcome.info, live: true } };
+  };
+
+  it('never lists a live playlist and fetches it once, however often the player reloads it', async () => {
+    const outcomes: Outcomes = {};
+    for (let n = 0; n <= 50; n++) outcomes[reload(n)] = manifest(hlsLive, reload(n));
+    const { manager, inspect, badge } = setup({ outcomes });
+    for (let n = 0; n <= 50; n++) {
+      await manager.handleCandidate(candidate(reload(n), { timestamp: 1_000 + n }));
+      await manager.idle();
+    }
+    expect(await manager.getStreams(1)).toEqual([]);
+    expect(inspect).toHaveBeenCalledTimes(1);
+    expect(badge.get(1) ?? 0).toBe(0);
+  });
+
+  it('does not fetch the reloads that were waiting for an inspection slot once the first says live', async () => {
+    const first = deferred<InspectionOutcome>();
+    const outcomes: Outcomes = { [reload(0)]: () => first.promise };
+    for (let n = 1; n <= 5; n++) outcomes[reload(n)] = manifest(hlsLive, reload(n));
+    const { manager, inspect } = setup({ outcomes, concurrency: 1 });
+    for (let n = 0; n <= 5; n++) await manager.handleCandidate(candidate(reload(n), { timestamp: 1_000 + n }));
+    expect(await manager.getStreams(1)).toHaveLength(6); // pending: the first inspection has not answered yet
+    first.resolve(manifest(hlsLive, reload(0)));
+    await manager.idle();
+    expect(await manager.getStreams(1)).toEqual([]);
+    expect(inspect).toHaveBeenCalledTimes(1);
+  });
+
+  it('ignores a dynamic (live) DASH manifest reloaded with a changing query', async () => {
+    const mpd = 'https://live.example.com/dash/channel.mpd';
+    const outcomes: Outcomes = { [`${mpd}?t=1`]: manifest(dashDynamic, `${mpd}?t=1`), [`${mpd}?t=2`]: manifest(dashDynamic, `${mpd}?t=2`) };
+    const { manager, inspect } = setup({ outcomes });
+    await manager.handleCandidate(candidate(`${mpd}?t=1`));
+    await manager.idle();
+    await manager.handleCandidate(candidate(`${mpd}?t=2`));
+    await manager.idle();
+    expect(await manager.getStreams(1)).toEqual([]);
+    expect(inspect).toHaveBeenCalledTimes(1);
+  });
+
+  it("drops a live master's playlists loaded before it was inspected and skips those loaded after", async () => {
+    const masterInspection = deferred<InspectionOutcome>();
+    const variantInspection = deferred<InspectionOutcome>();
+    const { manager, inspect } = setup({
+      outcomes: { [MASTER]: () => masterInspection.promise, [VARIANTS[0] ?? '']: () => variantInspection.promise },
+    });
+    await manager.handleCandidate(candidate(MASTER));
+    await manager.handleCandidate(candidate(VARIANTS[0] ?? ''));
+    expect(await manager.getStreams(1)).toHaveLength(2);
+
+    masterInspection.resolve(liveMaster(MASTER));
+    variantInspection.resolve(manifest(hlsLive, VARIANTS[0] ?? ''));
+    await manager.idle();
+    expect(await manager.getStreams(1)).toEqual([]);
+
+    // Reloads of the variants with fresh tokens: not fetched.
+    await manager.handleCandidate(candidate(`${VARIANTS[1] ?? ''}&_HLS_msn=9`));
+    await manager.handleCandidate(candidate(`${VARIANTS[2] ?? ''}?_HLS_msn=9`));
+    await manager.idle();
+    expect(await manager.getStreams(1)).toEqual([]);
+    expect(inspect).toHaveBeenCalledTimes(2);
+  });
+
+  it('still detects and keeps the VODs of a page that also plays a live, through 120 live reloads', async () => {
+    const before = 'https://live.example.com/hls/456/index.m3u8';
+    const after = 'https://live.example.com/hls/789/index.m3u8?token=a1';
+    const outcomes: Outcomes = { [before]: manifest(hlsTs, before), [after]: manifest(hlsTs, after) };
+    for (let n = 0; n < 120; n++) outcomes[reload(n)] = manifest(hlsLive, reload(n));
+    const { manager, inspect, badge } = setup({ outcomes });
+
+    await manager.handleCandidate(candidate(before, { timestamp: 1 }));
+    await manager.idle();
+    for (let n = 0; n < 120; n++) {
+      await manager.handleCandidate(candidate(reload(n), { timestamp: 10 + n }));
+      await manager.idle();
+    }
+    await manager.handleCandidate(candidate(after, { timestamp: 500 }));
+    await manager.idle();
+    // The first VOD is requested again with a re-signed link: still the same entry, with the fresh URL.
+    await manager.handleCandidate(candidate(`${before}?expires=99`, { timestamp: 600 }));
+    await manager.idle();
+
+    const streams = await manager.getStreams(1);
+    expect(streams.map((stream) => [stream.url, stream.status, stream.manifest?.live])).toEqual([
+      [`${before}?expires=99`, 'ready', false],
+      [after, 'ready', false],
+    ]);
+    expect(inspect).toHaveBeenCalledTimes(3);
+    expect(badge.get(1)).toBe(2);
+    expect(await manager.getStream(1, streams[0]?.id ?? '')).toMatchObject({ status: 'ready' });
+  });
+
+  it('does not list a live found by a content probe, nor probe its reloads', async () => {
+    const url = 'https://api.example.com/live/7/playlist';
+    const probe = (query: string): DetectionCandidate => {
+      const { match: _match, ...rest } = candidate(`${url}${query}`);
+      return rest;
+    };
+    const { manager, inspect } = setup({ outcomes: { [`${url}?n=1`]: manifest(hlsLive, `${url}?n=1`) } });
+    await manager.handleCandidate(probe('?n=1'));
+    await manager.idle();
+    await manager.handleCandidate(probe('?n=2'));
+    await manager.idle();
+    expect(await manager.getStreams(1)).toEqual([]);
+    expect(inspect).toHaveBeenCalledTimes(1);
+  });
+
+  it('looks at the live again after a navigation (it may be a VOD by then), still without listing it', async () => {
+    const { manager, inspect } = setup({ outcomes: { [reload(0)]: manifest(hlsLive, reload(0)), [reload(1)]: manifest(hlsLive, reload(1)) } });
+    await manager.handleCandidate(candidate(reload(0)));
+    await manager.idle();
+    await manager.resetTab(1, 'https://live.example.com/watch');
+    await manager.handleCandidate(candidate(reload(1)));
+    await manager.idle();
+    expect(await manager.getStreams(1)).toEqual([]);
+    expect(inspect).toHaveBeenCalledTimes(2);
   });
 });

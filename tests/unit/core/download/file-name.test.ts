@@ -2,10 +2,46 @@ import { describe, expect, it } from 'vitest';
 import {
   defaultBaseName,
   extensionFor,
+  inDownloadFolder,
   MAX_BASE_NAME_LENGTH,
+  MAX_FOLDER_LENGTH,
+  parseDownloadFolder,
   sanitizeBaseName,
   uniqueBaseName,
 } from '@/core/download/file-name';
+
+describe('parseDownloadFolder (0.4.0)', () => {
+  const folder = (input: string) => {
+    const result = parseDownloadFolder(input);
+    return result.ok ? result.folder : `refused: ${result.reason}`;
+  };
+
+  it('turns what the user typed into a path chrome.downloads accepts', () => {
+    expect(folder('')).toBe('');
+    expect(folder('   ')).toBe('');
+    expect(folder('StreamGrab')).toBe('StreamGrab');
+    expect(folder(' Videos\\StreamGrab\\ ')).toBe('Videos/StreamGrab');
+    expect(folder('/Videos//./Phim Việt/')).toBe('Videos/Phim Việt');
+    // Reserved characters, trailing dots/spaces and device names, as in file names (Chrome throws "Invalid filename" for them).
+    expect(folder('Movies: 2026 / CON / old. ')).toBe('Movies 2026/CON_/old');
+    expect(folder('.../***')).toBe('');
+  });
+
+  it('refuses paths that leave Downloads or are too long for Windows', () => {
+    expect(folder('../Desktop')).toMatch(/^refused: ".." is not allowed/);
+    expect(folder('Videos/ .. /x')).toMatch(/^refused: ".." is not allowed/);
+    expect(folder('C:\\Users\\me\\Videos')).toMatch(/^refused: Enter a folder inside Downloads/);
+    expect(folder('d:videos')).toMatch(/^refused: Enter a folder inside Downloads/);
+    expect(folder('\\\\server\\share')).toMatch(/^refused: Enter a folder inside Downloads/);
+    expect(folder('a'.repeat(50) + '/' + 'b'.repeat(50))).toMatch(/^refused: Use at most 80 characters/);
+    expect(folder('a'.repeat(39) + '/' + 'b'.repeat(40))).toHaveLength(MAX_FOLDER_LENGTH);
+  });
+
+  it('puts a file name in the folder', () => {
+    expect(inDownloadFolder('', 'Movie.mp4')).toBe('Movie.mp4');
+    expect(inDownloadFolder('Videos/StreamGrab', 'Movie.mp4')).toBe('Videos/StreamGrab/Movie.mp4');
+  });
+});
 
 describe('defaultBaseName', () => {
   it('follows the documented style: words joined by underscores plus the quality', () => {

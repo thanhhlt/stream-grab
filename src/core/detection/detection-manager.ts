@@ -76,6 +76,8 @@ interface TabState {
   probedShapes: Set<string>;
   /** URL shapes of media-element requests that turned out to be segments, not files (native HLS playback). */
   segmentShapes: Set<string>;
+  /** `liveKey`s of live manifests (and of a live master's playlists): never listed nor fetched again until the next page. */
+  liveKeys: Set<string>;
   probes: number;
   inspecting: Set<string>;
   /** Dedupe keys the user removed; ignored until the next navigation. */
@@ -91,6 +93,17 @@ export function streamIdFor(key: string): string {
 }
 
 /**
+ * Host and exact path, without the query: a live player reloads its playlist
+ * with a changing query (LL-HLS `_HLS_msn`, `t=`, tokens) that `dedupeKey`
+ * keeps. Not `urlShape`, whose collapsed digits would also match a VOD such
+ * as `/hls/456/index.m3u8` next to a live `/hls/123/index.m3u8`.
+ */
+export function liveKey(input: string): string {
+  const url = parseHttpUrl(input);
+  return url ? `${url.host}${url.pathname}` : input;
+}
+
+/**
  * Owns the per-tab list of detected streams.
  *
  * - Deduplicates by `dedupeKey` (URL without tokens/cache busters) and keeps
@@ -98,6 +111,8 @@ export function streamIdFor(key: string): string {
  * - Inspects every new manifest once (bounded concurrency) to confirm the
  *   protocol and fold HLS variant/rendition playlists under their master, so
  *   one video is listed once even though the player loads several playlists.
+ * - Live manifests are not listed (they cannot be downloaded yet) and their
+ *   reloads are not fetched again until the next page (`#forgetLive`).
  * - Generation counter per tab: results of work started before a navigation
  *   are discarded.
  * - State is written through to the DetectionStore (debounced), so it survives
@@ -236,6 +251,8 @@ export class DetectionManager {
       this.#refresh(tab, existing, candidate);
       return;
     }
+    // Reloads of a live manifest: not listed, not fetched again.
+    if (tab.liveKeys.has(liveKey(candidate.url))) return;
     if (!candidate.match) {
       await this.#probe(tab, candidate, key, id);
       return;
@@ -289,6 +306,10 @@ export class DetectionManager {
     if (!this.#isCurrent(tab, generation) || outcome.kind !== 'manifest') return;
     // Only negative results are cached by shape; another manifest may share this one's shape.
     tab.probedShapes.delete(shape);
+    if (outcome.info.live) {
+      this.#forgetLive(tab, candidate.url, outcome.info);
+      return;
+    }
     if (tab.streams.has(id) || this.#isChildKey(tab, key) || tab.dismissedKeys.has(key)) return;
     const stream = this.#addStream(tab, candidate, key, id, outcome.info.protocol, 'content', false);
     this.#applyManifest(tab, stream, outcome.info);
@@ -344,13 +365,17 @@ export class DetectionManager {
     void this.#track(
       (async () => {
         try {
-          const stream = tab.streams.get(id);
-          if (!stream) return;
-          const kind: InspectionKind = stream.protocol === 'progressive' ? 'progressive' : 'manifest';
-          const outcome = await this.#limit(() => this.#safeInspect(stream.url, stream.requestContext, kind));
-          if (!this.#isCurrent(tab, generation)) return;
-          const latest = tab.streams.get(id);
-          if (latest) this.#applyOutcome(tab, latest, outcome);
+          // Looked up when its turn comes, and applied before the slot is freed: an entry dropped while
+          // it waited (a live reload, a playlist folded under its master, a navigation) is not fetched.
+          await this.#limit(async () => {
+            const stream = tab.streams.get(id);
+            if (!stream || !this.#isCurrent(tab, generation)) return;
+            const kind: InspectionKind = stream.protocol === 'progressive' ? 'progressive' : 'manifest';
+            const outcome = await this.#safeInspect(stream.url, stream.requestContext, kind);
+            if (!this.#isCurrent(tab, generation)) return;
+            const latest = tab.streams.get(id);
+            if (latest) this.#applyOutcome(tab, latest, outcome);
+          });
         } finally {
           inspecting.delete(id);
         }
@@ -392,6 +417,11 @@ export class DetectionManager {
   }
 
   #applyManifest(tab: TabState, stream: DetectedStream, info: ManifestInfo): void {
+    if (info.live) {
+      tab.streams.delete(stream.id);
+      this.#forgetLive(tab, stream.url, info);
+      return;
+    }
     stream.protocol = info.protocol;
     stream.inspectedAt = this.#now();
     stream.manifest = {
@@ -421,6 +451,25 @@ export class DetectionManager {
     } else if (this.#isChildKey(tab, stream.dedupeKey)) {
       tab.streams.delete(stream.id);
     }
+    this.#markDirty(tab);
+  }
+
+  /**
+   * Live streams cannot be downloaded, so they are not listed at all: their
+   * player reloads the playlist every few seconds, often with a new query, and
+   * each reload would otherwise be a new entry and a new inspection (the list
+   * and the badge grew to 99+ and evicted real videos). The manifest's path and
+   * those of a live master's playlists are remembered until the next page;
+   * entries of those paths still waiting for (or failing) an inspection go too.
+   * Ready entries never do: they are videos that can be downloaded.
+   */
+  #forgetLive(tab: TabState, url: string, info: ManifestInfo): void {
+    const keys = [url, ...info.childUrls].map(liveKey);
+    for (const key of keys) tab.liveKeys.add(key);
+    for (const other of [...tab.streams.values()]) {
+      if ((other.status === 'pending' || other.status === 'error') && tab.liveKeys.has(liveKey(other.url))) tab.streams.delete(other.id);
+    }
+    this.#logger?.debug('Ignoring a live stream', { url });
     this.#markDirty(tab);
   }
 
@@ -497,6 +546,7 @@ export class DetectionManager {
       streams: new Map((stored?.streams ?? []).map((stream) => [stream.id, stream])),
       probedShapes: new Set(),
       segmentShapes: new Set(),
+      liveKeys: new Set(),
       probes: 0,
       inspecting: new Set(),
       dismissedKeys: new Set(),
@@ -516,6 +566,7 @@ export class DetectionManager {
     tab.streams.clear();
     tab.probedShapes.clear();
     tab.segmentShapes.clear();
+    tab.liveKeys.clear();
     tab.probes = 0;
     tab.inspecting = new Set();
   }

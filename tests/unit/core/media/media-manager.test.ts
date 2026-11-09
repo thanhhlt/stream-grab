@@ -1,6 +1,6 @@
 import 'fake-indexeddb/auto';
 import { IDBFactory } from 'fake-indexeddb';
-import { beforeAll, describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { IndexedDbSegmentStorage } from '@/core/download/download-storage';
 import { FfmpegError, type FfmpegJob, type FfmpegResult, type FfmpegRunner, type FfmpegRunOptions } from '@/core/media/ffmpeg-job';
 import { NO_DATA_MESSAGE, OLD_LAYOUT_MESSAGE } from '@/core/media/media-analysis';
@@ -10,6 +10,7 @@ import type { MediaReport, MediaTaskSpec, SaveRequest } from '@/core/models/down
 import type { OutputFormat } from '@/shared/settings/settings';
 import { probeResult, ScriptedRunner } from '@tests/fakes/fake-ffmpeg';
 import { NodeFfmpegRunner } from '@tests/fakes/ffmpeg-node';
+import { MemoryOutputFiles } from '@tests/fakes/output-files';
 import { storeDownloadedTask, storeSegments, type StoredSegmentSpec } from '@tests/fakes/stored-media';
 import { syntheticMedia, type Rendition, type SyntheticMedia } from '@tests/fixtures/media/synthetic-media';
 
@@ -289,6 +290,125 @@ describe('MediaManager · outcomes', () => {
     await waitFor(() => reports.some((report) => report.progress.stage === 'merging'));
     await expect(manager.syncSettled([])).resolves.toEqual([]);
     expect(reports.at(-1)).toMatchObject({ taskId: 'a', outcome: { status: 'cancelled' } });
+  });
+});
+
+describe('MediaManager · merged files on disk (0.4.0)', () => {
+  const logger = () => ({ debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() });
+  /** A manager whose FFmpeg writes merged files to `files`, as the media worker writes them to OPFS. */
+  const onDisk = (overrides: Partial<MediaManagerDeps> = {}) => {
+    const files = new MemoryOutputFiles();
+    return { files, ...setup(new NodeFfmpegRunner({ files }), { files, ...overrides }) };
+  };
+  const fileOf = (taskId: string, extension = 'mp4') => new RegExp(`^${taskId}\\.[a-z0-9]+\\.${extension}$`);
+
+  it('merges into a file of its own, hands it over typed, and deletes it once Chrome has saved its copy', async () => {
+    const { files, storage, manager, saves, urls, process, probeSaved } = onDisk();
+    await storeDownloadedTask(storage, 't', [video(media.ts.video['v180'] as Rendition), english(media.ts.audio)]);
+    await process('t');
+    const [name = ''] = files.opened;
+    expect(name).toMatch(fileOf('t'));
+    expect(urls.get(saves[0]?.url ?? '')?.type).toBe('video/mp4');
+    expect(saves[0]?.size).toBe(files.files.get(name)?.size);
+    expect((await probeSaved(saves[0]))?.streams.map((stream) => stream.codec)).toEqual(['h264', 'aac']);
+    // Kept while Chrome saves it: a download that has not started fails once its file is gone.
+    expect(await files.names()).toEqual([name]);
+    manager.sync([]);
+    await waitFor(() => files.files.size === 0);
+    expect(files.removed).toEqual([name]);
+    expect(await storage.taskIds()).toEqual(['t']); // the segments are the service worker's to delete
+  });
+
+  it('types a Matroska file for Chrome, and merges every attempt into a new file', async () => {
+    const { files, storage, manager, saves, urls, process, probeSaved } = onDisk();
+    await storeDownloadedTask(storage, 'm', [video(media.ts.muxed)]);
+    await process('m', 'mkv');
+    expect(files.opened[0]).toMatch(fileOf('m', 'mkv'));
+    expect(urls.get(saves[0]?.url ?? '')?.type).toBe('video/x-matroska'); // the file says video/matroska
+    expect((await probeSaved(saves[0]))?.format).toContain('matroska');
+    manager.sync([]);
+    await process('m', 'mkv');
+    expect(files.opened).toHaveLength(2);
+    expect(files.opened[1]).not.toBe(files.opened[0]);
+  });
+
+  it('reports a full disk in words the user can act on, deleting the file and keeping the segments', async () => {
+    const { files, storage, saves, process } = onDisk();
+    files.quota = 16 * 1024;
+    await storeDownloadedTask(storage, 'full', [video(media.ts.muxed)]);
+    expect((await process('full')).at(-1)?.outcome).toEqual({
+      status: 'failed',
+      message: 'There is not enough disk space to write the merged file. Free up disk space, then press Retry; the downloaded segments are kept.',
+    });
+    expect(await files.names()).toEqual([]);
+    expect(saves).toEqual([]);
+    expect(await storage.taskIds()).toEqual(['full']);
+  });
+
+  it('merges into Blob parts when the file cannot be opened, and logs why', async () => {
+    const log = logger();
+    const { files, storage, saves, urls, process, probeSaved } = onDisk({ logger: log });
+    files.failOpen = new Error('Synchronous file access is not available here');
+    await storeDownloadedTask(storage, 'mem', [video(media.ts.muxed)]);
+    await process('mem');
+    expect(urls.get(saves[0]?.url ?? '')?.type).toBe('video/mp4');
+    expect((await probeSaved(saves[0]))?.streams.map((stream) => stream.kind)).toEqual(['video', 'audio']);
+    expect(log.warn).toHaveBeenCalledWith('The merged file could not be written to disk, so it was kept in memory', {
+      error: 'Synchronous file access is not available here',
+    });
+  });
+
+  it('deletes the file of a merge that failed its check, was cancelled, or is no longer wanted', async () => {
+    const failed = new MemoryOutputFiles();
+    const short = setup(scripted({ output: [VIDEO] }), { files: failed });
+    await storeDownloadedTask(short.storage, 's', [video(media.ts.muxed)]);
+    expect((await short.process('s')).at(-1)?.outcome).toMatchObject({ status: 'failed' });
+    expect(failed.removeCalls).toEqual([expect.stringMatching(fileOf('s'))]);
+
+    // Cancelled while FFmpeg writes it: the file is released when the worker is terminated, then deleted.
+    const writing = new MemoryOutputFiles();
+    const running = setup(
+      scripted({
+        merge: (job, run) => {
+          const handle = writing.leave(Object.values(job.outputFiles ?? {})[0] ?? '', true);
+          run.signal?.addEventListener('abort', () => {
+            handle.closed = true;
+          });
+          return endless(job, run);
+        },
+      }),
+      { files: writing },
+    );
+    await storeDownloadedTask(running.storage, 'c', [video(media.ts.muxed)]);
+    running.manager.sync([{ taskId: 'c', job: 'process', format: 'auto', title: '' }]);
+    await waitFor(() => running.reports.some((report) => report.progress.stage === 'merging'));
+    await running.manager.cancel(['c']);
+    expect(writing.removed).toEqual([expect.stringMatching(fileOf('c'))]);
+
+    // Cancelled while Chrome saves it.
+    const saving = onDisk();
+    await storeDownloadedTask(saving.storage, 'h', [video(media.ts.muxed)]);
+    await saving.process('h');
+    expect(saving.files.files.size).toBe(1);
+    await saving.manager.cancel(['h']);
+    await waitFor(() => saving.files.files.size === 0);
+
+    // Merged after the task was cancelled or removed.
+    const refused = onDisk({ save: () => Promise.resolve(false) });
+    await storeDownloadedTask(refused.storage, 'n', [video(media.ts.muxed)]);
+    await refused.process('n');
+    expect(refused.files.files.size).toBe(0);
+    expect(refused.files.removed).toHaveLength(1);
+  });
+
+  it('leaves a file it cannot delete yet to the service worker’s cleanup', async () => {
+    const log = logger();
+    const files = { remove: vi.fn(() => Promise.resolve('locked' as const)) };
+    const { storage, process } = setup(scripted({ output: [VIDEO] }), { files, logger: log, fileLockWaitMs: 50 });
+    await storeDownloadedTask(storage, 'x', [video(media.ts.muxed)]);
+    await process('x');
+    expect(files.remove).toHaveBeenCalledWith(expect.stringMatching(fileOf('x')), { waitLockedMs: 50 });
+    expect(log.warn).toHaveBeenCalledWith('A merged file is still open and was left for cleanup', { file: expect.stringMatching(fileOf('x')) as string });
   });
 });
 

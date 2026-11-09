@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { Browser as BrowserKind, getInstalledBrowsers } from '@puppeteer/browsers';
@@ -6,6 +6,7 @@ import puppeteer, { TargetType, type Browser, type Page, type Target } from 'pup
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { mergeStoredTasks } from '@/core/download/task-store';
 import { defaultAudioTracks } from '@/core/download/variant-choice';
+import { MERGE_DIRECTORY } from '@/core/media/output-files';
 import { probeJob, parseProbeOutput } from '@/core/media/probe';
 import type { DetectedStream } from '@/core/models/detected-stream';
 import type { DownloadTask } from '@/core/models/download-task';
@@ -13,6 +14,7 @@ import { STORAGE_KEYS } from '@/shared/constants';
 import { formatBytes } from '@/shared/utils/bytes';
 import { NodeFfmpegRunner } from '@tests/fakes/ffmpeg-node';
 import { DEMO_MEDIA } from '@tests/fixtures/download-routes';
+import { LIVE_PAGE_PATH, LIVE_PATH, LIVE_RELOADS, LIVE_VOD_PATH } from '@tests/fixtures/fixture-routes';
 import { syntheticFiles } from '@tests/fixtures/media/synthetic-files';
 import {
   MSE_SEGMENT_PATH,
@@ -126,6 +128,16 @@ async function probeFile(path: string) {
   return parseProbeOutput((await ffmpeg.run(probeJob('saved.mp4', new Blob([new Uint8Array(bytes)])))).stdout);
 }
 
+/** Files in the extension's OPFS merge directory (pages, the service worker and the offscreen document share it). */
+async function mergeFiles(page: Page): Promise<string[]> {
+  return page.evaluate(async (directory) => {
+    const merges = await (await navigator.storage.getDirectory()).getDirectoryHandle(directory, { create: true });
+    const names: string[] = [];
+    for await (const name of merges.keys()) names.push(name);
+    return names;
+  }, MERGE_DIRECTORY);
+}
+
 /** Starts Chrome on the test profile with dist/ loaded; the extension ID derives from the path, so it stays the same. */
 async function launch(): Promise<void> {
   browser = await puppeteer.launch({
@@ -167,6 +179,32 @@ describe('StreamGrab in Chrome (Chrome for Testing, unpacked dist/)', () => {
     // Five streams on the page (scenario 4), each with two qualities (scenario 5).
     expect(streams.every((stream) => stream.media?.variants.length === 2)).toBe(true);
 
+    // Merged files go to OPFS (0.4.0). One left by a merge cut short is deleted once the engine closes.
+    await ext.evaluate(async (directory) => {
+      const merges = await (await navigator.storage.getDirectory()).getDirectoryHandle(directory, { create: true });
+      const writable = await (await merges.getFileHandle('orphan.k0.mp4', { create: true })).createWritable();
+      await writable.write(new Uint8Array(4096));
+      await writable.close();
+    }, MERGE_DIRECTORY);
+    // Every file the merge directory shows while the videos are merged and saved, at its largest
+    // (the popup tab is in front: its timers run).
+    const watching = ext.evaluate(async (directory) => {
+      const seen: Record<string, number> = {};
+      const until = Date.now() + 300_000;
+      const flag = window as unknown as { stopWatching?: boolean };
+      while (flag.stopWatching !== true && Date.now() < until) {
+        const merges = await (await navigator.storage.getDirectory()).getDirectoryHandle(directory, { create: true });
+        for await (const [name, entry] of merges.entries()) {
+          if (entry.kind !== 'file') continue;
+          // Readable while FFmpeg writes it (a snapshot); gone when deleted in between.
+          const size = await entry.getFile().then((file) => file.size, () => 0);
+          seen[name] = Math.max(seen[name] ?? 0, size);
+        }
+        await new Promise((done) => setTimeout(done, 10));
+      }
+      return seen;
+    }, MERGE_DIRECTORY);
+
     const started = await send<{ created: { taskId: string }[]; failed: unknown[] }>(ext, 'downloads/start', { requests: streams.map((stream) => request(tabId, stream)) });
     expect(started.failed).toEqual([]);
     const ids = started.created.map((created) => created.taskId);
@@ -177,6 +215,18 @@ describe('StreamGrab in Chrome (Chrome for Testing, unpacked dist/)', () => {
       if (failed) throw new Error(`${failed.source.title} failed: ${failed.statusMessage ?? ''}`);
       return list.length === 3 && list.every((task) => task.status === 'completed') ? list : undefined;
     });
+
+    await ext.evaluate(() => {
+      (window as unknown as { stopWatching?: boolean }).stopWatching = true;
+    });
+    const seen = Object.entries(await watching);
+    // Each video was merged into a file of its own in OPFS, named after its task: the very bytes Chrome saved…
+    for (const task of finished) {
+      const files = seen.filter(([name]) => new RegExp(`^${task.id}\\.[a-z0-9]+\\.mp4$`).test(name));
+      expect(files.map(([, size]) => size)).toEqual([task.output.saved?.bytes]);
+    }
+    // …deleted once Chrome had saved its copy; the orphan went with the cleanup when the engine closed.
+    await waitFor('the merged files deleted', async () => ((await mergeFiles(ext)).length === 0 ? true : undefined), 30_000);
 
     for (const task of finished) {
       const saved = task.output.saved;
@@ -411,5 +461,107 @@ describe('StreamGrab in Chrome (Chrome for Testing, unpacked dist/)', () => {
     }, 60_000);
     expect(Buffer.compare(new Uint8Array(readFileSync(redone.output.saved?.path ?? '')), source)).toBe(0);
     await again.close();
+  });
+  it('lists the VOD of a page that also plays a live channel, never the live, however often it reloads (0.4.0)', async () => {
+    const pageUrl = `${site.origin}${LIVE_PAGE_PATH}`;
+    const page = await browser.newPage();
+    await page.goto(pageUrl);
+    const ext = await extensionPage();
+    await page.waitForSelector('body[data-done="true"]', { timeout: 60_000 });
+    const { tabId } = await detected(ext, pageUrl, [LIVE_VOD_PATH]);
+    // Inspections still under way (if any) end within moments.
+    await new Promise((done) => setTimeout(done, 1_500));
+    const listed = await ext.evaluate(async (key) => {
+      const stored = (await chrome.storage.session.get(key))[key] as { streams: DetectedStream[] } | undefined;
+      return (stored?.streams ?? []).map((stream) => new URL(stream.url).pathname);
+    }, `detections:${tabId}`);
+    expect(listed).toEqual([LIVE_VOD_PATH]);
+    expect(await ext.evaluate((id) => chrome.action.getBadgeText({ tabId: id }), tabId)).toBe('1');
+    // The page's reloads, plus the extension's inspection of the first one (a few more at most, if reloads came in while it ran).
+    const liveRequests = site.requests.filter((entry) => entry.path === LIVE_PATH).length;
+    expect(liveRequests).toBeGreaterThanOrEqual(LIVE_RELOADS + 1);
+    expect(liveRequests).toBeLessThanOrEqual(LIVE_RELOADS + 3);
+    await page.close();
+    await ext.close();
+  });
+
+  it('saves into the Downloads subfolder set in Settings, and Remove all empties the Completed tab, keeping the files (0.4.0)', async () => {
+    const ext = await extensionPage();
+    const clickTab = (name: string) =>
+      ext.evaluate((name) => {
+        [...document.querySelectorAll<HTMLElement>('[role="tab"]')].find((tab) => tab.textContent?.startsWith(name))?.click();
+      }, name);
+    const clickButton = (selector: string, text: string) =>
+      ext.evaluate(
+        (selector, text) => {
+          const root = document.querySelector(selector);
+          [...(root?.querySelectorAll('button') ?? [])].find((button) => button.textContent?.trim() === text)?.click();
+        },
+        selector,
+        text,
+      );
+    const storedFolder = () =>
+      ext.evaluate(async (key) => ((await chrome.storage.local.get(key))[key] as { downloadFolder?: string } | undefined)?.downloadFolder, STORAGE_KEYS.settings);
+
+    // The real Settings tab: a backslash path with Vietnamese letters, saved in the form Chrome accepts.
+    await clickTab('Settings');
+    await ext.waitForSelector('#download-folder');
+    await ext.type('#download-folder', 'StreamGrab\\Phim Việt');
+    await ext.keyboard.press('Enter');
+    await waitFor('the saved folder', async () => ((await storedFolder()) === 'StreamGrab/Phim Việt' ? true : undefined), 10_000);
+    const folder = join(profile, 'Downloads', 'StreamGrab', 'Phim Việt');
+
+    const filesUrl = `${site.origin}${PROGRESSIVE_PAGE_PATH}?folder`;
+    const demoUrl = `${site.origin}/download?folder`;
+    const filesPage = await browser.newPage();
+    await filesPage.goto(filesUrl);
+    const demo = await browser.newPage();
+    await demo.goto(demoUrl);
+    const file = await detected(ext, filesUrl, ['/files/sample.webm']);
+    const hls = await detected(ext, demoUrl, ['/download/plain/plain.m3u8']);
+    const requests = [request(file.tabId, file.streams[0] as DetectedStream), request(hls.tabId, hls.streams[0] as DetectedStream)];
+    const started = await send<{ created: { taskId: string }[]; failed: unknown[] }>(ext, 'downloads/start', { requests });
+    expect(started.failed).toEqual([]);
+    const ids = started.created.map((created) => created.taskId);
+    const finished = await waitFor('two videos saved in the subfolder', async () => {
+      const list = (await tasks(ext)).filter((task) => ids.includes(task.id));
+      const failed = list.find((task) => task.status === 'failed');
+      if (failed) throw new Error(`${failed.source.title} failed: ${failed.statusMessage ?? ''}`);
+      return list.length === 2 && list.every((task) => task.status === 'completed') ? list : undefined;
+    });
+    // Chrome's own download (WebM) and a merged video (Blob from the offscreen document) alike.
+    for (const task of finished) {
+      expect(task.output.saved?.path.startsWith(join(folder, task.output.baseName))).toBe(true);
+      expect(existsSync(task.output.saved?.path ?? '')).toBe(true);
+    }
+
+    const saved = (await tasks(ext)).filter((task) => task.status === 'completed').map((task) => task.output.saved?.path ?? '');
+    expect(saved.length).toBeGreaterThanOrEqual(2);
+    await clickTab('Completed');
+    await waitFor('the Completed tab', async () => ((await ext.evaluate(() => document.querySelectorAll('li').length)) === saved.length ? true : undefined));
+    await clickButton('main', 'Remove all');
+    await ext.waitForSelector('[role="alertdialog"]');
+    expect(await ext.evaluate(() => document.activeElement?.textContent)).toBe('Cancel');
+    await clickButton('[role="alertdialog"]', 'Remove all');
+    await waitFor('an empty Completed tab', async () =>
+      (await ext.evaluate(() => document.body.innerText.includes('No completed downloads'))) ? true : undefined,
+    );
+    expect((await tasks(ext)).filter((task) => task.status === 'completed')).toEqual([]);
+    expect(saved.every((path) => existsSync(path))).toBe(true);
+
+    // Back to the default for whatever runs next. (The popup tab is behind the video pages: no mouse clicks,
+    // whose visibility check never ends in a background tab.)
+    await ext.bringToFront();
+    await clickTab('Settings');
+    await ext.waitForSelector('#download-folder');
+    await ext.evaluate(() => {
+      document.querySelector<HTMLInputElement>('#download-folder')?.select();
+    });
+    await ext.keyboard.press('Backspace');
+    await ext.keyboard.press('Enter');
+    await waitFor('the default folder', async () => ((await storedFolder()) === '' ? true : undefined), 10_000);
+    await filesPage.close();
+    await demo.close();
+    await ext.close();
   });
 });

@@ -45,7 +45,7 @@ export class MediaWorkerHost {
       const started = this.#now();
       const session = await this.#load(request.coreUrl);
       this.#deps.post({ type: 'started', id, loadMs: Math.round(this.#now() - started) });
-      const result = session.run(request.job, {
+      const result = await session.run(request.job, {
         onProgress: (seconds) => {
           this.#deps.post({ type: 'progress', id, seconds });
         },

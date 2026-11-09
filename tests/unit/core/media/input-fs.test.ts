@@ -53,7 +53,7 @@ describe('InputFs', () => {
     const media = await syntheticMedia();
     const session = new FfmpegSession(await createNodeCore(), { input: { chunkBytes: 8 * 1024, readSync } });
     const input = new SyncBlob(new Uint8Array(await new Blob(media.ts.muxed.segments).arrayBuffer())) as unknown as Blob;
-    const probe = parseProbeOutput(session.run(probeJob('in.ts', input)).stdout);
+    const probe = parseProbeOutput((await session.run(probeJob('in.ts', input))).stdout);
     expect(probe?.streams.map((stream) => stream.codec)).toEqual(['h264', 'aac']);
     expect(inputPath('in.ts')).toBe('/in/in.ts');
   });

@@ -3,6 +3,7 @@ import { FfmpegError, inputPath, outputPath, type FfmpegJob } from '@/core/media
 import { FfmpegSession } from '@/core/media/ffmpeg-session';
 import { parseProbeOutput, probeJob } from '@/core/media/probe';
 import { loadNodeSession, syncBlob } from '@tests/fakes/ffmpeg-node';
+import { MemoryOutputFiles } from '@tests/fakes/output-files';
 import { createNodeCore } from '@tests/fixtures/media/node-core';
 import { syntheticMedia, type SyntheticMedia } from '@tests/fixtures/media/synthetic-media';
 
@@ -24,7 +25,7 @@ const tsTrack = async (): Promise<Blob> => syncBlob(new Blob(media.ts.muxed.segm
 
 describe('FfmpegSession', () => {
   it('probes a mounted Blob without copying it into the heap', async () => {
-    const result = session.run(probeJob('track-1.ts', await tsTrack()));
+    const result = await session.run(probeJob('track-1.ts', await tsTrack()));
     expect(result.exitCode).toBeUndefined(); // ffprobe reports through its output only
     const probe = parseProbeOutput(result.stdout);
     expect(probe?.format).toBe('mpegts');
@@ -43,7 +44,7 @@ describe('FfmpegSession', () => {
       inputs: [{ name: 'in.ts', data: await tsTrack() }],
       outputs: ['out.mp4'],
     };
-    const result = session.run(job, { onProgress: (seconds) => progress.push(seconds) });
+    const result = await session.run(job, { onProgress: (seconds) => progress.push(seconds) });
     expect(result.exitCode).toBe(0);
     const output = result.outputs[0];
     expect(output?.name).toBe('out.mp4');
@@ -53,14 +54,14 @@ describe('FfmpegSession', () => {
     expect(progress.at(-1)).toBeGreaterThan(7);
 
     // The MP4 FFmpeg wrote is readable media, every chunk in place.
-    const reprobe = parseProbeOutput(session.run(probeJob('out.mp4', await syncBlob(new Blob([bytes])))).stdout);
+    const reprobe = parseProbeOutput((await session.run(probeJob('out.mp4', await syncBlob(new Blob([bytes]))))).stdout);
     expect(reprobe?.format).toContain('mp4');
     expect(reprobe?.streams.map((stream) => stream.codec)).toEqual(['h264', 'aac']);
   });
 
   it('reports a failing command as a result and stays usable', async () => {
     const junk = await syncBlob(new Blob([new Uint8Array(5000).fill(0x42)]));
-    const result = session.run({
+    const result = await session.run({
       tool: 'ffmpeg',
       args: ['-hide_banner', '-i', inputPath('junk.ts'), '-c', 'copy', outputPath('out.mp4')],
       inputs: [{ name: 'junk.ts', data: junk }],
@@ -70,16 +71,86 @@ describe('FfmpegSession', () => {
     expect(result.outputs).toEqual([]);
     expect(result.stderrTail.join('\n')).toContain('Invalid data found when processing input');
     expect(session.usable).toBe(true);
-    expect(parseProbeOutput(session.run(probeJob('again.ts', await tsTrack())).stdout)?.format).toBe('mpegts');
+    expect(parseProbeOutput((await session.run(probeJob('again.ts', await tsTrack()))).stdout)?.format).toBe('mpegts');
   });
 
-  it('refuses invalid jobs without touching FFmpeg', () => {
+  it('refuses invalid jobs without touching FFmpeg', async () => {
     const data = new Blob(['x']);
-    const invalid = (job: FfmpegJob) => () => session.run(job);
-    expect(invalid({ tool: 'ffprobe', args: ['-i', 'x'], inputs: [{ name: '../etc', data }], outputs: [] })).toThrow(FfmpegError);
-    expect(invalid({ tool: 'ffprobe', args: ['-i', 'x'], inputs: [{ name: 'a', data }, { name: 'a', data }], outputs: [] })).toThrow(/duplicate/);
-    expect(invalid({ tool: 'ffmpeg', args: [], inputs: [], outputs: [] })).toThrow(/arguments/);
+    const invalid = (job: FfmpegJob) => session.run(job);
+    await expect(invalid({ tool: 'ffprobe', args: ['-i', 'x'], inputs: [{ name: '../etc', data }], outputs: [] })).rejects.toThrow(FfmpegError);
+    await expect(invalid({ tool: 'ffprobe', args: ['-i', 'x'], inputs: [{ name: 'a', data }, { name: 'a', data }], outputs: [] })).rejects.toThrow(/duplicate/);
+    await expect(invalid({ tool: 'ffmpeg', args: [], inputs: [], outputs: [] })).rejects.toThrow(/arguments/);
+    const ffmpeg = (outputFiles: Record<string, string>): FfmpegJob => ({ tool: 'ffmpeg', args: ['-version'], inputs: [], outputs: ['out.mp4'], outputFiles });
+    await expect(invalid(ffmpeg({ 'other.mp4': 'file.mp4' }))).rejects.toThrow(/not an output/);
+    await expect(invalid(ffmpeg({ 'out.mp4': '../file.mp4' }))).rejects.toThrow(/output file name/);
     expect(session.usable).toBe(true);
+  });
+});
+
+describe('FfmpegSession · outputs written to files on disk (0.4.0)', () => {
+  const remux = async (outputFiles?: Record<string, string>): Promise<FfmpegJob> => ({
+    tool: 'ffmpeg',
+    args: ['-hide_banner', '-i', inputPath('in.ts'), '-c', 'copy', '-f', 'mp4', outputPath('out.mp4')],
+    inputs: [{ name: 'in.ts', data: await tsTrack() }],
+    outputs: ['out.mp4'],
+    ...(outputFiles ? { outputFiles } : {}),
+  });
+
+  it('hands the file back as the output, closed and kept for the caller', async () => {
+    const files = new MemoryOutputFiles();
+    const disk = await loadNodeSession({ files });
+    const result = await disk.run(await remux({ 'out.mp4': 'task-1.k1.mp4' }));
+    expect(result.exitCode).toBe(0);
+    expect(result.outputs).toEqual([{ name: 'out.mp4', data: expect.any(Blob) as Blob, file: 'task-1.k1.mp4' }]);
+    expect(result.outputs[0]?.data.type).toBe('video/mp4'); // typed from its name, like an OPFS file
+    expect(await files.names()).toEqual(['task-1.k1.mp4']);
+    expect(files.files.get('task-1.k1.mp4')?.closed).toBe(true);
+    const probe = parseProbeOutput((await disk.run(probeJob('out.mp4', await syncBlob(result.outputs[0]?.data ?? new Blob())))).stdout);
+    expect(probe?.streams.map((stream) => stream.codec)).toEqual(['h264', 'aac']);
+  });
+
+  it('deletes the file of a failed command', async () => {
+    const files = new MemoryOutputFiles();
+    const disk = await loadNodeSession({ files });
+    const result = await disk.run({
+      tool: 'ffmpeg',
+      args: ['-hide_banner', '-i', inputPath('junk.ts'), '-c', 'copy', '-f', 'mp4', outputPath('out.mp4')],
+      inputs: [{ name: 'junk.ts', data: await syncBlob(new Blob([new Uint8Array(5000).fill(0x42)])) }],
+      outputs: ['out.mp4'],
+      outputFiles: { 'out.mp4': 'task-1.k1.mp4' },
+    });
+    expect(result.exitCode).toBe(1);
+    expect(await files.names()).toEqual([]);
+    expect(files.removed).toEqual(['task-1.k1.mp4']);
+  });
+
+  it('fails with a disk-space error when the disk fills up, deletes the file and stays usable', async () => {
+    const files = new MemoryOutputFiles();
+    files.quota = 64 * 1024;
+    const disk = await loadNodeSession({ files });
+    await expect(disk.run(await remux({ 'out.mp4': 'task-1.k1.mp4' }))).rejects.toMatchObject({
+      kind: 'disk',
+      message: 'There is not enough disk space to write the merged file.',
+    });
+    expect(await files.names()).toEqual([]);
+    expect(disk.usable).toBe(true);
+    files.quota = Number.POSITIVE_INFINITY;
+    expect((await disk.run(await remux({ 'out.mp4': 'task-1.k2.mp4' }))).exitCode).toBe(0);
+  });
+
+  it('streams into Blob parts when the file cannot be opened, saying why', async () => {
+    const files = new MemoryOutputFiles();
+    files.failOpen = new DOMException('Synchronous file access is not available here', 'NotSupportedError');
+    const disk = await loadNodeSession({ files });
+    const result = await disk.run(await remux({ 'out.mp4': 'task-1.k1.mp4' }));
+    expect(result.exitCode).toBe(0);
+    expect(result.outputs[0]).toMatchObject({ name: 'out.mp4', fileError: 'Synchronous file access is not available here' });
+    expect(result.outputs[0]?.file).toBeUndefined();
+    expect(result.outputs[0]?.data.size).toBeGreaterThan(8192);
+
+    // Without a file store at all (tests, a context without OPFS).
+    const plain = await session.run(await remux({ 'out.mp4': 'task-1.k1.mp4' }));
+    expect(plain.outputs[0]).toMatchObject({ fileError: 'files on disk are not available here' });
   });
 });
 
@@ -91,9 +162,9 @@ describe('FfmpegSession failures', () => {
     };
     const broken = new FfmpegSession(core);
     const job: FfmpegJob = { tool: 'ffmpeg', args: ['-version'], inputs: [], outputs: [] };
-    expect(() => broken.run(job)).toThrow(expect.objectContaining({ kind: 'crashed' }) as Error);
+    await expect(broken.run(job)).rejects.toMatchObject({ kind: 'crashed' });
     expect(broken.usable).toBe(false);
-    expect(() => broken.run(job)).toThrow(/earlier error/);
+    await expect(broken.run(job)).rejects.toThrow(/earlier error/);
   });
 
   it('recognises running out of memory', async () => {
@@ -103,16 +174,15 @@ describe('FfmpegSession failures', () => {
       oom.aborted('OOM'); // what the core's onAbort reports
       return 1;
     };
-    expect(() => oom.run({ tool: 'ffmpeg', args: ['-version'], inputs: [], outputs: [] })).toThrow(
-      expect.objectContaining({ kind: 'memory', message: expect.stringContaining('ran out of memory') as string }) as Error,
-    );
+    await expect(oom.run({ tool: 'ffmpeg', args: ['-version'], inputs: [], outputs: [] })).rejects.toMatchObject({
+      kind: 'memory',
+      message: expect.stringContaining('ran out of memory') as string,
+    });
 
     const core2 = await createNodeCore();
     core2.exec = () => {
       throw new RangeError('WebAssembly.Memory.grow(): Maximum memory size exceeded');
     };
-    expect(() => new FfmpegSession(core2).run({ tool: 'ffmpeg', args: ['-version'], inputs: [], outputs: [] })).toThrow(
-      expect.objectContaining({ kind: 'memory' }) as Error,
-    );
+    await expect(new FfmpegSession(core2).run({ tool: 'ffmpeg', args: ['-version'], inputs: [], outputs: [] })).rejects.toMatchObject({ kind: 'memory' });
   });
 });

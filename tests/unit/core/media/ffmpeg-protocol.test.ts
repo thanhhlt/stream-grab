@@ -21,6 +21,13 @@ describe('parseRunRequest', () => {
     expect(parseRunRequest({ type: 'run', id: 1, coreUrl: 'x', job: { ...job, tool: 'sh' } })).toBeNull();
     expect(parseRunRequest({ type: 'run', id: 1, coreUrl: 'x', job: { ...job, inputs: [{ name: 'a.ts', data: 'bytes' }] } })).toBeNull();
     expect(parseRunRequest({ type: 'run', id: 1, coreUrl: 'x', job: { ...job, args: [1, 2] } })).toBeNull();
+    expect(parseRunRequest({ type: 'run', id: 1, coreUrl: 'x', job: { ...job, outputFiles: { 'out.mp4': 7 } } })).toBeNull();
+    expect(parseRunRequest({ type: 'run', id: 1, coreUrl: 'x', job: { ...job, outputFiles: 'out.mp4' } })).toBeNull();
+  });
+
+  it('carries the files outputs are written to (0.4.0)', () => {
+    const merge = { tool: 'ffmpeg', args: ['-i', '/in/a.ts', '/out/out.mp4'], inputs: [{ name: 'a.ts', data }], outputs: ['out.mp4'], outputFiles: { 'out.mp4': 't.k1.mp4' } };
+    expect(parseRunRequest({ type: 'run', id: 1, coreUrl: 'x', job: merge })?.job).toEqual(merge);
   });
 });
 
@@ -36,6 +43,16 @@ describe('parseWorkerEvent', () => {
       id: 1,
       error: { kind: 'memory', message: 'm' },
     });
+    expect(parseWorkerEvent({ type: 'failed', id: 1, error: { kind: 'disk', message: 'm' } })).toMatchObject({ error: { kind: 'disk' } });
+  });
+
+  it('keeps an output’s file on disk, or why it could not be used (0.4.0)', () => {
+    const outputs = [
+      { name: 'out.mp4', data, file: 't.k1.mp4' },
+      { name: 'other.mp4', data, fileError: 'no OPFS' },
+    ];
+    const result = { exitCode: 0, stdout: '', stderrTail: [], outputs, runMs: 5 };
+    expect(parseWorkerEvent({ type: 'done', id: 1, result })).toEqual({ type: 'done', id: 1, result });
   });
 
   it('rejects malformed events', () => {

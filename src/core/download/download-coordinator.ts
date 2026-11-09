@@ -1,4 +1,5 @@
 import { containerExtension } from '@/core/media/containers';
+import { taskIdOfMergeFile, type OutputFileStore } from '@/core/media/output-files';
 import { isEmptyRequestContext, type DetectedStream, type RequestContext } from '@/core/models/detected-stream';
 import {
   CANCELLABLE_TASK_STATUSES,
@@ -19,6 +20,7 @@ import { errorMessage } from '@/shared/utils/errors';
 import type { Logger } from '@/shared/utils/logger';
 import { dedupeKey } from '@/shared/utils/url';
 import type { SegmentStorage } from './download-storage';
+import { inDownloadFolder } from './file-name';
 import { fileProgress, percentOf, ProgressTracker } from './progress';
 import type { TaskStore } from './task-store';
 
@@ -85,6 +87,8 @@ export interface CoordinatorDeps {
   findStreams?(streamId: string): Promise<DetectedStream[]>;
   /** Saves merged files (chrome.downloads). */
   files?: FileSaver;
+  /** Merged files on disk (OPFS): those no running merge needs are deleted with orphaned segments. */
+  mergeFiles?: Pick<OutputFileStore, 'names' | 'remove'>;
   notifier?: Notifier;
   now?: () => number;
   newLeaseId?: () => string;
@@ -123,6 +127,23 @@ export function saveFailureMessage(reason: string | undefined): string {
     default:
       return `Chrome could not save the file${reason ? ` (${reason})` : ''}. ${KEPT}`;
   }
+}
+
+/**
+ * A save that failed because of the "Save in a subfolder of Downloads"
+ * setting (checked in Chrome 157 on Windows): the folder cannot be created
+ * (a file has its name) → FILE_FAILED; the full path is too long → cancelled
+ * before Chrome chose the file's path. Undefined for any other failure.
+ */
+export function folderFailureMessage(state: Pick<SaveState, 'error' | 'path'>, folder: string, then: string): string | undefined {
+  if (folder === '') return undefined;
+  if (state.error === 'FILE_FAILED') {
+    return `Chrome could not save the file in the folder "${folder}" of Downloads (a file with that name may be in the way). Change the folder in Settings. ${then}`;
+  }
+  if (state.error === 'USER_CANCELED' && state.path === '') {
+    return `The file's full path in the folder "${folder}" of Downloads is too long. Choose a shorter folder in Settings. ${then}`;
+  }
+  return undefined;
 }
 
 /** An expired link of a task whose request context was lost with the browser session. */
@@ -438,7 +459,7 @@ export class DownloadCoordinator {
     let downloadId: number;
     try {
       if (!files) throw new Error('downloads are not available');
-      downloadId = await files.save({ url: request.url, fileName });
+      downloadId = await files.save({ url: request.url, fileName: await this.#inFolder(fileName) });
     } catch (error) {
       const failed = await this.#deps.store.update(task.id, (current) => {
         if (current.status !== wanted) return current;
@@ -487,6 +508,20 @@ export class DownloadCoordinator {
     return dismissed;
   }
 
+  /** A file name in the Downloads subfolder the settings name, read when Chrome starts saving the file. */
+  async #inFolder(fileName: string): Promise<string> {
+    return inDownloadFolder((await this.#deps.getSettings()).downloadFolder, fileName);
+  }
+
+  /** The message of a save the subfolder setting made fail, if it did (the setting rarely changes during one save). */
+  async #folderFailure(state: SaveState, then: string): Promise<string | undefined> {
+    const folder = await this.#deps.getSettings().then(
+      (settings) => settings.downloadFolder,
+      () => '',
+    );
+    return folderFailureMessage(state, folder, then);
+  }
+
   /**
    * Finishes a task whose file Chrome completed or gave up on. Idempotent:
    * only the call that moves the task out of `processing` acts.
@@ -504,6 +539,7 @@ export class DownloadCoordinator {
       await this.#settleFile(task, downloadId, state);
       return;
     }
+    const failure = state.state === 'complete' ? '' : ((await this.#folderFailure(state, KEPT)) ?? saveFailureMessage(state.error));
     let settled: DownloadTask | undefined;
     await this.#deps.store.update(task.id, (current) => {
       if (current.status !== 'processing' || current.output.downloadId !== downloadId) return current;
@@ -512,7 +548,7 @@ export class DownloadCoordinator {
       settled =
         state.state === 'complete'
           ? { ...rest, status: 'completed', updatedAt: now, output: { ...current.output, saved: { path: state.path, bytes: state.bytes, savedAt: now } } }
-          : { ...rest, status: 'failed', statusMessage: saveFailureMessage(state.error), updatedAt: now };
+          : { ...rest, status: 'failed', statusMessage: failure, updatedAt: now };
       return settled;
     });
     if (!settled) return;
@@ -674,7 +710,7 @@ export class DownloadCoordinator {
       let url = task.source.manifestUrl;
       const stream = await this.#currentStream(task);
       if (stream?.protocol === 'progressive') ({ manifestUrl: url } = await this.#adopt(task.id, stream));
-      const downloadId = await files.save({ url, fileName: `${task.output.baseName}.${task.progressive.container}` });
+      const downloadId = await files.save({ url, fileName: await this.#inFolder(`${task.output.baseName}.${task.progressive.container}`) });
       return await this.#fileStarted(task.id, downloadId);
     } catch (error) {
       const failed = await this.#deps.store.update(task.id, (current) => {
@@ -764,6 +800,7 @@ export class DownloadCoordinator {
       await this.#refused(task, downloadId, state);
       return;
     }
+    const folderFailure = state.state === 'complete' ? undefined : await this.#folderFailure(state, 'Press Retry to download it again.');
     let settled: DownloadTask | undefined;
     await this.#deps.store.update(task.id, (current) => {
       if (current.status !== 'downloading' || current.output.downloadId !== downloadId || !current.progressive) return current;
@@ -778,7 +815,8 @@ export class DownloadCoordinator {
         const resumable = current.progressive.fetch === 'browser' && state.canResume === true;
         const { downloadId: _id, ...output } = current.output;
         const progressive = resumable ? { ...current.progressive, resumeId: downloadId } : withoutResume(current.progressive);
-        settled = { ...rest, output, progressive, status: 'failed', statusMessage: fileFailureMessage(state.error, resumable), updatedAt: now };
+        const statusMessage = folderFailure ?? fileFailureMessage(state.error, resumable);
+        settled = { ...rest, output, progressive, status: 'failed', statusMessage, updatedAt: now };
       }
       return settled;
     });
@@ -941,6 +979,9 @@ export class DownloadCoordinator {
   }
 
   async #removeOrphans(): Promise<string[]> {
+    await this.#removeOrphanFiles().catch((error: unknown) => {
+      this.#deps.logger?.warn('Could not clean up merged files', { error: errorMessage(error) });
+    });
     // Storage first, tasks second: data is only written for tasks already in the store, so a task
     // created in between is never taken for an orphan. Callers are serialised with pump(), so no
     // task starts (and writes) between the two reads and the deletes.
@@ -952,6 +993,28 @@ export class DownloadCoordinator {
     for (const id of orphans) await this.#deleteData(id);
     if (orphans.length > 0) this.#deps.logger?.info('Deleted stored segments no task needs', { tasks: orphans.length });
     return orphans;
+  }
+
+  /**
+   * Merged files on disk that no merge or save needs: left by a merge cut short (the browser
+   * closed, the engine crashed) or a deletion that failed. Only a `processing` task has one in
+   * use; its engine deletes it. A file still open (being written) is skipped.
+   */
+  async #removeOrphanFiles(): Promise<void> {
+    const mergeFiles = this.#deps.mergeFiles;
+    if (!mergeFiles) return;
+    // Files first, tasks second, like segments: a merge starts only for a task already processing.
+    const names = await mergeFiles.names();
+    if (names.length === 0) return;
+    const processing = new Set((await this.#deps.store.list()).filter((task) => task.status === 'processing').map((task) => task.id));
+    let removed = 0;
+    for (const name of names) {
+      const taskId = taskIdOfMergeFile(name);
+      if (taskId !== undefined && processing.has(taskId)) continue;
+      const outcome = await mergeFiles.remove(name).catch(() => 'failed' as const);
+      if (outcome === 'removed') removed += 1;
+    }
+    if (removed > 0) this.#deps.logger?.info('Deleted merged files no task needs', { files: removed });
   }
 
   async #deleteData(taskId: string): Promise<void> {

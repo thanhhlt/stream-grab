@@ -15,6 +15,7 @@ import { IndexedDbSegmentStorage } from '@/core/download/download-storage';
 import { parseEngineWork, parseTaskIds } from '@/core/download/engine-messages';
 import { FfmpegService } from '@/core/media/ffmpeg-service';
 import { MediaManager } from '@/core/media/media-manager';
+import { OpfsOutputFiles } from '@/core/media/output-files';
 import { ManifestFetcher, type FetchFunction } from '@/core/network/manifest-fetcher';
 import { DashAdapter } from '@/core/protocols/dash/dash-adapter';
 import { HlsAdapter } from '@/core/protocols/hls/hls-adapter';
@@ -88,6 +89,9 @@ const media = new MediaManager({
   save: async (request) => (await sendToBackground('engine/save', request)).accepted,
   // The merged file and the copy Chrome saves need room too: checked before merging.
   estimateStorage: () => navigator.storage.estimate(),
+  // Merged files are written to OPFS by the media worker and deleted here once saved (0.4.0).
+  files: new OpfsOutputFiles(),
+  logger: createLogger('media'),
   report: (report) => {
     sendToBackground('engine/mediaReport', report).catch((error: unknown) => {
       log.warn('Could not report media progress', { taskId: report.taskId, error: errorMessage(error) });

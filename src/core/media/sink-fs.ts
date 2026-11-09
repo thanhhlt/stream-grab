@@ -1,5 +1,5 @@
 import type { EmscriptenFs, FsNode, FsStream } from './ffmpeg-core';
-import { BlobSink, SinkAccessError, type SinkOptions } from './output-sink';
+import { BlobSink, SinkError, type OutputSink, type SinkOptions } from './output-sink';
 
 const DIR_MODE = 0o40777;
 const EIO = 29;
@@ -8,25 +8,32 @@ const ENOENT = 44;
 const EPERM = 63;
 
 interface SinkNode extends FsNode {
-  sink?: BlobSink;
+  sink?: OutputSink;
 }
 
 /**
- * An Emscripten filesystem whose files are BlobSinks, mounted where FFmpeg
+ * An Emscripten filesystem whose files are OutputSinks, mounted where FFmpeg
  * writes its outputs. Files are created by FFmpeg (open with O_CREAT), live
- * until unlinked, and can be handed over as Blobs without copying them out of
- * a heap. Only regular files directly in the mount point are supported; that
- * is all a muxer needs.
+ * until unlinked, and can be handed over without copying them out of a heap:
+ * a file prepared for the command (a FileSink on disk) or, by default, a
+ * BlobSink. Only regular files directly in the mount point are supported;
+ * that is all a muxer needs.
  */
 export class SinkFs {
   /** Files by name, as FFmpeg created them. */
-  readonly files = new Map<string, BlobSink>();
+  readonly files = new Map<string, OutputSink>();
   readonly #fs: EmscriptenFs;
   readonly #options: SinkOptions;
+  #prepared: ReadonlyMap<string, OutputSink> = new Map();
 
   constructor(fs: EmscriptenFs, options: SinkOptions = {}) {
     this.#fs = fs;
     this.#options = options;
+  }
+
+  /** Sinks the next files of these names are created on (for one command; an empty map ends it). */
+  prepare(sinks: ReadonlyMap<string, OutputSink>): void {
+    this.#prepared = sinks;
   }
 
   /** The filesystem type, for `FS.mount(sinkFs.type, {}, '/out')`. */
@@ -43,7 +50,10 @@ export class SinkFs {
     if (fs.isDir(mode)) {
       node.contents = {};
     } else {
-      const sink = new BlobSink(this.#options);
+      const prepared = this.#prepared.get(name);
+      // Created again after an unlink: it starts empty, like any new file.
+      if (prepared && prepared.size > 0) this.#guard(() => prepared.truncate(0));
+      const sink = prepared ?? new BlobSink(this.#options);
       node.sink = sink;
       this.files.set(name, sink);
     }
@@ -55,7 +65,7 @@ export class SinkFs {
     return new this.#fs.ErrnoError(code);
   }
 
-  #sinkOf(node: FsNode): BlobSink {
+  #sinkOf(node: FsNode): OutputSink {
     const { sink } = node as SinkNode;
     if (!sink) throw this.#error(EINVAL);
     return sink;
@@ -101,7 +111,7 @@ export class SinkFs {
       return this.#guard(() => this.#sinkOf(stream.node).read(target, position));
     },
     write: (stream: FsStream, buffer: Int8Array | Uint8Array, offset: number, length: number, position: number) => {
-      // `buffer` is the WebAssembly heap: the sink copies what it keeps.
+      // `buffer` is the WebAssembly heap: the sink copies (or writes out) what it keeps.
       const data = new Uint8Array(buffer.buffer, buffer.byteOffset + offset, length);
       this.#guard(() => {
         this.#sinkOf(stream.node).write(data, position);
@@ -116,12 +126,12 @@ export class SinkFs {
     },
   };
 
-  /** Turns a refused access into the I/O error FFmpeg understands. */
+  /** Turns a refused or failed access into the I/O error FFmpeg understands. */
   #guard<T>(operation: () => T): T {
     try {
       return operation();
     } catch (error) {
-      if (error instanceof SinkAccessError) throw this.#error(EIO);
+      if (error instanceof SinkError) throw this.#error(EIO);
       throw error;
     }
   }
