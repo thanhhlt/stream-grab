@@ -1,6 +1,10 @@
 /**
  * Generates the extension icons (public/icons/icon-{16,32,48,128}.png).
  *
+ * Artwork (docs/DESIGN.md, "Identity"): a flat tangerine rounded square with the
+ * ink claw of the popup header holding a small white play triangle. At 16 px the
+ * string is dropped and the prongs are thicker so the claw still reads.
+ *
  * Chrome requires PNG icons for the toolbar action, so the artwork is drawn
  * procedurally (supersampled vector shapes) and encoded with a minimal PNG
  * writer. No image tooling is needed; re-run with `npm run icons`.
@@ -14,9 +18,10 @@ const SIZES = [16, 32, 48, 128] as const;
 const SUPERSAMPLE = 6;
 
 type Rgb = readonly [number, number, number];
-const GRADIENT_FROM: Rgb = [79, 70, 229]; // indigo-600
-const GRADIENT_TO: Rgb = [124, 58, 237]; // violet-600
-const GLYPH: Rgb = [255, 255, 255];
+type Point = readonly [number, number];
+const BACKGROUND: Rgb = [255, 122, 26]; // primary #FF7A1A
+const INK: Rgb = [27, 32, 48]; // ink #1B2030
+const PLAY: Rgb = [255, 255, 255];
 
 function roundedRectContains(x: number, y: number, x0: number, y0: number, x1: number, y1: number, r: number): boolean {
   if (x < x0 || x > x1 || y < y0 || y > y1) return false;
@@ -25,9 +30,8 @@ function roundedRectContains(x: number, y: number, x0: number, y0: number, x1: n
   return (x - cx) ** 2 + (y - cy) ** 2 <= r * r;
 }
 
-function triangleContains(x: number, y: number, a: readonly [number, number], b: readonly [number, number], c: readonly [number, number]): boolean {
-  const sign = (p: readonly [number, number], q: readonly [number, number]): number =>
-    (x - q[0]) * (p[1] - q[1]) - (p[0] - q[0]) * (y - q[1]);
+function triangleContains(x: number, y: number, a: Point, b: Point, c: Point): boolean {
+  const sign = (p: Point, q: Point): number => (x - q[0]) * (p[1] - q[1]) - (p[0] - q[0]) * (y - q[1]);
   const d1 = sign(a, b);
   const d2 = sign(b, c);
   const d3 = sign(c, a);
@@ -36,12 +40,58 @@ function triangleContains(x: number, y: number, a: readonly [number, number], b:
   return !(hasNeg && hasPos);
 }
 
-/** Download arrow over three "segment" bars that merge into a tray. Coordinates are normalised to [0, 1]. */
-function glyphContains(x: number, y: number): boolean {
-  const shaft = roundedRectContains(x, y, 0.425, 0.17, 0.575, 0.5, 0.04);
-  const head = triangleContains(x, y, [0.25, 0.44], [0.75, 0.44], [0.5, 0.69]);
-  const tray = roundedRectContains(x, y, 0.22, 0.75, 0.78, 0.85, 0.045);
-  return shaft || head || tray;
+function cubic(p0: Point, p1: Point, p2: Point, p3: Point, steps: number): Point[] {
+  return Array.from({ length: steps + 1 }, (_, i) => {
+    const t = i / steps;
+    const u = 1 - t;
+    return [
+      u * u * u * p0[0] + 3 * u * u * t * p1[0] + 3 * u * t * t * p2[0] + t * t * t * p3[0],
+      u * u * u * p0[1] + 3 * u * u * t * p1[1] + 3 * u * t * t * p2[1] + t * t * t * p3[1],
+    ] as const;
+  });
+}
+
+function distanceToSegment(x: number, y: number, a: Point, b: Point): number {
+  const dx = b[0] - a[0];
+  const dy = b[1] - a[1];
+  const t = Math.min(1, Math.max(0, ((x - a[0]) * dx + (y - a[1]) * dy) / (dx * dx + dy * dy)));
+  return Math.hypot(x - (a[0] + t * dx), y - (a[1] + t * dy));
+}
+
+/** A round-capped stroke along a polyline. */
+function strokeContains(x: number, y: number, line: readonly Point[], halfWidth: number): boolean {
+  for (let i = 1; i < line.length; i++) {
+    if (distanceToSegment(x, y, line[i - 1] as Point, line[i] as Point) <= halfWidth) return true;
+  }
+  return false;
+}
+
+/** Left prong: out from under the cap, down, then a hook back inward. The right prong mirrors it. */
+const LEFT_PRONG: readonly Point[] = [...cubic([0.41, 0.34], [0.24, 0.44], [0.19, 0.62], [0.29, 0.78], 32), [0.37, 0.745]];
+const RIGHT_PRONG: readonly Point[] = LEFT_PRONG.map(([x, y]) => [1 - x, y] as const);
+const PLAY_TRIANGLE: readonly [Point, Point, Point] = [
+  [0.44, 0.48],
+  [0.44, 0.68],
+  [0.615, 0.58],
+];
+/** At 16 px the triangle is larger and a little higher, clear of the thicker hooks. */
+const PLAY_TRIANGLE_SMALL: readonly [Point, Point, Point] = [
+  [0.45, 0.43],
+  [0.45, 0.69],
+  [0.67, 0.56],
+];
+
+/** Colour of the artwork at (x, y), normalised to [0, 1]; null outside the rounded square. */
+function colorAt(x: number, y: number, size: number): Rgb | null {
+  if (!roundedRectContains(x, y, 0.02, 0.02, 0.98, 0.98, 0.22)) return null;
+  const small = size <= 16;
+  const string = !small && Math.abs(x - 0.5) <= 0.024 && y <= 0.2;
+  const cap = roundedRectContains(x, y, 0.33, 0.18, 0.67, 0.36, 0.07);
+  const halfWidth = small ? 0.06 : 0.0425;
+  const prongs = strokeContains(x, y, LEFT_PRONG, halfWidth) || strokeContains(x, y, RIGHT_PRONG, halfWidth);
+  if (string || cap || prongs) return INK;
+  if (triangleContains(x, y, ...(small ? PLAY_TRIANGLE_SMALL : PLAY_TRIANGLE))) return PLAY;
+  return BACKGROUND;
 }
 
 function renderIcon(size: number): Uint8Array {
@@ -55,17 +105,8 @@ function renderIcon(size: number): Uint8Array {
       let b = 0;
       for (let sy = 0; sy < SUPERSAMPLE; sy++) {
         for (let sx = 0; sx < SUPERSAMPLE; sx++) {
-          const x = (px + (sx + 0.5) / SUPERSAMPLE) / size;
-          const y = (py + (sy + 0.5) / SUPERSAMPLE) / size;
-          if (!roundedRectContains(x, y, 0.02, 0.02, 0.98, 0.98, 0.22)) continue;
-          const t = Math.min(1, Math.max(0, (x + y) / 2));
-          const color: Rgb = glyphContains(x, y)
-            ? GLYPH
-            : [
-                GRADIENT_FROM[0] + (GRADIENT_TO[0] - GRADIENT_FROM[0]) * t,
-                GRADIENT_FROM[1] + (GRADIENT_TO[1] - GRADIENT_FROM[1]) * t,
-                GRADIENT_FROM[2] + (GRADIENT_TO[2] - GRADIENT_FROM[2]) * t,
-              ];
+          const color = colorAt((px + (sx + 0.5) / SUPERSAMPLE) / size, (py + (sy + 0.5) / SUPERSAMPLE) / size, size);
+          if (!color) continue;
           alpha += 1;
           r += color[0];
           g += color[1];

@@ -18,14 +18,15 @@ export function Toggle({ id, checked, onChange, labelledBy, describedBy }: Toggl
       onClick={() => {
         onChange(!checked);
       }}
-      className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-500 ${
-        checked ? 'bg-indigo-600 dark:bg-indigo-500' : 'bg-slate-300 dark:bg-slate-700'
+      // Rãnh tắt dùng `faint` (≥ 3.8:1 với nền) để công tắc vẫn nhìn thấy được; bật là cam.
+      className={`relative inline-flex h-6 w-10 shrink-0 cursor-pointer items-center rounded-full transition-colors duration-120 ease-out ${
+        checked ? 'bg-primary' : 'bg-faint'
       }`}
     >
       <span
         aria-hidden
-        className={`inline-block size-4 rounded-full bg-white shadow transition-transform ${
-          checked ? 'translate-x-[18px]' : 'translate-x-0.5'
+        className={`inline-block size-[18px] rounded-full bg-bg transition-transform duration-200 ease-out ${
+          checked ? 'translate-x-[19px]' : 'translate-x-[3px]'
         }`}
       />
     </button>

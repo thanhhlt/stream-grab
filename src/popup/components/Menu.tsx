@@ -64,7 +64,7 @@ export function Menu({ label, items }: { label: string; items: readonly MenuItem
           setUpward(event.currentTarget.getBoundingClientRect().bottom > window.innerHeight - 96);
           setOpen((value) => !value);
         }}
-        className={`${BUTTON.icon} ${open ? 'bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-200' : ''}`}
+        className={`${BUTTON.icon} ${open ? 'bg-surface text-ink' : ''}`}
       >
         <svg viewBox="0 0 16 16" aria-hidden className="size-4 fill-current">
           <circle cx="3" cy="8" r="1.4" />
@@ -77,7 +77,7 @@ export function Menu({ label, items }: { label: string; items: readonly MenuItem
           id={menuId}
           role="menu"
           aria-label={label}
-          className={`absolute right-0 z-10 min-w-36 ${upward ? 'bottom-full mb-1' : 'top-full mt-1'} overflow-hidden rounded-md border border-slate-200 bg-white py-1 shadow-lg dark:border-slate-700 dark:bg-slate-900`}
+          className={`absolute right-0 z-10 min-w-40 ${upward ? 'bottom-full mb-1' : 'top-full mt-1'} rounded-tile border border-line bg-bg p-1 shadow-pop`}
         >
           {items.map((item) => (
             <button
@@ -89,8 +89,9 @@ export function Menu({ label, items }: { label: string; items: readonly MenuItem
                 close(false);
                 item.onSelect();
               }}
-              className={`block w-full px-3 py-1.5 text-left text-xs hover:bg-slate-100 focus-visible:bg-slate-100 focus-visible:outline-none dark:hover:bg-slate-800 dark:focus-visible:bg-slate-800 ${
-                item.danger ? 'text-red-700 dark:text-red-300' : 'text-slate-700 dark:text-slate-200'
+              // Viền focus thụt vào trong để không bị mép menu che.
+              className={`flex h-[30px] w-full cursor-pointer items-center rounded-lg px-2.5 text-left text-ui whitespace-nowrap transition-colors duration-120 hover:bg-surface focus-visible:bg-surface focus-visible:-outline-offset-2 ${
+                item.danger ? 'text-danger' : 'text-ink'
               }`}
             >
               {item.label}

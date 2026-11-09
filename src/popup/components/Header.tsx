@@ -1,24 +1,31 @@
+import type { Ref } from 'react';
 import { EXTENSION_NAME } from '@/shared/constants';
 import type { BackgroundState } from '../hooks/useBackgroundStatus';
+import { ClawMark } from './ClawMark';
 
-const ICON_URL = '/icons/icon-32.png';
+interface HeaderProps {
+  status: BackgroundState;
+  /** Móng gắp trong header: điểm đến của hiệu ứng gắp. */
+  clawRef?: Ref<SVGSVGElement> | undefined;
+}
 
-export function Header({ status }: { status: BackgroundState }) {
+export function Header({ status, clawRef }: HeaderProps) {
   return (
-    <header className="flex items-center gap-2.5 border-b border-slate-200 px-4 py-3 dark:border-slate-800">
-      <img src={ICON_URL} alt="" width={22} height={22} />
-      <h1 className="text-base font-semibold tracking-tight">{EXTENSION_NAME}</h1>
-      <div className="ml-auto flex items-center gap-1.5 text-xs text-slate-500 dark:text-slate-400">
+    // z-10: khi gắp, móng hạ xuống đè lên thanh tab.
+    <header className="relative z-10 flex h-[50px] shrink-0 items-center gap-2 pr-4 pl-2.5">
+      <ClawMark ref={clawRef} />
+      <h1 className="text-wordmark text-ink [font-variation-settings:'opsz'_30]">{EXTENSION_NAME}</h1>
+      <div className="ml-auto flex items-center gap-1.5 text-meta text-muted">
         {status.state === 'ready' && (
           <>
-            <span className="size-1.5 rounded-full bg-emerald-500" aria-hidden />
-            <span>v{status.status.version}</span>
+            <span className="size-[7px] rounded-full bg-success" aria-hidden />
+            <span className="tabular-nums">v{status.status.version}</span>
           </>
         )}
         {status.state === 'connecting' && <span>Connecting…</span>}
         {status.state === 'unavailable' && (
-          <span className="flex items-center gap-1.5 text-red-600 dark:text-red-400" title={status.error}>
-            <span className="size-1.5 rounded-full bg-red-500" aria-hidden />
+          <span className="flex items-center gap-1.5 text-danger" title={status.error}>
+            <span className="size-[7px] rounded-full bg-danger" aria-hidden />
             Background unavailable
           </span>
         )}

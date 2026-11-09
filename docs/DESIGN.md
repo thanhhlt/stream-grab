@@ -1,6 +1,6 @@
 # StreamGrab design system: Claw
 
-Status: **approved 2026-11-09** for the version after 0.4.0; not implemented yet. This file is the
+Status: **approved 2026-11-09** for v0.5.0. Plan step 1 (tokens, fonts, shared components, toolbar icon) is implemented; steps 2 and 3 are not. This file is the
 source of truth for the popup's look and motion. Where it differs from the mockup, this file wins
 (its colors are contrast-checked).
 
@@ -88,9 +88,11 @@ feature.
 ## Typography
 
 - **Bricolage Grotesque** (variable: weight 400–800, optical size 12–96), the only family. The
-  woff2 subsets latin, latin-ext and vietnamese are **bundled in the extension** (for example
-  `src/popup/fonts/` with `@font-face` and `font-display: swap`), with its OFL license next to
-  them. Never load fonts from the network.
+  woff2 subsets latin, latin-ext and vietnamese are **bundled in the extension** in
+  `public/fonts/` (copied to `dist/fonts/`, so the release ZIP carries them), with the OFL license
+  next to them (`OFL.txt`) and `@font-face` + `font-display: swap` in `src/popup/styles.css`.
+  Source: Google Fonts (v9, axes `opsz` 12–96 and `wght` 400–800). Never load fonts from the
+  network.
 - Fallback stack: `'Bricolage Grotesque', system-ui, 'Segoe UI', -apple-system, sans-serif`.
   Titles in scripts the font does not cover (CJK, Arabic, Thai…) render in the system font.
 - Scale (px / weight):

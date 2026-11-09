@@ -25,7 +25,7 @@ export function ConfirmDialog({ title, children, confirmLabel, onConfirm, onCanc
 
   return (
     <div
-      className="fixed inset-0 z-30 flex items-center justify-center bg-slate-900/40 p-6"
+      className="fixed inset-0 z-30 flex items-center justify-center bg-scrim p-6"
       onClick={(event) => {
         if (event.target === event.currentTarget) onCancel();
       }}
@@ -36,7 +36,7 @@ export function ConfirmDialog({ title, children, confirmLabel, onConfirm, onCanc
         aria-modal="true"
         aria-labelledby={titleId}
         aria-describedby={bodyId}
-        className="w-full max-w-xs rounded-lg bg-white p-4 shadow-lg ring-1 ring-slate-200 dark:bg-slate-900 dark:ring-slate-700"
+        className="w-full max-w-[300px] rounded-dialog bg-bg p-5 shadow-pop ring-1 ring-line"
         onKeyDown={(event) => {
           if (event.key === 'Escape') {
             event.stopPropagation();
@@ -56,13 +56,13 @@ export function ConfirmDialog({ title, children, confirmLabel, onConfirm, onCanc
           }
         }}
       >
-        <h2 id={titleId} className="text-sm font-semibold text-slate-900 dark:text-slate-50">
+        <h2 id={titleId} className="text-heading text-ink">
           {title}
         </h2>
-        <p id={bodyId} className="mt-1.5 text-xs leading-snug text-slate-600 dark:text-slate-300">
+        <p id={bodyId} className="mt-1.5 text-ui text-muted">
           {children}
         </p>
-        <div className="mt-4 flex justify-end gap-2">
+        <div className="mt-5 flex justify-end gap-2">
           <button ref={cancel} type="button" onClick={onCancel} className={BUTTON.secondary}>
             Cancel
           </button>

@@ -27,12 +27,7 @@ export function TabBar({ active, onChange, counts = {} }: TabBarProps) {
   };
 
   return (
-    <div
-      role="tablist"
-      aria-label="Sections"
-      className="flex gap-1 border-b border-slate-200 px-2 dark:border-slate-800"
-      onKeyDown={onKeyDown}
-    >
+    <div role="tablist" aria-label="Sections" className="flex shrink-0 gap-0.5 border-b border-line px-2 pb-2" onKeyDown={onKeyDown}>
       {TABS.map((tab) => {
         const selected = tab.id === active;
         return (
@@ -45,15 +40,17 @@ export function TabBar({ active, onChange, counts = {} }: TabBarProps) {
             onClick={() => {
               onChange(tab.id);
             }}
-            className={`-mb-px border-b-2 px-3 py-2 text-[13px] font-medium transition-colors focus-visible:outline-2 focus-visible:outline-indigo-500 ${
-              selected
-                ? 'border-indigo-600 text-indigo-700 dark:border-indigo-400 dark:text-indigo-300'
-                : 'border-transparent text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200'
+            className={`inline-flex h-[30px] cursor-pointer items-center gap-1.5 rounded-full px-3 text-ui font-semibold transition-colors duration-120 ease-out ${
+              selected ? 'bg-surface text-ink' : 'text-muted hover:text-ink'
             }`}
           >
             {tab.label}
             {(counts[tab.id] ?? 0) > 0 && (
-              <span className="ml-1.5 rounded-full bg-indigo-100 px-1.5 py-px text-[10px] font-semibold text-indigo-700 dark:bg-indigo-900 dark:text-indigo-200">
+              // Vòng tròn cam 19 px; là điểm hạ cánh của hiệu ứng gắp (tìm qua data-tab-count).
+              <span
+                data-tab-count={tab.id}
+                className="inline-grid h-[19px] min-w-[19px] place-items-center rounded-full bg-primary px-[5px] text-badge text-on-primary tabular-nums"
+              >
                 {counts[tab.id]}
               </span>
             )}

@@ -14,10 +14,10 @@ export function SettingRow({ id, label, description, control, stacked = false }:
   return (
     <div className={stacked ? 'flex flex-col gap-2 py-3' : 'flex items-center gap-4 py-3'}>
       <div className="min-w-0 flex-1">
-        <label id={`${id}-label`} htmlFor={id} className="block font-medium">
+        <label id={`${id}-label`} htmlFor={id} className="block font-semibold text-ink">
           {label}
         </label>
-        <p id={`${id}-desc`} className="mt-0.5 text-xs leading-snug text-slate-500 dark:text-slate-400">
+        <p id={`${id}-desc`} className="mt-0.5 text-meta text-muted">
           {description}
         </p>
       </div>
