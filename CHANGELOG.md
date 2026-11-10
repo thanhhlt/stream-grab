@@ -7,6 +7,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-10
+
 ### Changed
 
 - **New popup design, "Claw"**: a new look for all four pages (Detected, Queue, Completed,
@@ -217,7 +219,8 @@ Notably: merging is stream copy only (no re-encoding); SAMPLE-AES and DRM-protec
 not supported; subtitles are ignored; the bundled FFmpeg.wasm core is licensed
 GPL-2.0-or-later and adds 32 MB to the extension.
 
-[Unreleased]: https://github.com/thanhhlt/stream-grab/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/thanhhlt/stream-grab/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/thanhhlt/stream-grab/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/thanhhlt/stream-grab/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/thanhhlt/stream-grab/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/thanhhlt/stream-grab/compare/v0.1.0...v0.2.0

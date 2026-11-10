@@ -4,7 +4,7 @@ Browser extension (Chrome, Manifest V3) that detects, downloads and merges onlin
 entirely in the browser. No server, no native helper. It is built to support several streaming
 formats and protocols; see [Supported formats](#supported-formats) for what works today.
 
-Current version: **0.4.0** — see [CHANGELOG.md](CHANGELOG.md) and the
+Current version: **0.5.0** — see [CHANGELOG.md](CHANGELOG.md) and the
 [releases](https://github.com/thanhhlt/stream-grab/releases).
 
 Status: **all 10 phases done** (Phase 10: error handling, performance, testing). Streams are
