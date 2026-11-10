@@ -39,6 +39,9 @@ The name says it: an arcade claw that grabs videos off a page.
   square (no gradient; drop `GRADIENT_FROM`/`GRADIENT_TO`) with the ink claw holding a small white
   play triangle. It must still read at 16 px: at that size, drop the string and keep the cap and
   prongs.
+- **Toolbar badge** (detected streams per tab, `src/background/badge.ts`): `ink` `#1B2030` with
+  white text, like the claw's cap. Not tangerine: it would disappear into the tangerine icon (the
+  owner compared ink, dark tangerine and tangerine, 2026-11-10).
 
 ## Color tokens
 

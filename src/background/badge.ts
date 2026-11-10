@@ -5,9 +5,16 @@ export function badgeText(count: number): string {
   return count > 99 ? '99+' : String(count);
 }
 
+/**
+ * Claw colors (docs/DESIGN.md): `ink` with white text, like the claw's cap. Not tangerine: the
+ * toolbar icon is a tangerine square, so a tangerine badge would disappear into it.
+ */
+const BADGE_BACKGROUND = '#1b2030';
+const BADGE_TEXT = '#ffffff';
+
 export function initBadgeStyle(): void {
-  void chrome.action.setBadgeBackgroundColor({ color: '#4f46e5' }).catch(() => undefined);
-  void chrome.action.setBadgeTextColor({ color: '#ffffff' }).catch(() => undefined);
+  void chrome.action.setBadgeBackgroundColor({ color: BADGE_BACKGROUND }).catch(() => undefined);
+  void chrome.action.setBadgeTextColor({ color: BADGE_TEXT }).catch(() => undefined);
 }
 
 export function updateBadge(tabId: number, count: number): void {
