@@ -7,6 +7,19 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- **New popup design, "Claw"**: a new look for all four pages (Detected, Queue, Completed,
+  Settings) with a bundled font (Bricolage Grotesque), a tangerine and ink palette, a new toolbar
+  icon, thumbnail tiles, pill controls and an animation when a download is queued. The toolbar
+  badge count is now ink instead of indigo. Nothing about how StreamGrab works changed. The design
+  is described in [docs/DESIGN.md](docs/DESIGN.md).
+
+### Added
+
+- **Theme** (Settings, and a sun/moon button in the header): System (default), Light or Dark.
+  The popup opens in the right theme without a flash.
+
 ## [0.4.0] - 2026-11-09
 
 ### Added

@@ -28,7 +28,8 @@ page's Referer, by the extension. Besides unit and integration tests, an
 end-to-end test runs the built extension in Chrome for Testing (detection, Referer rules,
 download, FFmpeg, saving, resume after a browser restart). See
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the design, measurements and known limitations,
-and [docs/SPEC.md](docs/SPEC.md) for the requirements.
+and [docs/SPEC.md](docs/SPEC.md) for the requirements. The popup's look (the Claw design) is
+described in [docs/DESIGN.md](docs/DESIGN.md).
 
 FFmpeg.wasm (`@ffmpeg/core`) is licensed GPL-2.0-or-later and adds 32 MB to the package.
 

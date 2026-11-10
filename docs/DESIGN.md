@@ -1,6 +1,6 @@
 # StreamGrab design system: Claw
 
-Status: **approved 2026-11-09** for v0.5.0. Plan steps 1 (tokens, fonts, shared components, toolbar icon) and 2 (the four pages, the grab) are implemented; step 3 is not. This file is the
+Status: **approved 2026-11-09** for v0.5.0. All three plan steps (1 tokens, fonts and shared components; 2 the four pages and the grab; 3 regression and docs) are done. This file is the
 source of truth for the popup's look and motion. Where it differs from the mockup, this file wins
 (its colors are contrast-checked).
 
