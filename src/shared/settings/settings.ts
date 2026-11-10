@@ -13,6 +13,10 @@ export type ResolutionPreference = (typeof RESOLUTION_PREFERENCES)[number];
 export const OUTPUT_FORMATS = ['auto', 'mp4', 'mkv'] as const;
 export type OutputFormat = (typeof OUTPUT_FORMATS)[number];
 
+/** Popup color theme: `system` follows Chrome's appearance setting (prefers-color-scheme). */
+export const THEMES = ['system', 'light', 'dark'] as const;
+export type Theme = (typeof THEMES)[number];
+
 export interface Settings {
   /** Simultaneous segment requests per task (1–16). */
   segmentConcurrency: number;
@@ -27,6 +31,8 @@ export interface Settings {
   autoRemoveCompleted: boolean;
   /** Subfolder of Chrome's download folder files are saved in, e.g. "StreamGrab/Movies"; '' saves in the folder itself. */
   downloadFolder: string;
+  /** Popup color theme. Presentation only; the background ignores it. */
+  theme: Theme;
 }
 
 export const DEFAULT_SETTINGS: Readonly<Settings> = Object.freeze({
@@ -37,6 +43,7 @@ export const DEFAULT_SETTINGS: Readonly<Settings> = Object.freeze({
   autoDetect: true,
   autoRemoveCompleted: false,
   downloadFolder: '',
+  theme: 'system',
 });
 
 export function clampInt(value: unknown, range: IntRange, fallback: number = range.default): number {
@@ -65,6 +72,7 @@ export function normalizeSettings(raw: unknown, fallback: Readonly<Settings> = D
     autoDetect: bool('autoDetect'),
     autoRemoveCompleted: bool('autoRemoveCompleted'),
     downloadFolder: folder(input['downloadFolder'], fallback.downloadFolder),
+    theme: isOneOf(input['theme'], THEMES) ? input['theme'] : fallback.theme,
   };
 }
 

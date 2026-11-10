@@ -46,4 +46,10 @@ export default tseslint.config(
     files: ['eslint.config.js'],
     ...tseslint.configs.disableTypeChecked,
   },
+  {
+    // Classic scripts copied as they are into dist/ (popup/theme-init.js); no TypeScript project.
+    files: ['public/**/*.js'],
+    ...tseslint.configs.disableTypeChecked,
+    languageOptions: { ...tseslint.configs.disableTypeChecked.languageOptions, sourceType: 'script', globals: globals.browser },
+  },
 );

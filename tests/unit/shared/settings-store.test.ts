@@ -66,9 +66,11 @@ describe('SettingsStore', () => {
   });
 
   it('reset restores defaults', async () => {
-    await store.update({ segmentConcurrency: 2, autoDetect: false });
+    await store.update({ segmentConcurrency: 2, autoDetect: false, theme: 'dark' });
     await expect(store.reset()).resolves.toEqual(DEFAULT_SETTINGS);
     await expect(store.load()).resolves.toEqual(DEFAULT_SETTINGS);
+    // Reset to defaults puts the popup back on the system theme.
+    expect((await store.load()).theme).toBe('system');
   });
 
   it('notifies subscribers about changes in its storage area only', async () => {

@@ -564,4 +564,42 @@ describe('StreamGrab in Chrome (Chrome for Testing, unpacked dist/)', () => {
     await demo.close();
     await ext.close();
   });
+
+  it('switches the theme from Settings and the header without scrolling the popup itself (0.5.0)', async () => {
+    const ext = await extensionPage();
+    await ext.setViewport({ width: 400, height: 560 });
+    await ext.bringToFront();
+    const now = () =>
+      ext.evaluate(async (key) => ({
+        theme: document.documentElement.dataset['theme'],
+        stored: ((await chrome.storage.local.get(key))[key] as { theme?: string } | undefined)?.theme,
+        // The popup never scrolls as a whole: only <main> does.
+        rootScrollTop: document.scrollingElement?.scrollTop,
+        headerTop: document.querySelector('header')?.getBoundingClientRect().top,
+      }), STORAGE_KEYS.settings);
+    const theme = (value: string) => waitFor(`the ${value} theme`, async () => ((await now()).stored === value ? now() : undefined), 10_000);
+
+    await ext.evaluate(() => {
+      [...document.querySelectorAll<HTMLElement>('[role="tab"]')].find((tab) => tab.textContent?.startsWith('Settings'))?.click();
+    });
+    await ext.waitForSelector('input[name="theme"]');
+    await ext.evaluate(() => {
+      const main = document.querySelector('main');
+      if (main) main.scrollTop = main.scrollHeight;
+    });
+    // Real mouse clicks: they focus the hidden radio, which must sit inside its pill (it used to scroll the popup).
+    const pill = (value: string) => ext.$(`label:has(> input[name="theme"][value="${value}"])`);
+    const initial = await now();
+    await (await pill('dark'))?.click();
+    const dark = await theme('dark');
+    expect(dark).toMatchObject({ theme: 'dark', rootScrollTop: 0, headerTop: 0 });
+    expect(initial.rootScrollTop).toBe(0);
+
+    await ext.click('header button[aria-label="Switch to light theme"]');
+    expect(await theme('light')).toMatchObject({ theme: 'light', rootScrollTop: 0, headerTop: 0 });
+
+    await (await pill('system'))?.click();
+    expect(await theme('system')).toMatchObject({ rootScrollTop: 0, headerTop: 0 });
+    await ext.close();
+  });
 });

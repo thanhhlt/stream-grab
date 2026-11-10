@@ -4,11 +4,14 @@ import { ACTIVE_TASKS, SEGMENT_CONCURRENCY } from '@/shared/constants';
 import {
   OUTPUT_FORMATS,
   RESOLUTION_PREFERENCES,
+  THEMES,
   type OutputFormat,
   type ResolutionPreference,
+  type Theme,
 } from '@/shared/settings/settings';
 import { isOneOf } from '@/shared/utils/guards';
 import { BUTTON } from '../components/buttons';
+import { Segmented } from '../components/Segmented';
 import { Select } from '../components/Select';
 import { SettingRow } from '../components/SettingRow';
 import { Toggle } from '../components/Toggle';
@@ -30,6 +33,14 @@ const FORMAT_LABELS: Record<OutputFormat, string> = {
   mp4: 'MP4',
   mkv: 'MKV',
 };
+
+const THEME_LABELS: Record<Theme, string> = {
+  system: 'System',
+  light: 'Light',
+  dark: 'Dark',
+};
+
+const THEME_OPTIONS = THEMES.map((value) => ({ value, label: THEME_LABELS[value] }));
 
 /** Thanh trượt vẽ như thanh tiến độ (`.range` trong styles.css): phần đã chọn tới giá trị hiện tại. */
 const rangeClass = 'range w-full';
@@ -258,6 +269,27 @@ export function SettingsPage() {
               onChange={(checked) => {
                 update({ autoRemoveCompleted: checked });
               }}
+            />
+          }
+        />
+
+        <SettingRow
+          id="theme"
+          label="Theme"
+          description="System follows Chrome's appearance setting."
+          group
+          control={
+            <Segmented
+              id="theme"
+              name="theme"
+              value={settings.theme}
+              options={THEME_OPTIONS}
+              labelledBy="theme-label"
+              describedBy="theme-desc"
+              onChange={(theme) => {
+                update({ theme });
+              }}
+              className="w-48"
             />
           }
         />

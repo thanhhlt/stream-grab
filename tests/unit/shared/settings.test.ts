@@ -59,6 +59,17 @@ describe('normalizeSettings', () => {
     expect(normalizeSettings({ ...current, downloadFolder: '' }, current).downloadFolder).toBe('');
   });
 
+  it('defaults the popup theme to system and accepts only system, light or dark (0.5.0)', () => {
+    expect(DEFAULT_SETTINGS.theme).toBe('system');
+    expect(normalizeSettings({ theme: 'light' }).theme).toBe('light');
+    expect(normalizeSettings({ theme: 'dark' }).theme).toBe('dark');
+    for (const value of ['Dark', 'auto', '', 1, null, true]) {
+      expect(normalizeSettings({ theme: value }).theme).toBe('system');
+    }
+    const current = { ...DEFAULT_SETTINGS, theme: 'dark' as const };
+    expect(normalizeSettings({ ...current, theme: 'sepia' }, current).theme).toBe('dark');
+  });
+
   it('drops unknown keys', () => {
     expect(normalizeSettings({ ...DEFAULT_SETTINGS, legacyOption: 1 })).toEqual(DEFAULT_SETTINGS);
   });

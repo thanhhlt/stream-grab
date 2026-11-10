@@ -41,7 +41,8 @@
   --font-sans: 'Bricolage Grotesque', system-ui, 'Segoe UI', -apple-system, sans-serif;
 
   /*
-   * Colors, light values. Dark values are below; both sets are contrast-checked in DESIGN.md.
+   * Colors, light values. Dark values are below (:root[data-theme='dark']); both sets are
+   * contrast-checked in DESIGN.md.
    * The default Tailwind palette is removed, so a raw class such as bg-slate-50 generates nothing.
    */
   --color-*: initial;
@@ -136,41 +137,48 @@
   }
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --color-bg: #171a21;
-    --color-surface: #21252e;
-    --color-line: #2f343f;
-    --color-ink: #eef0f4;
-    --color-muted: #a3a9b7;
-    --color-faint: #6e7584;
-    --color-primary: #ff8a33;
-    --color-on-primary: #1b1206;
-    --color-primary-strong: #ff8a33;
-    --color-primary-text: #ff9f57;
-    --color-selected: #2d241b;
-    --color-track: #2b303a;
-    --color-merge: #3cc9c3;
-    --color-merge-text: #3cc9c3;
-    --color-merge-surface: #173130;
-    --color-success: #4cc985;
-    --color-success-surface: #183324;
-    --color-warning: #f2b84b;
-    --color-warning-surface: #3a301a;
-    --color-warning-bar: #f2b84b;
-    --color-danger: #ff6b6b;
-    --color-danger-surface: #3a2224;
-    --color-on-danger: #1b1206;
-    --shadow-pop: 0 10px 28px rgb(0 0 0 / 0.45), 0 1px 3px rgb(0 0 0 / 0.3);
-  }
+/*
+ * Dark values. <html data-theme> always holds the theme in effect ('light' or 'dark'): the Theme
+ * setting, or Chrome's appearance setting while it is System. public/popup/theme-init.js sets it
+ * before the first paint and src/popup/hooks/useTheme.ts keeps it current.
+ */
+:root[data-theme='dark'] {
+  --color-bg: #171a21;
+  --color-surface: #21252e;
+  --color-line: #2f343f;
+  --color-ink: #eef0f4;
+  --color-muted: #a3a9b7;
+  --color-faint: #6e7584;
+  --color-primary: #ff8a33;
+  --color-on-primary: #1b1206;
+  --color-primary-strong: #ff8a33;
+  --color-primary-text: #ff9f57;
+  --color-selected: #2d241b;
+  --color-track: #2b303a;
+  --color-merge: #3cc9c3;
+  --color-merge-text: #3cc9c3;
+  --color-merge-surface: #173130;
+  --color-success: #4cc985;
+  --color-success-surface: #183324;
+  --color-warning: #f2b84b;
+  --color-warning-surface: #3a301a;
+  --color-warning-bar: #f2b84b;
+  --color-danger: #ff6b6b;
+  --color-danger-surface: #3a2224;
+  --color-on-danger: #1b1206;
+  --shadow-pop: 0 10px 28px rgb(0 0 0 / 0.45), 0 1px 3px rgb(0 0 0 / 0.3);
 }
 
 @layer base {
   :root {
     /* Native checkboxes and range inputs in tangerine. */
     accent-color: var(--color-primary);
-    /* Native controls (select lists, scrollbars) follow the system scheme like the tokens do. */
-    color-scheme: light dark;
+    /* Native controls (select lists, scrollbars) follow the theme in effect like the tokens do. */
+    color-scheme: light;
+  }
+
+  :root[data-theme='dark'] {
+    color-scheme: dark;
   }
 
   /* Focus: 2 px primary-text outline with a 2 px offset on every interactive element. */

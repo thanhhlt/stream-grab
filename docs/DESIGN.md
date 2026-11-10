@@ -45,7 +45,9 @@ The name says it: an arcade claw that grabs videos off a page.
 
 ## Color tokens
 
-The popup follows the system color scheme, as it does today (`prefers-color-scheme`).
+The popup has a light and a dark theme. The Theme setting picks one: System (the default) follows
+Chrome's appearance setting (`prefers-color-scheme`), live while the popup is open; Light and Dark
+override it. The header's sun/moon button sets Light or Dark directly.
 
 | Token | Light | Dark | Use |
 |---|---|---|---|
@@ -114,8 +116,9 @@ feature.
 ## Layout and shape
 
 - The popup stays 400 × 560. Spacing on a 4 px grid; content inset 16 px.
-- **Header** 50 px: the claw (30 × 50, hanging from the top edge), the wordmark, and the status on
-  the right (green dot + version, "Connecting…", "Background unavailable").
+- **Header** 50 px: the claw (30 × 50, hanging from the top edge), the wordmark, the status on
+  the right (green dot + version, "Connecting…", "Background unavailable"), then the theme button
+  (28 px; 10 px right padding, so its icon lines up with the 16 px content inset).
 - **Tabs:** pills 30 px high. The active tab has a `surface` fill and `ink` text. The Queue count
   is a tangerine circle, 19 px, and is the animation's landing point.
 - **Detected rows:** grid `[checkbox 18][tile 52][content]`. The controls row and the Options panel
@@ -135,7 +138,7 @@ feature.
 |---|---|---|
 | Buttons | `components/buttons.ts` | `primary`: tangerine fill, `on-primary` text, pill, 30 px. New `download`: `primary-strong` outline, `primary-text` label, download-arrow icon (rows' Download, Completed's Show in folder). `secondary`: `line` outline. `ghost`: `muted` text. `link`: `primary-text`. `danger`: `danger` fill. `icon`: 28 px hit area |
 | Badge, ProtocolBadge | `components/Badge.tsx` | Chips are pills, 20 px. The protocol is no longer a colored badge: it is text in the technical line or the Options panel (`DASH · H.264 · AAC`), keeping its tooltip |
-| Header | `components/Header.tsx` | Claw, wordmark, status. Exposes the claw for the grab animation |
+| Header | `components/Header.tsx` | Claw, wordmark, status, theme button. Exposes the claw for the grab animation. The theme button (`BUTTON.icon`, 28 px) shows what a click does: a moon and "Switch to dark theme" in light, a sun and "Switch to light theme" in dark (`aria-label` and `title`). A click saves an explicit Light or Dark, the opposite of the theme in effect |
 | TabBar | `components/TabBar.tsx` | Pills + count. Keeps role=tab and arrow keys |
 | Poster tile | new presentational component | 52 px, radius 12, color from host hash, white play glyph, duration chip (10 px, white on 45% black). DRM or unavailable: `surface` tile with a lock. Failed: `danger` tile with a warning glyph. Completed: success check |
 | StreamCard | `components/StreamCard.tsx` | Tile, title, site. Controls: quality select pill, audio/Options pill, Download (`download` button). Errors in a `danger-surface` message box |
@@ -144,7 +147,7 @@ feature.
 | ProgressBar | `components/ProgressBar.tsx` | 8 px pill. `primary-strong` for downloading, `merge` for processing, `warning-bar` + "Stalled" text while stalled. Width transition only, no stripes or shimmer |
 | Queue rows | `pages/QueuePage.tsx` | Tile, title, meta with the status chip at its right end ("Downloading", "Stalled", "Processing", "Pending"…). Then the bar, then a line with the percent (15/750), ETA and speed (the speed's "Speed" label is for screen readers only). Then the technical line (segments, sizes) in `muted`, wrapping only between its parts. Failed rows: the reason in a `danger-surface` box, then Retry/Remove. Summary in a `surface` panel. Sections "Finished", "Failed or cancelled" in sentence case |
 | Completed rows | `pages/CompletedPage.tsx` | Tile with a check, title, "Saved as …", facts, date; Show in folder (`download` style) + ⋯ menu |
-| Settings | `pages/SettingsPage.tsx` | Same rows, range inputs and toggles in tangerine, selects as pills, the folder field as a 10 px field. Range inputs are drawn like the progress bar (`.range` in `styles.css`: 8 px `track` pill filled in `primary-strong` up to the value, same-colored thumb), because Chrome's own track turns dark gray with a light accent |
+| Settings | `pages/SettingsPage.tsx` | Same rows, range inputs and toggles in tangerine, selects as pills, the folder field as a 10 px field. The last row, "Theme" ("System follows Chrome's appearance setting."), is a System / Light / Dark radio group (`components/Segmented.tsx`): native radios drawn as pills on a `surface` track (`w-48`, three equal pills; the selects are `w-44`), the checked one `bg` with a `line` outline and `ink` semibold text, the focus ring on the pill; Reset to defaults returns to System. Range inputs are drawn like the progress bar (`.range` in `styles.css`: 8 px `track` pill filled in `primary-strong` up to the value, same-colored thumb), because Chrome's own track turns dark gray with a light accent |
 | EmptyState | `components/EmptyState.tsx` | Detected "search": the claw hanging from the tab bar rule (see Motion). Other icons: line icons in a `surface` circle |
 | ConfirmDialog, Menu, Toggle | `components/*` | Radius 16 / 12 / pill, `danger` confirm button, tangerine toggle |
 
@@ -212,9 +215,14 @@ Other motion:
 - `tests/unit/popup/detected-page.test.ts:194` checks the selected row by its `bg-indigo-50`
   class. Give the row a semantic marker (for example `data-selected="true"`) and assert that
   instead.
-- Tokens go in `src/popup/styles.css` (`@theme` with CSS variables, dark values under
-  `prefers-color-scheme: dark`). Components use semantic utilities (`bg-surface`, `text-muted`…),
-  not raw palette classes.
+- Tokens go in `src/popup/styles.css` (`@theme` with CSS variables, dark values once under
+  `:root[data-theme='dark']`). Components use semantic utilities (`bg-surface`, `text-muted`…),
+  not raw palette classes, and no `dark:` variants.
+- `<html data-theme>` always holds the theme in effect (`light` or `dark`), with `color-scheme` and
+  the color-scheme meta tag matching. `public/popup/theme-init.js`, a classic script in the popup's
+  `<head>`, sets it before the first paint from a localStorage copy of the setting
+  (`streamgrab.theme`), because chrome.storage is async; `hooks/useTheme.ts` then follows the
+  setting (the source of truth) and, for System, `matchMedia` changes.
 - Verify with `npm run check`, `npm run test:e2e` and `npm run build`. Then take screenshots of the
   real popup in light and dark (`.cache/design/shoot.mjs`, needs
   `PORT=5181 node scripts/fixture-server.ts`) and fix what looks wrong.

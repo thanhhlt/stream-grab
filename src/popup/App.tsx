@@ -5,6 +5,7 @@ import { TabBar, type TabId } from './components/TabBar';
 import { playGrab } from './grab';
 import { useBackgroundStatus } from './hooks/useBackgroundStatus';
 import { useTasks } from './hooks/useTasks';
+import { useTheme } from './hooks/useTheme';
 import { CompletedPage } from './pages/CompletedPage';
 import { DetectedPage } from './pages/DetectedPage';
 import { QueuePage } from './pages/QueuePage';
@@ -14,6 +15,7 @@ export function App() {
   const [tab, setTab] = useState<TabId>('detected');
   const status = useBackgroundStatus();
   const tasks = useTasks();
+  const { theme, setTheme } = useTheme();
   const activeTasks = tasks?.filter((task) => ACTIVE_TASK_STATUSES.includes(task.status)).length ?? 0;
   // Hiệu ứng gắp: từ ô poster lên móng trong header, rồi xuống số đếm của tab Queue.
   const claw = useRef<SVGSVGElement>(null);
@@ -21,7 +23,7 @@ export function App() {
 
   return (
     <div className="flex h-full flex-col">
-      <Header status={status} clawRef={claw} />
+      <Header status={status} clawRef={claw} theme={theme} onThemeChange={setTheme} />
       <TabBar ref={tabs} active={tab} onChange={setTab} counts={{ queue: activeTasks }} />
       <main className="min-h-0 flex-1 overflow-y-auto">
         {tab === 'detected' && (
