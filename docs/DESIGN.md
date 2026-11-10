@@ -142,7 +142,7 @@ feature.
 | Queue rows | `pages/QueuePage.tsx` | Tile, title, meta with the status chip at its right end ("Downloading", "Stalled", "Processing", "Pending"…). Then the bar, then a line with the percent (15/750), ETA and speed (the speed's "Speed" label is for screen readers only). Then the technical line (segments, sizes) in `muted`, wrapping only between its parts. Failed rows: the reason in a `danger-surface` box, then Retry/Remove. Summary in a `surface` panel. Sections "Finished", "Failed or cancelled" in sentence case |
 | Completed rows | `pages/CompletedPage.tsx` | Tile with a check, title, "Saved as …", facts, date; Show in folder (`download` style) + ⋯ menu |
 | Settings | `pages/SettingsPage.tsx` | Same rows, range inputs and toggles in tangerine, selects as pills, the folder field as a 10 px field. Range inputs are drawn like the progress bar (`.range` in `styles.css`: 8 px `track` pill filled in `primary-strong` up to the value, same-colored thumb), because Chrome's own track turns dark gray with a light accent |
-| EmptyState | `components/EmptyState.tsx` | Detected "search": swinging claw. Other icons: line icons in a `surface` circle |
+| EmptyState | `components/EmptyState.tsx` | Detected "search": the claw hanging from the tab bar rule (see Motion). Other icons: line icons in a `surface` circle |
 | ConfirmDialog, Menu, Toggle | `components/*` | Radius 16 / 12 / pill, `danger` confirm button, tangerine toggle |
 
 ## Motion
@@ -177,8 +177,13 @@ collapse), 350 ms (count bump), 1000 ms (grab).
 
 Other motion:
 
-- **Empty Detected state:** the claw swings ±5° around the top of its string, 2.8 s ease-in-out,
-  only while that state is visible. Static under reduced motion.
+- **Empty Detected state:** the claw hangs from the tab bar rule like an arcade claw from its rail:
+  a small ink carriage under the rule, a string down to the claw, and the claw with the text below
+  it in the middle of the empty area (the string and the space below share the height equally).
+  Claw and string swing ±2° around the carriage, 3.6 s ease-in-out (a long pendulum moves slowly).
+  No background effect. Only while that state is visible; under reduced motion the claw is static.
+  The user chose this over a claw-machine window, a pit of placeholder tiles, a three-step guide,
+  expanding rings (they competed with the text) and a faint halo, 2026-11-10.
 - **Progress:** width transition 400 ms ease-out.
 - **Everything else:** color and opacity transitions of 120–200 ms.
 - **Implementation:** CSS keyframes and the Web Animations API, no animation library; animate

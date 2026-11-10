@@ -18,18 +18,25 @@ interface EmptyStateProps {
 }
 
 export function EmptyState({ title, children, icon }: EmptyStateProps) {
+  if (icon === 'search') {
+    // Móng treo từ thanh tab xuống; khối móng + chữ nằm giữa vùng trống (dây và khoảng dưới chia đều).
+    return (
+      <div className="flex h-full flex-col items-center overflow-hidden px-10 text-center">
+        <SwingingClaw />
+        <p className="mt-3 text-heading text-ink">{title}</p>
+        <p className="mt-1 text-ui leading-normal text-muted">{children}</p>
+        <span aria-hidden className="min-h-6 flex-1" />
+      </div>
+    );
+  }
   return (
     <div className="flex h-full flex-col items-center justify-center px-10 pb-2.5 text-center">
-      {icon === 'search' ? (
-        <SwingingClaw />
-      ) : (
-        icon && (
-          <span className="flex size-11 items-center justify-center rounded-full bg-surface text-faint">
-            <svg viewBox="0 0 24 24" aria-hidden className="size-5 fill-none stroke-current stroke-[1.8]" strokeLinecap="round" strokeLinejoin="round">
-              <path d={ICON_PATHS[icon]} />
-            </svg>
-          </span>
-        )
+      {icon && (
+        <span className="flex size-11 items-center justify-center rounded-full bg-surface text-faint">
+          <svg viewBox="0 0 24 24" aria-hidden className="size-5 fill-none stroke-current stroke-[1.8]" strokeLinecap="round" strokeLinejoin="round">
+            <path d={ICON_PATHS[icon]} />
+          </svg>
+        </span>
       )}
       <p className="mt-3 text-heading text-ink">{title}</p>
       <p className="mt-1 text-ui leading-normal text-muted">{children}</p>

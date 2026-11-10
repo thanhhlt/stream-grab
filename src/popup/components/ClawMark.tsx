@@ -36,16 +36,23 @@ export function ClawMark({ ref }: { ref?: Ref<SVGSVGElement> | undefined }) {
   );
 }
 
-/** Móng gắp lớn của trạng thái trống ở Detected: đung đưa ±5° quanh đầu dây; đứng yên khi giảm chuyển động. */
+/**
+ * Móng gắp lớn của trạng thái trống ở Detected, treo như trong máy gắp thú: con trượt bám dưới đường kẻ
+ * của thanh tab (thanh ray), sợi dây lấp khoảng phía trên (`flex-1`, co giãn theo chiều cao popup).
+ * Cả dây và móng đung đưa ±2° quanh con trượt, chậm như con lắc dài; đứng yên khi giảm chuyển động.
+ */
 export function SwingingClaw() {
   return (
-    <svg viewBox="0 0 64 92" aria-hidden className="h-[92px] w-16 shrink-0 overflow-visible">
-      <g className="origin-[32px_0] motion-safe:animate-claw-swing">
-        <line x1="32" y1="0" x2="32" y2="46" className="stroke-ink" strokeWidth="2" />
-        <rect x="22" y="44" width="20" height="13" rx="5" className="fill-ink" />
-        <path d="M27 56c-9 5-11 14-6 21l5-2.5" className="fill-none stroke-primary" strokeWidth="4.5" strokeLinecap="round" />
-        <path d="M37 56c9 5 11 14 6 21l-5-2.5" className="fill-none stroke-primary" strokeWidth="4.5" strokeLinecap="round" />
-      </g>
-    </svg>
+    <div aria-hidden className="flex min-h-[72px] flex-1 flex-col items-center">
+      <span className="h-[5px] w-4 shrink-0 rounded-b-[3px] bg-ink" />
+      <div className="flex flex-1 origin-top flex-col items-center motion-safe:animate-claw-swing">
+        <span className="w-0.5 flex-1 bg-ink" />
+        <svg viewBox="0 44 64 36" className="h-[45px] w-20 shrink-0 overflow-visible">
+          <rect x="22" y="44" width="20" height="13" rx="5" className="fill-ink" />
+          <path d="M27 56c-9 5-11 14-6 21l5-2.5" className="fill-none stroke-primary" strokeWidth="4.5" strokeLinecap="round" />
+          <path d="M37 56c9 5 11 14 6 21l-5-2.5" className="fill-none stroke-primary" strokeWidth="4.5" strokeLinecap="round" />
+        </svg>
+      </div>
+    </div>
   );
 }

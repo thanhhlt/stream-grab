@@ -122,15 +122,16 @@
   --ease-out: cubic-bezier(0.2, 0.8, 0.2, 1);
   --ease-in-out: cubic-bezier(0.45, 0, 0.2, 1);
   --ease-spring: cubic-bezier(0.3, 1.6, 0.5, 1);
-  --animate-claw-swing: claw-swing 2.8s cubic-bezier(0.45, 0, 0.2, 1) infinite;
+  /* Empty Detected state: a long string from the tab bar rule, so a small angle and a slow period. */
+  --animate-claw-swing: claw-swing 3.6s cubic-bezier(0.45, 0, 0.2, 1) infinite;
 
   @keyframes claw-swing {
     0%,
     100% {
-      transform: rotate(-5deg);
+      transform: rotate(-2deg);
     }
     50% {
-      transform: rotate(5deg);
+      transform: rotate(2deg);
     }
   }
 }
