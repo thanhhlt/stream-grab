@@ -29,7 +29,8 @@ end-to-end test runs the built extension in Chrome for Testing (detection, Refer
 download, FFmpeg, saving, resume after a browser restart). See
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the design, measurements and known limitations,
 and [docs/SPEC.md](docs/SPEC.md) for the requirements. The popup's look (the Claw design) is
-described in [docs/DESIGN.md](docs/DESIGN.md).
+described in [docs/DESIGN.md](docs/DESIGN.md). Planned versions up to 1.0.0 and the Chrome Web
+Store steps are in [docs/ROADMAP.md](docs/ROADMAP.md).
 
 FFmpeg.wasm (`@ffmpeg/core`) is licensed GPL-2.0-or-later and adds 32 MB to the package.
 
