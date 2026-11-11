@@ -55,6 +55,7 @@ export type BackgroundContract = {
   'downloads/cancel': Exchange<{ taskIds: string[] }, { cancelled: number }>;
   /** Popup: queue failed or cancelled tasks again. */
   'downloads/retry': Exchange<{ taskIds: string[] }, { retried: number }>;
+  'downloads/save-as-mkv': Exchange<{ taskIds: string[] }, { retried: number }>;
   /** Popup: hide completed tasks from the Queue tab (they stay under Completed). */
   'downloads/dismiss': Exchange<{ taskIds: string[] }, { dismissed: number }>;
 

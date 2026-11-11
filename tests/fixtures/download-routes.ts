@@ -31,6 +31,8 @@ export interface DemoRequest {
   referer?: string | undefined;
   /** The Range header (progressive files, 0.3.0). */
   range?: string | undefined;
+  /** The If-Range header (progressive files the engine continues, 0.6.0). */
+  ifRange?: string | undefined;
 }
 
 export interface DemoStream {

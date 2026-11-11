@@ -1,5 +1,6 @@
 import { containerExtension } from '@/core/media/containers';
 import { taskIdOfMergeFile, type OutputFileStore } from '@/core/media/output-files';
+import { taskIdOfPartialFile } from './partial-files';
 import { isEmptyRequestContext, type DetectedStream, type RequestContext } from '@/core/models/detected-stream';
 import {
   CANCELLABLE_TASK_STATUSES,
@@ -89,6 +90,11 @@ export interface CoordinatorDeps {
   files?: FileSaver;
   /** Merged files on disk (OPFS): those no running merge needs are deleted with orphaned segments. */
   mergeFiles?: Pick<OutputFileStore, 'names' | 'remove'>;
+  /**
+   * Progressive files the engine fetches, kept on disk for the next run (0.6.0): deleted with the
+   * task's other data, and when no task needs them any more.
+   */
+  partialFiles?: Pick<OutputFileStore, 'names' | 'remove'>;
   notifier?: Notifier;
   now?: () => number;
   newLeaseId?: () => string;
@@ -221,12 +227,29 @@ const fetchedByBrowser = (task: DownloadTask): boolean => task.progressive?.fetc
 const isDocument = (state: SaveState): boolean => /^(text\/|application\/(json|xml|xhtml))/i.test(state.mime ?? '');
 
 function withoutRunData(task: DownloadTask): DownloadTask {
-  const { statusMessage: _message, progress: _progress, processing: _processing, media: _media, dismissed: _dismissed, ...rest } = task;
+  const {
+    statusMessage: _message,
+    failureReason: _reason,
+    progress: _progress,
+    processing: _processing,
+    media: _media,
+    dismissed: _dismissed,
+    ...rest
+  } = task;
   const { downloadId: _downloadId, saved: _saved, ...output } = task.output;
   return { ...rest, output };
 }
 
 const awaitsProcessing = (task: DownloadTask): boolean => task.status === 'downloaded';
+
+/**
+ * What an engine-fetched progressive file had received, marked stale: its next run continues the
+ * file on disk (0.6.0) and confirms the bytes (or starts over when the file cannot be continued).
+ */
+function fileOnDisk(task: DownloadTask): TaskProgress | undefined {
+  if (task.progressive?.fetch !== 'extension' || !task.progress || task.progress.bytes === 0) return undefined;
+  return { ...task.progress, bytesPerSecond: 0, stale: true };
+}
 
 function withoutResume(info: ProgressiveTaskInfo): ProgressiveTaskInfo {
   const { resumeId: _resumeId, ...rest } = info;
@@ -427,7 +450,13 @@ export class DownloadCoordinator {
           return { ...task, processing: report.progress, updatedAt };
         case 'failed': {
           const { progress: _progress, ...withoutProgress } = rest;
-          failed = { ...(outcome.discardedData ? withoutProgress : rest), status: 'failed', statusMessage: outcome.message, updatedAt };
+          failed = {
+            ...(outcome.discardedData ? withoutProgress : rest),
+            status: 'failed',
+            statusMessage: outcome.message,
+            ...(outcome.reason ? { failureReason: outcome.reason } : {}),
+            updatedAt,
+          };
           return failed;
         }
         case 'cancelled':
@@ -586,8 +615,12 @@ export class DownloadCoordinator {
     }
     const running = targets.filter(inEngine).map((task) => task.id);
     if (running.length > 0 && (await this.#deps.engine.exists())) await this.#deps.engine.cancel(running);
-    // The engine deletes a running task's data itself; the others' data is deleted here.
-    for (const task of targets.filter((candidate) => !inEngine(candidate))) await this.#deleteData(task.id);
+    // The engine deletes a running task's segments itself; the others' data is deleted here, and so are the
+    // files on disk of stopped engine-fetched files (an engine that had already handed one to Chrome keeps it).
+    for (const task of targets) {
+      if (!inEngine(task)) await this.#deleteData(task.id);
+      else if (task.progressive?.fetch === 'extension') await this.#deletePartialFiles(task.id);
+    }
     if (targets.length > 0) await this.pump();
     return targets.length;
   }
@@ -597,7 +630,7 @@ export class DownloadCoordinator {
     const tasks = await this.#deps.store.list();
     const targets = tasks.filter((task) => taskIds.includes(task.id) && RETRYABLE_TASK_STATUSES.includes(task.status));
     for (const task of targets) {
-      const stored = await this.#storedProgress(task.id);
+      const stored = (await this.#storedProgress(task.id)) ?? fileOnDisk(task);
       await this.#deps.store.update(task.id, (current) => ({
         ...withoutRunData(current),
         status: 'queued',
@@ -607,6 +640,22 @@ export class DownloadCoordinator {
     }
     if (targets.length > 0) await this.pump();
     return targets.length;
+  }
+
+  /**
+   * "Save as MKV": a task that failed because its tracks cannot be stored in
+   * MP4 switches to MKV (the stored segments are kept) and is retried. Other
+   * tasks are left alone.
+   */
+  async saveAsMkv(taskIds: readonly string[]): Promise<number> {
+    const tasks = await this.#deps.store.list();
+    const targets = tasks.filter((task) => taskIds.includes(task.id) && task.status === 'failed' && task.failureReason === 'mp4-unsupported');
+    for (const task of targets) {
+      await this.#deps.store.update(task.id, (current) =>
+        current.status === 'failed' && current.failureReason === 'mp4-unsupported' ? { ...current, output: { ...current.output, format: 'mkv' } } : current,
+      );
+    }
+    return targets.length > 0 ? this.retry(targets.map((task) => task.id)) : 0;
   }
 
   /**
@@ -822,8 +871,13 @@ export class DownloadCoordinator {
     });
     if (!settled) return;
     this.#fileSpeeds.delete(task.id);
-    if (settled.status === 'completed') this.#deps.notifier?.completed(settled);
-    else this.#deps.notifier?.failed(settled);
+    if (settled.status === 'completed') {
+      // Chrome has its copy: the engine's file on disk goes (a failed save keeps it for Retry).
+      await this.#deletePartialFiles(task.id);
+      this.#deps.notifier?.completed(settled);
+    } else {
+      this.#deps.notifier?.failed(settled);
+    }
     // Not awaited: startSave may be on the stack (engine-fetched files), with the engine waiting for its answer.
     void this.pump();
   }
@@ -953,7 +1007,7 @@ export class DownloadCoordinator {
     // Progressive files Chrome downloads were not in the engine: Chrome keeps (or resumes) them (onStartup).
     const interrupted = tasks.filter((task) => task.status === 'downloading' && !fetchedByBrowser(task));
     for (const task of interrupted) {
-      const stored = await this.#storedProgress(task.id);
+      const stored = (await this.#storedProgress(task.id)) ?? fileOnDisk(task);
       await this.#deps.store.update(task.id, (current) => {
         if (current.status !== 'downloading') return current;
         const { progress: _progress, ...rest } = current;
@@ -981,6 +1035,9 @@ export class DownloadCoordinator {
   async #removeOrphans(): Promise<string[]> {
     await this.#removeOrphanFiles().catch((error: unknown) => {
       this.#deps.logger?.warn('Could not clean up merged files', { error: errorMessage(error) });
+    });
+    await this.#removeOrphanPartialFiles().catch((error: unknown) => {
+      this.#deps.logger?.warn('Could not clean up downloaded files', { error: errorMessage(error) });
     });
     // Storage first, tasks second: data is only written for tasks already in the store, so a task
     // created in between is never taken for an orphan. Callers are serialised with pump(), so no
@@ -1017,10 +1074,46 @@ export class DownloadCoordinator {
     if (removed > 0) this.#deps.logger?.info('Deleted merged files no task needs', { files: removed });
   }
 
+  /**
+   * Progressive files on disk that no task will continue or save: left by a cancellation or a
+   * save the engine could not clean up after (it closed first). Tasks that keep their data
+   * (queued, downloading, failed…) keep them; a file still open (being written) is skipped.
+   */
+  async #removeOrphanPartialFiles(): Promise<void> {
+    const partialFiles = this.#deps.partialFiles;
+    if (!partialFiles) return;
+    // Files first, tasks second: a file is only written for a task already in the store.
+    const names = await partialFiles.names();
+    if (names.length === 0) return;
+    const needed = new Set((await this.#deps.store.list()).filter((task) => KEEPS_DATA.includes(task.status)).map((task) => task.id));
+    let removed = 0;
+    for (const name of names) {
+      const taskId = taskIdOfPartialFile(name);
+      if (taskId !== undefined && needed.has(taskId)) continue;
+      const outcome = await partialFiles.remove(name).catch(() => 'failed' as const);
+      if (outcome === 'removed') removed += 1;
+    }
+    if (removed > 0) this.#deps.logger?.info('Deleted downloaded files no task needs', { files: removed });
+  }
+
   async #deleteData(taskId: string): Promise<void> {
     await this.#deps.storage.deleteTask(taskId).catch((error: unknown) => {
       this.#deps.logger?.warn('Could not delete stored segments', { taskId, error: errorMessage(error) });
     });
+    await this.#deletePartialFiles(taskId);
+  }
+
+  /** The task's progressive file on disk and its record (0.6.0); one still open is left to the orphan sweep. */
+  async #deletePartialFiles(taskId: string): Promise<void> {
+    const partialFiles = this.#deps.partialFiles;
+    if (!partialFiles) return;
+    try {
+      for (const name of await partialFiles.names()) {
+        if (taskIdOfPartialFile(name) === taskId) await partialFiles.remove(name);
+      }
+    } catch (error) {
+      this.#deps.logger?.warn('Could not delete a downloaded file', { taskId, error: errorMessage(error) });
+    }
   }
 
   #serial<T>(operation: () => Promise<T>): Promise<T> {

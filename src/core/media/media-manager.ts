@@ -340,7 +340,12 @@ export class MediaManager {
           : error instanceof FfmpegError
             ? describeFfmpegFailure(error)
             : `Media processing failed: ${errorMessage(error)}`;
-      this.#deps.report({ taskId: spec.taskId, progress: job.progress, outcome: { status: 'failed', message, ...(discard ? { discardedData: true } : {}) } });
+      const reason = error instanceof MediaFailure ? error.reason : undefined;
+      this.#deps.report({
+        taskId: spec.taskId,
+        progress: job.progress,
+        outcome: { status: 'failed', message, ...(discard ? { discardedData: true } : {}), ...(reason ? { reason } : {}) },
+      });
     }
   }
 }

@@ -73,7 +73,7 @@ export function chooseContainer(format: OutputFormat, streams: readonly MediaStr
   if (misfits.length === 0) return { container: 'mp4' };
   const what = `${list(misfits)} cannot be stored in MP4 without re-encoding`;
   if (format === 'mp4') {
-    return { error: `${what}, and re-encoding is not supported. Remove this download, set Output format to Auto or MKV in Settings, then download the video again.` };
+    return { error: `${what}, and re-encoding is not supported. Press Save as MKV to keep the downloaded video in an MKV file (Output format is set to MP4 in Settings).` };
   }
   return { container: 'mkv', reason: `${what}.` };
 }

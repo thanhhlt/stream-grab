@@ -35,8 +35,14 @@ export interface OutputFile {
 export type RemoveOutcome = 'removed' | 'missing' | 'locked';
 
 export interface OutputFileStore {
-  /** Creates the file (or empties it) and opens it for synchronous writing (dedicated workers only). */
-  open(name: string): Promise<OutputFile>;
+  /**
+   * Creates the file (or empties it) and opens it for synchronous writing
+   * (dedicated workers only). `keepData` keeps what an existing file holds
+   * (a progressive file resumed, 0.6.0).
+   */
+  open(name: string, options?: { keepData?: boolean }): Promise<OutputFile>;
+  /** The contents of a file that is not open for writing; undefined when there is no such file. */
+  read(name: string): Promise<Blob | undefined>;
   /**
    * Deletes the file. A file still open (a worker writing it, or one that was
    * just terminated and has not released it yet) is retried for `waitLockedMs`,
@@ -85,37 +91,56 @@ const isNamed = (error: unknown, name: string): boolean => error instanceof Erro
 
 const LOCK_RETRY_MS = 100;
 
-/** OutputFileStore on the origin private file system (navigator.storage.getDirectory()). */
+/**
+ * OutputFileStore on the origin private file system (navigator.storage.getDirectory()):
+ * merged files in `merges` by default, or the files of another directory
+ * (progressive files the engine fetches, 0.6.0).
+ */
 export class OpfsOutputFiles implements OutputFileStore {
   readonly #root: () => Promise<DirectoryLike>;
+  readonly #name: string;
 
-  constructor(root?: () => Promise<DirectoryLike>) {
+  constructor(root?: () => Promise<DirectoryLike>, directory: string = MERGE_DIRECTORY) {
     this.#root = root ?? (() => navigator.storage.getDirectory());
+    this.#name = directory;
   }
 
-  /** The directory of merged files; undefined when it does not exist and `create` is false. */
+  /** The store's directory; undefined when it does not exist and `create` is false. */
   async #directory(create: boolean): Promise<DirectoryLike | undefined> {
     try {
-      return await (await this.#root()).getDirectoryHandle(MERGE_DIRECTORY, { create });
+      return await (await this.#root()).getDirectoryHandle(this.#name, { create });
     } catch (error) {
       if (!create && isNamed(error, 'NotFoundError')) return undefined;
       throw error;
     }
   }
 
-  async open(name: string): Promise<OutputFile> {
+  async open(name: string, options: { keepData?: boolean } = {}): Promise<OutputFile> {
     const directory = await this.#directory(true);
-    if (!directory) throw new Error('The merge directory could not be created');
+    if (!directory) throw new Error(`The ${this.#name} directory could not be created`);
     const file = (await directory.getFileHandle(name, { create: true })) as FileHandleLike;
     if (typeof file.createSyncAccessHandle !== 'function') throw new Error('Synchronous file access is not available here');
     const handle = await file.createSyncAccessHandle();
-    try {
-      handle.truncate(0);
-    } catch (error) {
-      handle.close();
-      throw error;
+    if (!options.keepData) {
+      try {
+        handle.truncate(0);
+      } catch (error) {
+        handle.close();
+        throw error;
+      }
     }
     return { handle, read: () => file.getFile() };
+  }
+
+  async read(name: string): Promise<Blob | undefined> {
+    const directory = await this.#directory(false);
+    if (!directory) return undefined;
+    try {
+      return await ((await directory.getFileHandle(name)) as FileHandleLike).getFile();
+    } catch (error) {
+      if (isNamed(error, 'NotFoundError')) return undefined;
+      throw error;
+    }
   }
 
   async remove(name: string, options: { waitLockedMs?: number } = {}): Promise<RemoveOutcome> {

@@ -19,6 +19,40 @@ import type { TaskProgress, TrackProgress } from '@/core/models/download-task';
 
 /** Số media segment tối thiểu đã xong của một track trước khi ngoại suy kích thước của track đó. */
 export const MIN_SEGMENT_SAMPLES = 3;
+/**
+ * Thứ tự tải các vị trí còn lại: MIN_SEGMENT_SAMPLES segment đầu còn thiếu của
+ * MỖI track đi trước (xen kẽ giữa các track), phần còn lại giữ nguyên thứ tự
+ * plan. Nhờ vậy audio tách riêng đủ mẫu ngay từ đầu và kích thước ước lượng
+ * không phải đợi cả video tải xong. Chỉ đổi thứ tự tải, không đổi plan.
+ */
+export function samplesFirst(pending: readonly number[], trackOf: (position: number) => string): number[] {
+  const taken = new Map<string, number>();
+  const early: number[] = [];
+  const rest: number[] = [];
+  for (const position of pending) {
+    const track = trackOf(position);
+    const count = taken.get(track) ?? 0;
+    if (count < MIN_SEGMENT_SAMPLES) {
+      taken.set(track, count + 1);
+      early.push(position);
+    } else {
+      rest.push(position);
+    }
+  }
+  // Xen kẽ theo "vòng": segment thứ k của mọi track trước segment thứ k+1.
+  const rounds = new Map<string, number[]>();
+  for (const position of early) rounds.set(trackOf(position), [...(rounds.get(trackOf(position)) ?? []), position]);
+  const lists = [...rounds.values()];
+  const interleaved: number[] = [];
+  for (let round = 0; round < MIN_SEGMENT_SAMPLES; round++) {
+    for (const list of lists) {
+      const position = list[round];
+      if (position !== undefined) interleaved.push(position);
+    }
+  }
+  return [...interleaved, ...rest];
+}
+
 /** Engine phải chạy ít nhất chừng này trước khi tốc độ đủ tin cậy để tính ETA. */
 export const MIN_SPEED_ELAPSED_MS = 3000;
 /** Không nhận được báo cáo nào trong chừng này khi đang tải: coi như đứng yên (engine báo ≤ 2 lần/s khi có dữ liệu). */

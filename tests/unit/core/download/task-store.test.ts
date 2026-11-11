@@ -193,4 +193,17 @@ describe('parseStoredTasks', () => {
     expect(JSON.stringify(local.data.get(STORAGE_KEYS.tasks))).not.toContain('segmentsDone');
     expect((await store.list())[0]).toMatchObject({ statusMessage: 'moved', progress });
   });
+
+  it('keeps a known failure reason and drops an unknown one', async () => {
+    const { local, store } = setup();
+    await local.set({
+      [STORAGE_KEYS.tasks]: {
+        version: 1,
+        tasks: [makeTask('a', { status: 'failed', failureReason: 'mp4-unsupported' }), { ...makeTask('b', { status: 'failed' }), failureReason: 'bogus' }],
+      },
+    });
+    const [a, b] = await store.list();
+    expect(a?.failureReason).toBe('mp4-unsupported');
+    expect(b?.failureReason).toBeUndefined();
+  });
 });

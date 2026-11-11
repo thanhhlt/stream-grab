@@ -43,7 +43,7 @@ const quiet = (pathname: string, status: number): boolean =>
 
 createServer((req, res) => {
   const url = new URL(req.url ?? '/', `http://localhost:${port}`);
-  const response = route(url.pathname, { referer: req.headers.referer, range: req.headers.range });
+  const response = route(url.pathname, { referer: req.headers.referer, range: req.headers.range, ifRange: req.headers['if-range']?.toString() });
   sendResponse(res, response);
   if (quiet(url.pathname, response.status)) return;
   // Who asked and with which Referer: the page's own requests are `same-origin`; the extension's

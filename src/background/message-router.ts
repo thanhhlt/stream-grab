@@ -114,6 +114,11 @@ export function registerMessageRouter(context: BackgroundContext): void {
         return { retried: await downloads.retry(parseTaskIds(payload)) };
       },
 
+      'downloads/save-as-mkv': async (payload, sender) => {
+        requireExtensionPage(sender);
+        return { retried: await downloads.saveAsMkv(parseTaskIds(payload)) };
+      },
+
       'downloads/dismiss': async (payload, sender) => {
         requireExtensionPage(sender);
         return { dismissed: await downloads.dismiss(parseTaskIds(payload)) };

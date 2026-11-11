@@ -14,8 +14,8 @@ const fixtures = resolve(import.meta.dirname, '..');
 export interface FixtureSite {
   /** http://127.0.0.1:<port> */
   origin: string;
-  /** Paths requested, in order, with the Referer (and Range) each request carried. */
-  requests: { path: string; referer: string | undefined; range?: string | undefined }[];
+  /** Paths requested, in order, with the Referer (and Range, If-Range) each request carried. */
+  requests: { path: string; referer: string | undefined; range?: string | undefined; ifRange?: string | undefined }[];
   close(): Promise<void>;
 }
 
@@ -37,8 +37,9 @@ export async function startFixtureSite(options: { latencyMs: number }): Promise<
   const requests: FixtureSite['requests'] = [];
   const server = createServer((req, res) => {
     const url = new URL(req.url ?? '/', 'http://127.0.0.1');
-    requests.push({ path: url.pathname, referer: req.headers.referer, range: req.headers.range });
-    sendResponse(res, route(url.pathname, { referer: req.headers.referer, range: req.headers.range }));
+    const ifRange = req.headers['if-range']?.toString();
+    requests.push({ path: url.pathname, referer: req.headers.referer, range: req.headers.range, ...(ifRange !== undefined ? { ifRange } : {}) });
+    sendResponse(res, route(url.pathname, { referer: req.headers.referer, range: req.headers.range, ifRange }));
   });
   await new Promise<void>((done) => server.listen(0, '127.0.0.1', done));
   const { port } = server.address() as AddressInfo;

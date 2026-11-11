@@ -10,7 +10,20 @@ import { errorMessage, StreamGrabError } from '@/shared/utils/errors';
 import { stableHash } from '@/shared/utils/hash';
 import { Aes128KeyCache } from './aes';
 import { runWorkerPool } from './download-queue';
+import { samplesFirst } from './estimate';
 import type { SegmentStorage } from './download-storage';
+import {
+  DiskTarget,
+  ifRangeValue,
+  MemoryTarget,
+  parseContentRange,
+  responseRecord,
+  resumePoint,
+  unsatisfiedTotal,
+  type FileRecord,
+  type FileTarget,
+} from './file-target';
+import type { PartialFileStore } from './partial-files';
 import { fileProgress, ProgressTracker } from './progress';
 import {
   backoffDelay,
@@ -22,6 +35,7 @@ import {
   SegmentContentError,
   SegmentFatalError,
   SegmentHttpError,
+  SegmentTransferError,
   sleep,
   StorageWriteError,
   type RetryPolicy,
@@ -62,6 +76,12 @@ export interface DownloadManagerDeps {
    * service worker (engine/save), which has Chrome save it. True when taken.
    */
   saveFile?: (request: SaveRequest) => Promise<boolean>;
+  /**
+   * Disk files for progressive files the engine fetches (0.6.0): a later run
+   * continues them. Without it they stream into Blob parts and every run
+   * starts over.
+   */
+  partialFiles?: PartialFileStore;
   /** URL.createObjectURL / revokeObjectURL (injectable for tests). */
   createUrl?: (blob: Blob) => string;
   revokeUrl?: (url: string) => void;
@@ -89,6 +109,14 @@ export const EXPIRED_LINK_MESSAGE =
   'The video link expired or access was denied. Play the video again on its page, then press Retry.';
 
 export const VIDEO_CHANGED_MESSAGE = 'The video changed on the server since the download started. Remove it and download it again.';
+
+/** A continuation the server answered for other bytes than asked: the file starts over. */
+class ResumeMismatch extends Error {
+  constructor() {
+    super('The server sent other bytes than the rest of the file');
+    this.name = 'ResumeMismatch';
+  }
+}
 
 const expiredLink = (cause: unknown): TaskFailure => new TaskFailure(EXPIRED_LINK_MESSAGE, { cause, reason: 'expired' });
 
@@ -262,7 +290,8 @@ export class DownloadManager {
       await this.#checkSpace(true); // a full disk fails at once, before any request
       ({ segments: run.plan, layout: run.layout } = await this.#initialPlan(run, signal));
       run.tracker.setPlan(run.plan);
-      const pending = await this.#prepareStorage(run);
+      const plan = run.plan;
+      const pending = samplesFirst(await this.#prepareStorage(run), (position) => plan[position]?.trackId ?? '');
       this.#report(run, true);
 
       const fetch = this.#deps.fetchFor(spec.taskId);
@@ -481,20 +510,28 @@ export class DownloadManager {
    * A progressive file fetched by the engine (0.3.0, ProgressiveFetch
    * `extension`): its server wants the page's Referer/Origin, which only the
    * engine's requests carry (DNR leases; Chrome's own downloads get none).
-   * The body streams into Blob parts through the segment fetcher (never
-   * whole in memory; Chrome keeps large Blob data on disk, nothing goes to
-   * IndexedDB), then goes to the service worker as a blob: URL that Chrome
-   * saves like a merged video; the URL is held until the service worker
-   * drops the task. Failures are retried like a segment's (retry policy, an
-   * expired link refreshed from the newest detection), each attempt from the
-   * start of the file: no Range resume.
+   * The body streams to a file on disk (0.6.0, see file-target.ts; Blob parts
+   * when that is not possible), then goes to the service worker as a blob:
+   * URL that Chrome saves like a merged video; the URL is held until the
+   * service worker drops the task, which deletes the file once Chrome has
+   * saved it (a cancelled run deletes its own).
+   *
+   * Failures are retried like a segment's (retry policy, an expired link
+   * refreshed from the newest detection). Every attempt, and every later run
+   * (Retry, a restarted browser), continues the file with a Range request
+   * when its first response carried a validator (If-Range): 206 continues
+   * it, 200 (the file changed, or no range support) starts it over, 416 with
+   * the size held means it was complete. Without a validator it starts over.
    */
   async #runFile(run: Run): Promise<void> {
     const { spec, controller } = run;
     const signal = controller.signal;
-    const total = spec.file?.bytes;
+    let total = spec.file?.bytes;
     let received = 0;
     let url: string | undefined;
+    let target: FileTarget | undefined;
+    /** Delete the file when the run ends: the task was cancelled while it ran. */
+    let discard = false;
     const report = (force: boolean, done = false): void => {
       const now = this.#now();
       if (!force && now - run.lastReport < (this.#deps.reportIntervalMs ?? 500)) return;
@@ -508,6 +545,10 @@ export class DownloadManager {
       await this.#checkSpace(true);
       run.plan = [fileSegment(spec.manifestUrl, container)];
       run.tracker.setPlan(run.plan);
+      target = await this.#fileTarget(spec.taskId, container);
+      const file = target;
+      total = file.record?.total ?? total;
+      received = resumePoint(file);
       report(true);
       const fetcher = new SegmentFetcher({
         fetch: this.#deps.fetchFor(spec.taskId),
@@ -515,19 +556,36 @@ export class DownloadManager {
         ...(this.#deps.partSize !== undefined ? { partSize: this.#deps.partSize } : {}),
         ...(this.#deps.stallTimeoutMs !== undefined ? { stallTimeoutMs: this.#deps.stallTimeoutMs } : {}),
       });
-      let parts: Blob[] = [];
       /** A full disk found while the file streams in (the fetcher would report it as a write error). */
       let diskFull: TaskFailure | undefined;
+      /** The server answered a continuation unexpectedly: the next request starts over. */
+      let startOver = false;
+      /** The file's size as its server announced it (never the detection's guess): what "complete" means. */
+      let serverTotal = file.record?.total;
       for (let attempt = 1; ; attempt += 1) {
-        parts = [];
-        received = 0;
+        const from = startOver ? 0 : resumePoint(file);
+        startOver = false;
+        if (from > 0 && from === file.record?.total) break; // complete already (e.g. the browser closed while saving)
+        received = from;
+        /** Set by a response that starts the file over; applied with its first bytes (a refused body keeps the file). */
+        let fresh: FileRecord | undefined;
+        /** The same, for the progress shown: applied once the body passed the content check. */
+        let freshProgress: FileRecord | undefined;
+        /** The total of a 416 answer. */
+        let unsatisfied: number | undefined;
         try {
           const segment = run.plan[0] ?? fileSegment(spec.manifestUrl, container);
+          const validator = ifRangeValue(file.record);
           await fetcher.download(
-            segment,
+            from > 0 && validator !== undefined ? { url: segment.url, from, headers: { 'If-Range': validator } } : { url: segment.url },
             async (_part, data) => {
-              parts.push(new Blob([data]));
-              this.#space.written(data.byteLength);
+              if (fresh) {
+                await file.restart(fresh);
+                fresh = undefined;
+              }
+              const length = data.byteLength; // read first: append may transfer the buffer
+              await file.append(data);
+              this.#space.written(length);
               try {
                 await this.#checkSpace();
               } catch (error) {
@@ -537,14 +595,59 @@ export class DownloadManager {
             },
             signal,
             (bytes) => {
+              if (freshProgress) {
+                received = 0;
+                total = freshProgress.total ?? total;
+                serverTotal = freshProgress.total;
+                freshProgress = undefined;
+              }
               received += bytes;
               run.tracker.received(bytes);
               report(false);
             },
+            {
+              onResponse: (response) => {
+                if (response.status === 416) {
+                  unsatisfied = unsatisfiedTotal(response.headers.get('content-range'));
+                } else if (response.status === 206 && from > 0) {
+                  const range = parseContentRange(response.headers.get('content-range'));
+                  const known = file.record?.total;
+                  if (!range || range.start !== from || (range.total !== undefined && known !== undefined && range.total !== known)) {
+                    throw new ResumeMismatch();
+                  }
+                  total = range.total ?? total;
+                  serverTotal = range.total ?? serverTotal;
+                } else if (response.status === 200 || response.status === 206) {
+                  // The whole file: a first request, a file that changed (If-Range), or a server without ranges.
+                  fresh = responseRecord(response);
+                  freshProgress = fresh;
+                }
+              },
+            },
           );
+          // A server may answer an open range with only part of the rest (a capped 206): go on from there.
+          // Every pass adds bytes (an empty body fails), so this ends.
+          if (serverTotal !== undefined && file.size < serverTotal && resumePoint(file) > 0) {
+            attempt -= 1;
+            continue;
+          }
+          if (serverTotal !== undefined && file.size !== serverTotal) {
+            throw new SegmentTransferError(`The video file has ${file.size} of ${serverTotal} bytes`);
+          }
           break;
         } catch (error) {
           if (diskFull) throw diskFull;
+          if (error instanceof ResumeMismatch) {
+            startOver = true;
+            attempt -= 1; // the next request has no range: this cannot repeat
+            continue;
+          }
+          if (from > 0 && error instanceof SegmentHttpError && error.status === 416) {
+            if (unsatisfied === from) break; // nothing left to fetch: the file is complete
+            startOver = true;
+            attempt -= 1;
+            continue;
+          }
           const kind = classifyFailure(error);
           if (kind === 'aborted' || error instanceof TaskFailure) throw error;
           if (error instanceof StorageWriteError) throw await this.#storageFailure(error);
@@ -566,21 +669,28 @@ export class DownloadManager {
         }
       }
       await this.#deps.releaseContexts(spec.taskId).catch(() => undefined);
-      const blob = new Blob(parts, { type: container === 'webm' ? 'video/webm' : 'video/mp4' });
-      parts = [];
+      const blob = await file.complete(container === 'webm' ? 'video/webm' : 'video/mp4');
       run.tracker.segmentDone(blob.size, run.plan[0]);
       received = blob.size;
       report(true, true);
       url = this.#createUrl(blob);
+      // Not taken: cancelled meanwhile (the file goes), or Chrome refused it (the service worker failed the
+      // task; the file stays for Retry, which saves it without fetching it again).
       const saved = await saveFile({ taskId: spec.taskId, url, size: blob.size });
-      if (!saved) return; // cancelled meanwhile, or Chrome refused it (the service worker failed the task)
-      // Chrome reads the file from this URL while it saves it: hold it until the service worker lets go.
+      if (!saved) {
+        discard = signal.aborted;
+        return;
+      }
+      // Chrome reads the file from this URL while it saves it: hold it until the service worker lets go. The
+      // file stays: the service worker deletes it once Chrome has saved it, or with a cancelled or removed task
+      // (a save Chrome gave up on is retried from it).
       await new Promise<void>((resolve) => {
         if (signal.aborted) resolve();
         else signal.addEventListener('abort', () => resolve(), { once: true });
       });
     } catch (error) {
       if (signal.aborted) {
+        discard = true;
         this.#finish(run, { status: 'cancelled' });
       } else {
         const failure = error instanceof TaskFailure ? error : new TaskFailure(errorMessage(error), { cause: error });
@@ -592,8 +702,19 @@ export class DownloadManager {
       }
     } finally {
       if (url !== undefined) this.#revokeUrl(url);
+      if (target) await (discard ? target.discard() : target.release()).catch(() => undefined);
       await this.#deps.releaseContexts(spec.taskId).catch(() => undefined);
     }
+  }
+
+  /** The task's file on disk, as earlier runs left it; Blob parts for this run when disk files are not available. */
+  async #fileTarget(taskId: string, container: ProgressiveContainer): Promise<FileTarget> {
+    const store = this.#deps.partialFiles;
+    if (store) {
+      const disk = await DiskTarget.open(store, taskId, container).catch(() => undefined);
+      if (disk) return disk;
+    }
+    return new MemoryTarget();
   }
 
   /** A newer link (or context) for a progressive file whose link expired; false when there is none. */

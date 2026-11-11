@@ -197,7 +197,11 @@ describe('MediaManager · outcomes', () => {
     const runner = new ScriptedRunner(() => Promise.resolve(probeResult([{ codec_type: 'video', codec_name: 'vp8' }, { codec_type: 'audio', codec_name: 'vorbis' }])));
     const { storage, saves, process } = setup(runner);
     await storeDownloadedTask(storage, 'w', [video(media.ts.video['v90'] as Rendition)]);
-    expect((await process('w', 'mp4')).at(-1)?.outcome).toMatchObject({ status: 'failed', message: expect.stringContaining('VP8 and Vorbis cannot be stored in MP4') as string });
+    expect((await process('w', 'mp4')).at(-1)?.outcome).toMatchObject({
+      status: 'failed',
+      message: expect.stringContaining('VP8 and Vorbis cannot be stored in MP4') as string,
+      reason: 'mp4-unsupported',
+    });
     expect(await storage.taskIds()).toEqual(['w']);
     expect(saves).toEqual([]);
   });

@@ -35,6 +35,19 @@ export interface SegmentRequest {
   url: string;
   byteRange?: ByteRange;
   encryption?: SegmentEncryption;
+  /**
+   * Resume a whole file from this byte (`Range: bytes=N-`, 0.6.0). Unlike
+   * `byteRange`, a 200 answer is not skipped through: it is the whole file
+   * again, which the caller sees in `onResponse` and starts over with.
+   */
+  from?: number;
+  /** Further request headers (e.g. If-Range). */
+  headers?: Record<string, string>;
+}
+
+export interface DownloadOptions {
+  /** Called with every response before its status is checked or its body read; may throw to stop. */
+  onResponse?: (response: Response) => void | Promise<void>;
 }
 
 export type PartSink = (part: number, data: Uint8Array<ArrayBuffer>) => Promise<void>;
@@ -113,6 +126,7 @@ export class SegmentFetcher {
     sink: PartSink,
     signal: AbortSignal,
     onBytes: (count: number) => void = () => undefined,
+    options: DownloadOptions = {},
   ): Promise<SegmentFetchResult> {
     const controller = new AbortController();
     let stalled = false;
@@ -133,9 +147,10 @@ export class SegmentFetcher {
     try {
       arm();
       const range = segment.byteRange;
-      const headers: Record<string, string> = range
-        ? { Range: `bytes=${range.offset}-${range.offset + range.length - 1}` }
-        : {};
+      const from = !range && segment.from !== undefined && segment.from > 0 ? segment.from : undefined;
+      const headers: Record<string, string> = { ...segment.headers };
+      if (range) headers.Range = `bytes=${range.offset}-${range.offset + range.length - 1}`;
+      else if (from !== undefined) headers.Range = `bytes=${from}-`;
       let response: Response;
       try {
         response = await this.#fetch(segment.url, {
@@ -147,6 +162,14 @@ export class SegmentFetcher {
         });
       } catch (error) {
         throw this.#translate(error, stalled, signal);
+      }
+      if (options.onResponse) {
+        try {
+          await options.onResponse(response);
+        } catch (error) {
+          await response.body?.cancel().catch(() => undefined);
+          throw error;
+        }
       }
       if (response.status !== 200 && response.status !== 206) {
         await response.body?.cancel().catch(() => undefined);
@@ -192,7 +215,9 @@ export class SegmentFetcher {
             chunk = chunk.subarray(drop);
           }
           if (received + chunk.byteLength > limit) chunk = chunk.subarray(0, limit - received);
-          if (chunk.byteLength > 0 && received === 0 && (!range || range.offset === 0)) {
+          // Only a body that starts the resource can be checked: a range in the middle may start with any byte.
+          const startsResource = range ? range.offset === 0 : from === undefined || response.status === 200;
+          if (chunk.byteLength > 0 && received === 0 && startsResource) {
             const kind = documentKind(chunk.subarray(0, 64), response.headers.get('content-type'), encrypted);
             if (kind) {
               await reader.cancel().catch(() => undefined);

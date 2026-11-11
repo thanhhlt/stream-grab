@@ -67,6 +67,28 @@ export function slowFileBytes(files: SyntheticFiles): Uint8Array<ArrayBuffer> {
   return out;
 }
 
+/**
+ * A page with one slow file that needs the page as Referer (24 MiB at 4 MiB/s,
+ * byte ranges, a strong ETag honoured in If-Range): Chrome's own download is
+ * refused, so the engine fetches it (0.3.0) and, interrupted, continues it
+ * with a Range request (0.6.0). Bigger than the engine's 8 MiB write parts,
+ * so some of it is on disk when Chrome is killed.
+ */
+export const SLOW_PROTECTED_PAGE_PATH = '/files/slow-protected';
+export const SLOW_PROTECTED_FILE_PATH = '/files/slow-protected/movie.mp4';
+export const SLOW_PROTECTED_TITLE = 'Slow protected MP4';
+export const SLOW_PROTECTED_ETAG = '"slow-protected-v1"';
+const SLOW_PROTECTED_BYTES = 24 * 1024 * 1024;
+const SLOW_PROTECTED_RATE = 4 * 1024 * 1024;
+
+/** The slow protected file's bytes: the faststart MP4 followed by padding. */
+export function slowProtectedBytes(files: SyntheticFiles): Uint8Array<ArrayBuffer> {
+  const out = new Uint8Array(SLOW_PROTECTED_BYTES);
+  out.set(files.mp4FastStart);
+  for (let at = files.mp4FastStart.byteLength; at < out.length; at++) out[at] = at % 251; // not all zeros: misplaced bytes show
+  return out;
+}
+
 const CONTENT_TYPES = { mp4: 'video/mp4', webm: 'video/webm' } as const;
 
 function page(): string {
@@ -113,11 +135,11 @@ export function serveFile(body: Uint8Array<ArrayBuffer>, contentType: string, ra
   };
 }
 
-/** True when the request comes from (or replays the Referer of) the /files page. */
-function fromFilesPage(referer: string | undefined): boolean {
+/** True when the request comes from (or replays the Referer of) this page (the /files page by default). */
+function fromFilesPage(referer: string | undefined, page = PROGRESSIVE_PAGE_PATH): boolean {
   if (referer === undefined) return false;
   try {
-    return new URL(referer).pathname === PROGRESSIVE_PAGE_PATH;
+    return new URL(referer).pathname === page;
   } catch {
     return false;
   }
@@ -126,6 +148,7 @@ function fromFilesPage(referer: string | undefined): boolean {
 export function createProgressiveRouter(files: SyntheticFiles): (pathname: string, request?: DemoRequest) => FixtureResponse | undefined {
   const forbidden: FixtureResponse = { status: 403, contentType: 'text/plain', body: 'Forbidden: open the video on its page' };
   const slow = slowFileBytes(files);
+  const slowProtected = slowProtectedBytes(files);
   return (pathname, request) => {
     if (pathname === PROGRESSIVE_PAGE_PATH) return { status: 200, contentType: 'text/html; charset=utf-8', body: page() };
     if (pathname === SLOW_PAGE_PATH) {
@@ -138,6 +161,19 @@ export function createProgressiveRouter(files: SyntheticFiles): (pathname: strin
       // Validators let Chrome resume the download (If-Range) where it stopped.
       const response = serveFile(slow, 'video/mp4', request?.range);
       return { ...response, headers: { ...response.headers, etag: '"slow-v1"', 'last-modified': 'Wed, 01 Jan 2025 00:00:00 GMT' }, bytesPerSecond: SLOW_BYTES_PER_SECOND };
+    }
+    if (pathname === SLOW_PROTECTED_PAGE_PATH) {
+      const body = `<!doctype html><html><head><meta charset="utf-8"><title>StreamGrab slow protected file</title></head>
+<body style="font:14px system-ui"><video title="${SLOW_PROTECTED_TITLE}" src="${SLOW_PROTECTED_FILE_PATH}" preload="metadata" muted controls width="320"></video>
+<p>A ${SLOW_PROTECTED_BYTES / 1024 ** 2} MiB file served at ${SLOW_PROTECTED_RATE / 1024 ** 2} MiB/s, only with this page as Referer: the extension fetches it, and continues it after an interruption.</p></body></html>`;
+      return { status: 200, contentType: 'text/html; charset=utf-8', body };
+    }
+    if (pathname === SLOW_PROTECTED_FILE_PATH) {
+      if (!fromFilesPage(request?.referer, SLOW_PROTECTED_PAGE_PATH)) return forbidden;
+      // If-Range: the range only while the ETag still matches, else the whole file.
+      const range = request?.ifRange === undefined || request.ifRange === SLOW_PROTECTED_ETAG ? request?.range : undefined;
+      const response = serveFile(slowProtected, 'video/mp4', range);
+      return { ...response, headers: { ...response.headers, etag: SLOW_PROTECTED_ETAG }, bytesPerSecond: SLOW_PROTECTED_RATE };
     }
     if (pathname === MSE_SEGMENT_PATH) return serveFile(files.mp4Fragmented, 'video/mp4', request?.range);
     if (pathname === REDIRECT_TARGET_PATH) return serveFile(files.mp4Fragmented, 'video/mp4', request?.range);

@@ -6,6 +6,7 @@ import {
   estimateSize,
   MIN_SEGMENT_SAMPLES,
   MIN_SPEED_ELAPSED_MS,
+  samplesFirst,
   STALL_AFTER_MS,
   type SpeedAverage,
 } from '@/core/download/estimate';
@@ -91,6 +92,27 @@ describe('estimateSize', () => {
   it('reads progress stored by v0.1.0 (no per-track figures) as one track', () => {
     const size = estimateSize(progress());
     expect((size?.total ?? 0) / MB).toBeCloseTo(181, 0);
+  });
+});
+
+describe('samplesFirst', () => {
+  // 0–5: video; 6–9: audio.
+  const trackOf = (position: number): string => (position < 6 ? 'v' : 'a');
+  const all = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
+
+  it('puts the first samples of every track ahead, interleaved, and keeps the rest in plan order', () => {
+    expect(samplesFirst(all, trackOf)).toEqual([0, 6, 1, 7, 2, 8, 3, 4, 5, 9]);
+  });
+
+  it('counts only what is still pending and never loses or repeats a position', () => {
+    const result = samplesFirst([4, 5, 7, 8, 9], trackOf);
+    expect(result).toEqual([4, 7, 5, 8, 9]);
+    expect([...result].sort((a, b) => a - b)).toEqual([4, 5, 7, 8, 9]);
+  });
+
+  it('leaves a single track and an empty list unchanged', () => {
+    expect(samplesFirst([0, 1, 2, 3], () => 'v')).toEqual([0, 1, 2, 3]);
+    expect(samplesFirst([], trackOf)).toEqual([]);
   });
 });
 

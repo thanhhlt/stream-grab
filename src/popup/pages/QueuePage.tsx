@@ -31,11 +31,12 @@ import { useNow } from '../hooks/useNow';
 import { useSettings } from '../hooks/useSettings';
 import { useStorageEstimate } from '../hooks/useStorageEstimate';
 
-export type Action = 'cancel' | 'retry' | 'remove' | 'show' | 'dismiss';
+export type Action = 'cancel' | 'retry' | 'mkv' | 'remove' | 'show' | 'dismiss';
 
-/** Which buttons a task offers. */
-function actionsFor(status: TaskStatus): Action[] {
-  switch (status) {
+/** Which buttons a task offers. Retry would fail again for MP4-incompatible tracks: Save as MKV takes its place. */
+function actionsFor(task: DownloadTask): Action[] {
+  if (task.status === 'failed' && task.failureReason === 'mp4-unsupported') return ['mkv', 'remove'];
+  switch (task.status) {
     case 'queued':
     case 'downloaded':
       return ['remove'];
@@ -50,11 +51,11 @@ function actionsFor(status: TaskStatus): Action[] {
   }
 }
 
-const ACTION_LABELS: Record<Action, string> = { cancel: 'Cancel', retry: 'Retry', remove: 'Remove', show: 'Show in folder', dismiss: 'Clear' };
+const ACTION_LABELS: Record<Action, string> = { cancel: 'Cancel', retry: 'Retry', mkv: 'Save as MKV', remove: 'Remove', show: 'Show in folder', dismiss: 'Clear' };
 
-/** Retry là hành động chính (nền cam); Show in folder là nút tải viền cam; còn lại là nút viền. */
+/** Retry và Save as MKV là hành động chính (nền cam); Show in folder là nút tải viền cam; còn lại là nút viền. */
 function actionClass(action: Action): string {
-  if (action === 'retry') return BUTTON.primary;
+  if (action === 'retry' || action === 'mkv') return BUTTON.primary;
   if (action === 'show') return BUTTON.download;
   return BUTTON.secondary;
 }
@@ -67,7 +68,7 @@ export function showSavedFile(task: DownloadTask): void {
 function Actions({ task, onAction }: { task: DownloadTask; onAction: (task: DownloadTask, action: Action) => void }) {
   return (
     <span className="ml-auto flex shrink-0 gap-1.5">
-      {actionsFor(task.status).map((action) => (
+      {actionsFor(task).map((action) => (
         <button
           key={action}
           type="button"
@@ -325,7 +326,9 @@ export function QueuePage({ tasks }: { tasks: DownloadTask[] | null }) {
         ? sendToBackground('downloads/cancel', { taskIds })
         : action === 'retry'
           ? sendToBackground('downloads/retry', { taskIds })
-          : action === 'dismiss'
+          : action === 'mkv'
+            ? sendToBackground('downloads/save-as-mkv', { taskIds })
+            : action === 'dismiss'
             ? sendToBackground('downloads/dismiss', { taskIds })
             : sendToBackground('downloads/remove', { taskIds });
     request.catch((cause: unknown) => {

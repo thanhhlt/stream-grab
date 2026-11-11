@@ -18,6 +18,18 @@ use. 1.0.0 means "stable and public", not a feature milestone.
 Not planned: DRM, SAMPLE-AES, live download, an "always ask where to save" setting (Chrome's own
 setting does it), an Open file button (needs `downloads.open`), an FFmpeg upgrade.
 
+## v0.6.0: phases
+
+1. Analysis and Chrome spikes (done 2026-11-11): a worker's OPFS sync access handle keeps every
+   written byte when the offscreen document closes or Chrome is killed, and `Range` + `If-Range`
+   from the offscreen document continue the file byte for byte.
+2. Range resume of a video file the engine downloads (when the site needs the page's Referer):
+   written to OPFS, continued after an error, a Retry or a browser restart. Without an `ETag` or
+   `Last-Modified` from the server it starts again from the beginning, as Chrome does.
+3. A failed forced-MP4 task gets a "Save as MKV" button that merges the stored segments again;
+   the first segments of every track are fetched early so the size estimate includes audio sooner.
+4. Regression tests, docs, release.
+
 ## v0.8.0: Chrome Web Store preparation
 
 - **Block YouTube** (`youtube.com`, `googlevideo.com`): the Chrome Web Store policy does not allow

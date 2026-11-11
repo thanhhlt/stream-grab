@@ -4,7 +4,8 @@ import type { SyncFileHandle } from '@/core/media/output-sink';
 const domError = (name: string, message = name): Error => new DOMException(message, name);
 
 /** What Chrome types an OPFS file as, from its name (checked in 0.4.0 Phase 1). */
-const typeOf = (name: string): string => (name.endsWith('.mp4') ? 'video/mp4' : name.endsWith('.mkv') ? 'video/matroska' : '');
+const typeOf = (name: string): string =>
+  name.endsWith('.mp4') ? 'video/mp4' : name.endsWith('.mkv') ? 'video/matroska' : name.endsWith('.webm') ? 'video/webm' : name.endsWith('.json') ? 'application/json' : '';
 
 /** A growable in-memory file behind a FileSystemSyncAccessHandle-like handle. */
 export class MemorySyncHandle implements SyncFileHandle {
@@ -80,18 +81,29 @@ export class MemoryOutputFiles implements OutputFileStore {
   /** The quota of files opened from now on. */
   quota = Number.POSITIVE_INFINITY;
 
-  open(name: string): Promise<OutputFile> {
+  open(name: string, options: { keepData?: boolean } = {}): Promise<OutputFile> {
     if (this.failOpen) return Promise.reject(this.failOpen);
     const existing = this.files.get(name);
     if (existing && !existing.closed) return Promise.reject(domError('NoModificationAllowedError'));
     const handle = new MemorySyncHandle();
     handle.quota = this.quota;
+    if (options.keepData && existing) {
+      handle.bytes = existing.bytes;
+      handle.size = existing.size;
+    }
     this.files.set(name, handle);
     this.opened.push(name);
     return Promise.resolve({
       handle,
       read: () => Promise.resolve(new Blob([handle.bytes.slice(0, handle.size)], { type: typeOf(name) })),
     });
+  }
+
+  read(name: string): Promise<Blob | undefined> {
+    const file = this.files.get(name);
+    if (!file) return Promise.resolve(undefined);
+    if (!file.closed) return Promise.reject(domError('NoModificationAllowedError'));
+    return Promise.resolve(new Blob([file.bytes.slice(0, file.size)], { type: typeOf(name) }));
   }
 
   /** Every remove() call, in order, whatever it found. */

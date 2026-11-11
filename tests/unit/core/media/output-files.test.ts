@@ -129,4 +129,20 @@ describe('OpfsOutputFiles (0.4.0)', () => {
     await expect(new OpfsOutputFiles(() => Promise.resolve(root)).remove('t.k1.mp4')).rejects.toThrow('denied');
     await expect(new OpfsOutputFiles(() => Promise.reject(new TypeError('no OPFS'))).open('t.k1.mp4')).rejects.toThrow('no OPFS');
   });
+
+  it('works in another directory, keeps what a file holds when asked, and reads closed files by name (0.6.0)', async () => {
+    const root = new FakeDirectory();
+    const files = new OpfsOutputFiles(() => Promise.resolve(root), 'files');
+    expect(await files.read('t.mp4')).toBeUndefined(); // no directory yet
+    const first = await files.open('t.mp4');
+    first.handle.write(new Uint8Array([1, 2, 3]), { at: 0 });
+    first.handle.close();
+    const kept = await files.open('t.mp4', { keepData: true });
+    expect(kept.handle.getSize()).toBe(3);
+    kept.handle.write(new Uint8Array([4]), { at: 3 });
+    kept.handle.close();
+    expect([...new Uint8Array(await ((await files.read('t.mp4')) as Blob).arrayBuffer())]).toEqual([1, 2, 3, 4]);
+    expect(await files.read('other.mp4')).toBeUndefined();
+    expect([...root.directories.keys()]).toEqual(['files']);
+  });
 });

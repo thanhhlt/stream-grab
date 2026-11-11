@@ -10,6 +10,7 @@ import {
   type DownloadManagerDeps,
 } from '@/core/download/download-manager';
 import { IndexedDbSegmentStorage, type SegmentStorage } from '@/core/download/download-storage';
+import { SyncPartialFiles } from '@/core/download/partial-files';
 import { estimateSize } from '@/core/download/estimate';
 import { diskFullMessage } from '@/core/download/storage-space';
 import type { MediaSegment } from '@/core/models/media-segment';
@@ -21,6 +22,7 @@ import { HlsAdapter } from '@/core/protocols/hls/hls-adapter';
 import { ProtocolRegistry } from '@/core/protocols/protocol-adapter';
 import { crashable, until } from '@tests/fakes/crash';
 import { bodyFor, FakeMediaSite } from '@tests/fakes/media-site';
+import { MemoryOutputFiles } from '@tests/fakes/output-files';
 import { MOVIE_BASE as BASE, mediaPlaylist, movieSite, SEGMENT_SIZE } from '@tests/fakes/movie-site';
 import dashDrm from '@tests/fixtures/manifests/dash/drm.mpd?raw';
 import dashSegmentBase from '@tests/fixtures/manifests/dash/segment-base.mpd?raw';
@@ -769,5 +771,319 @@ describe('DownloadManager: progressive files fetched by the engine (0.3.0)', () 
     expect(saves).toHaveLength(1);
     expect(revoked).toEqual([saves[0]?.url]);
     expect(manager.running).toEqual([]);
+  });
+});
+
+describe('DownloadManager: progressive files continue from disk (0.6.0)', () => {
+  const FILE = 'https://media.example.net/files/protected.mp4';
+  const SIZE = 300 * 1024;
+  const PART = 64 * 1024;
+  const ETAG = '"v1"';
+  const BYTES = bodyFor(FILE, SIZE);
+
+  const fileSpec = (): EngineTaskSpec =>
+    spec({ protocol: 'progressive', manifestUrl: FILE, variant: { id: 'file' }, audioTrackIds: [], concurrency: 1, file: { container: 'mp4', bytes: SIZE } });
+
+  function diskSetup(site: FakeMediaSite, disk = new MemoryOutputFiles(), overrides: Partial<DownloadManagerDeps> = {}) {
+    const saves: SaveRequest[] = [];
+    const blobs = new Map<string, Blob>();
+    const revoked: string[] = [];
+    const context = setup(site, {
+      saveFile: (request) => {
+        saves.push(request);
+        return Promise.resolve(true);
+      },
+      createUrl: (blob) => {
+        const url = `blob:chrome-extension://test/${blobs.size}`;
+        blobs.set(url, blob);
+        return url;
+      },
+      revokeUrl: (url) => {
+        revoked.push(url);
+      },
+      partialFiles: new SyncPartialFiles(disk),
+      partSize: PART,
+      ...overrides,
+    });
+    /** The bytes handed to Chrome. */
+    const saved = async () => new Uint8Array(await (blobs.get(saves[0]?.url ?? '') as Blob).arrayBuffer());
+    const run = async () => {
+      context.manager.sync([fileSpec()]);
+      await vi.waitFor(() => {
+        expect(saves).toHaveLength(1);
+      });
+    };
+    return { ...context, disk, saves, blobs, revoked, saved, run };
+  }
+
+  /** The record a run keeps next to the file. */
+  const record = async (disk: MemoryOutputFiles) => JSON.parse(await ((await disk.read('t1.json')) as Blob).text()) as unknown;
+
+  /** What a run that stopped after these bytes left on disk. */
+  async function leave(disk: MemoryOutputFiles, bytes: Uint8Array, meta: object | undefined) {
+    const store = new SyncPartialFiles(disk);
+    const file = await store.open('t1.mp4');
+    await file.append(bytes.slice());
+    await file.close();
+    if (meta) await store.put('t1.json', new TextEncoder().encode(JSON.stringify({ v: 1, ...meta })));
+  }
+
+  /** A first run cut off after 100 KiB with no retries left: 64 KiB (one whole part) stay on disk. */
+  async function failedRun(site: FakeMediaSite, disk: MemoryOutputFiles) {
+    site.cutNext(FILE, 100 * 1024);
+    const first = diskSetup(site, disk, { retryPolicy: { maxAttempts: 1, baseDelayMs: 1, maxDelayMs: 1, maxRetryAfterMs: 1 } });
+    first.manager.sync([fileSpec()]);
+    await first.manager.idle();
+    expect(first.outcome()).toMatchObject({ status: 'failed' });
+    expect(disk.files.get('t1.mp4')).toMatchObject({ size: PART, closed: true }); // kept, released
+    return first;
+  }
+
+  it('continues a dropped connection with a Range request and If-Range, and keeps the file for the service worker to delete', async () => {
+    const site = new FakeMediaSite();
+    site.serve(FILE, BYTES, 'video/mp4', { etag: ETAG });
+    site.cutNext(FILE, 150 * 1024);
+    const { manager, disk, saves, saved, revoked, run, reports } = diskSetup(site);
+    await run();
+    expect(site.requests).toEqual([
+      { url: FILE, range: undefined },
+      { url: FILE, range: `bytes=${2 * PART}-`, ifRange: ETAG }, // the two whole parts written before the cut
+    ]);
+    expect(await saved()).toEqual(BYTES);
+    expect(saves[0]).toMatchObject({ size: SIZE });
+    expect(reports.at(-1)?.progress).toMatchObject({ bytes: SIZE, percent: 100, retries: 1 });
+    expect(await record(disk)).toEqual({ v: 1, etag: ETAG, total: SIZE });
+
+    await manager.syncSettled([]);
+    await manager.idle();
+    expect(revoked).toHaveLength(1);
+    // Released, not deleted: the service worker deletes it once Chrome has saved it (a failed save is retried from it).
+    expect((await disk.names()).sort()).toEqual(['t1.json', 't1.mp4']);
+    expect(disk.files.get('t1.mp4')).toMatchObject({ size: SIZE, closed: true });
+  });
+
+  it('goes on when a server answers an open range with only part of the rest', async () => {
+    const site = new FakeMediaSite();
+    site.serve(FILE, BYTES, 'video/mp4', { etag: ETAG });
+    site.maxOpenRangeBytes = 100 * 1024;
+    const disk = new MemoryOutputFiles();
+    await leave(disk, BYTES.subarray(0, PART), { etag: ETAG, total: SIZE });
+    const { manager, saved, saves, run } = diskSetup(site, disk);
+    await run();
+    expect(site.requests.map((request) => request.range)).toEqual([`bytes=${PART}-`, `bytes=${PART + 100 * 1024}-`, `bytes=${PART + 200 * 1024}-`]);
+    expect(saves[0]?.size).toBe(SIZE);
+    expect(await saved()).toEqual(BYTES);
+    await manager.syncSettled([]);
+  });
+
+  it('deletes the file of a run cancelled while the service worker was taking it', async () => {
+    const site = new FakeMediaSite();
+    site.serve(FILE, BYTES, 'video/mp4', { etag: ETAG });
+    const disk = new MemoryOutputFiles();
+    let answer: (taken: boolean) => void = () => undefined;
+    const { manager } = diskSetup(site, disk, {
+      saveFile: () =>
+        new Promise<boolean>((resolve) => {
+          answer = resolve;
+        }),
+    });
+    manager.sync([fileSpec()]);
+    await vi.waitFor(() => {
+      expect(disk.files.get('t1.mp4')).toMatchObject({ size: SIZE, closed: true });
+    });
+    const cancelling = manager.cancel(['t1']);
+    answer(false); // the task was cancelled meanwhile
+    await cancelling;
+    expect(await disk.names()).toEqual([]);
+  });
+
+  it('shows what is on disk, not the size of a refused page, when a continuation is answered with one', async () => {
+    const site = new FakeMediaSite();
+    site.serve(FILE, BYTES, 'video/mp4', { etag: ETAG });
+    site.failNext(FILE, { status: 200, headers: { 'content-type': 'text/html', 'content-length': '37' }, body: '<!doctype html><title>Sign in</title>' });
+    const disk = new MemoryOutputFiles();
+    await leave(disk, BYTES.subarray(0, PART), { etag: ETAG, total: SIZE });
+    const { manager, outcome, last } = diskSetup(site, disk, { retryPolicy: { maxAttempts: 1, baseDelayMs: 1, maxDelayMs: 1, maxRetryAfterMs: 1 } });
+    manager.sync([fileSpec()]);
+    await manager.idle();
+    expect(outcome()).toMatchObject({ status: 'failed' });
+    expect(last()?.progress).toMatchObject({ bytes: PART, tracks: [{ declaredBytes: SIZE }] });
+    expect(disk.files.get('t1.mp4')?.size).toBe(PART);
+  });
+
+  it('continues the file a failed run left, in a later run (Retry, a restarted browser)', async () => {
+    const site = new FakeMediaSite();
+    site.serve(FILE, BYTES, 'video/mp4', { etag: ETAG });
+    const disk = new MemoryOutputFiles();
+    await failedRun(site, disk);
+    site.requests.length = 0;
+
+    const second = diskSetup(site, disk);
+    await second.run();
+    expect(second.reports[0]?.progress.bytes).toBe(PART); // what is on disk shows from the start
+    expect(site.requests).toEqual([{ url: FILE, range: `bytes=${PART}-`, ifRange: ETAG }]);
+    expect(await second.saved()).toEqual(BYTES);
+    await second.manager.syncSettled([]);
+  });
+
+  it('continues with Last-Modified when there is no strong ETag', async () => {
+    const site = new FakeMediaSite();
+    const date = 'Wed, 01 Jan 2025 00:00:00 GMT';
+    site.serve(FILE, BYTES, 'video/mp4', { etag: 'W/"weak"', lastModified: date });
+    const disk = new MemoryOutputFiles();
+    await failedRun(site, disk);
+    expect(await record(disk)).toEqual({ v: 1, lastModified: date, total: SIZE });
+    site.requests.length = 0;
+    const second = diskSetup(site, disk);
+    await second.run();
+    expect(site.requests).toEqual([{ url: FILE, range: `bytes=${PART}-`, ifRange: date }]);
+    expect(await second.saved()).toEqual(BYTES);
+    await second.manager.syncSettled([]);
+  });
+
+  it('starts over when the file changed on the server (If-Range no longer matches)', async () => {
+    const site = new FakeMediaSite();
+    site.serve(FILE, BYTES, 'video/mp4', { etag: ETAG });
+    const disk = new MemoryOutputFiles();
+    await failedRun(site, disk);
+    const changed = bodyFor(`${FILE}?v2`, SIZE + 1000);
+    site.serve(FILE, changed, 'video/mp4', { etag: '"v2"' });
+    site.requests.length = 0;
+
+    const second = diskSetup(site, disk);
+    await second.run();
+    expect(site.requests).toEqual([{ url: FILE, range: `bytes=${PART}-`, ifRange: ETAG }]); // answered with 200: the new file
+    expect(await second.saved()).toEqual(changed);
+    expect(second.saves[0]?.size).toBe(SIZE + 1000);
+    expect(await record(disk)).toEqual({ v: 1, etag: '"v2"', total: SIZE + 1000 });
+    await second.manager.syncSettled([]);
+  });
+
+  it('starts over without a validator: no ETag or Last-Modified, a weak ETag only, or a compressed body', async () => {
+    for (const extra of [{}, { etag: 'W/"weak"' }, { etag: ETAG, headers: { 'content-encoding': 'gzip' } }]) {
+      const site = new FakeMediaSite();
+      site.serve(FILE, BYTES, 'video/mp4', extra);
+      site.cutNext(FILE, 100 * 1024);
+      const { manager, saved, run } = diskSetup(site);
+      await run();
+      expect(site.requests).toEqual([
+        { url: FILE, range: undefined },
+        { url: FILE, range: undefined },
+      ]);
+      expect(await saved()).toEqual(BYTES);
+      await manager.syncSettled([]);
+    }
+  });
+
+  it('saves a complete file on disk without fetching it again; a 416 confirms one whose size was not known', async () => {
+    const site = new FakeMediaSite();
+    site.serve(FILE, BYTES, 'video/mp4', { etag: ETAG });
+    const disk = new MemoryOutputFiles();
+    await leave(disk, BYTES, { etag: ETAG, total: SIZE });
+    const known = diskSetup(site, disk);
+    await known.run();
+    expect(site.requests).toEqual([]);
+    expect(await known.saved()).toEqual(BYTES);
+    await known.manager.syncSettled([]);
+
+    const other = new MemoryOutputFiles();
+    await leave(other, BYTES, { etag: ETAG });
+    const unknown = diskSetup(site, other);
+    await unknown.run();
+    expect(site.requests).toEqual([{ url: FILE, range: `bytes=${SIZE}-`, ifRange: ETAG }]);
+    expect(await unknown.saved()).toEqual(BYTES);
+    await unknown.manager.syncSettled([]);
+  });
+
+  it('starts over when a continuation brings other bytes than asked for', async () => {
+    const site = new FakeMediaSite();
+    site.serve(FILE, BYTES, 'video/mp4', { etag: ETAG });
+    site.failNext(FILE, { status: 206, headers: { 'content-range': `bytes 0-4/${SIZE}` }, body: 'GGGGG' });
+    const disk = new MemoryOutputFiles();
+    await leave(disk, BYTES.subarray(0, PART), { etag: ETAG, total: SIZE });
+    const { manager, saved, run } = diskSetup(site, disk);
+    await run();
+    expect(site.requests).toEqual([
+      { url: FILE, range: `bytes=${PART}-`, ifRange: ETAG },
+      { url: FILE, range: undefined },
+    ]);
+    expect(await saved()).toEqual(BYTES);
+    await manager.syncSettled([]);
+  });
+
+  it('keeps the file when a continuation is answered with a web page, and continues it on the next attempt', async () => {
+    const site = new FakeMediaSite();
+    site.serve(FILE, BYTES, 'video/mp4', { etag: ETAG });
+    site.failNext(FILE, { status: 200, headers: { 'content-type': 'text/html' }, body: '<!doctype html><title>Sign in</title>' });
+    const disk = new MemoryOutputFiles();
+    await leave(disk, BYTES.subarray(0, PART), { etag: ETAG, total: SIZE });
+    const { manager, saved, run } = diskSetup(site, disk);
+    await run();
+    // Had the page started the file over, the second request would ask for the whole file.
+    expect(site.requests).toEqual([
+      { url: FILE, range: `bytes=${PART}-`, ifRange: ETAG },
+      { url: FILE, range: `bytes=${PART}-`, ifRange: ETAG },
+    ]);
+    expect(await saved()).toEqual(BYTES);
+    await manager.syncSettled([]);
+  });
+
+  it('deletes the file when the task is cancelled mid-download', async () => {
+    const site = new FakeMediaSite();
+    site.chunkSize = 16 * 1024;
+    site.serve(FILE, BYTES, 'video/mp4', { etag: ETAG });
+    // Every read waits a little, so the cancel lands mid-body.
+    const fetch: typeof site.fetch = async (url, init) => {
+      const response = await site.fetch(url, init);
+      const reader = response.body?.getReader();
+      const body = new ReadableStream<Uint8Array>({
+        async pull(controller) {
+          await new Promise((done) => setTimeout(done, 5));
+          const next = await reader?.read();
+          if (!next || next.done) controller.close();
+          else controller.enqueue(next.value);
+        },
+      });
+      return new Response(body, { status: response.status, headers: response.headers });
+    };
+    const disk = new MemoryOutputFiles();
+    const { manager, outcome, saves } = diskSetup(site, disk, { fetchFor: () => fetch });
+    manager.sync([fileSpec()]);
+    await vi.waitFor(() => {
+      expect(disk.files.get('t1.mp4')?.size).toBeGreaterThan(0);
+    });
+    await manager.cancel(['t1']);
+    expect(outcome()).toEqual({ status: 'cancelled' });
+    expect(saves).toEqual([]);
+    expect(await disk.names()).toEqual([]);
+  });
+
+  it('fails as disk-full when the disk fills up while the file is written, keeping what was written', async () => {
+    const site = new FakeMediaSite();
+    site.serve(FILE, BYTES, 'video/mp4', { etag: ETAG });
+    const disk = new MemoryOutputFiles();
+    disk.quota = 2 * PART;
+    const { manager, outcome } = diskSetup(site, disk);
+    manager.sync([fileSpec()]);
+    await manager.idle();
+    expect(outcome()).toMatchObject({ status: 'failed', reason: 'disk-full' });
+    expect(disk.files.get('t1.mp4')).toMatchObject({ size: 2 * PART, closed: true });
+  });
+
+  it('streams into Blob parts when disk files cannot be opened', async () => {
+    const site = new FakeMediaSite();
+    site.serve(FILE, BYTES, 'video/mp4', { etag: ETAG });
+    site.cutNext(FILE, 100 * 1024);
+    const disk = new MemoryOutputFiles();
+    disk.failOpen = new Error('no OPFS here');
+    const { manager, saved, run } = diskSetup(site, disk);
+    await run();
+    // The parts held in memory are continued within the run all the same.
+    expect(site.requests).toEqual([
+      { url: FILE, range: undefined },
+      { url: FILE, range: `bytes=${PART}-`, ifRange: ETAG },
+    ]);
+    expect(await saved()).toEqual(BYTES);
+    await manager.syncSettled([]);
   });
 });

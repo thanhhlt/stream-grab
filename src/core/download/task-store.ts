@@ -4,6 +4,7 @@ import {
   type RequestContext,
 } from '@/core/models/detected-stream';
 import {
+  MEDIA_FAILURE_REASONS,
   PROGRESSIVE_FETCHES,
   TASK_STATUSES,
   type DownloadTask,
@@ -254,6 +255,7 @@ export function parseTask(raw: unknown): DownloadTask | null {
   };
   const statusMessage = str(raw['statusMessage']);
   if (statusMessage !== undefined) task.statusMessage = statusMessage;
+  if (isOneOf(raw['failureReason'], MEDIA_FAILURE_REASONS)) task.failureReason = raw['failureReason'];
   const pageUrl = str(source['pageUrl']);
   if (pageUrl !== undefined) task.source.pageUrl = pageUrl;
   for (const key of ['width', 'height', 'bandwidth', 'durationSec'] as const) {

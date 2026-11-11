@@ -1,5 +1,5 @@
 import type { SegmentStorage } from '@/core/download/download-storage';
-import type { MediaProgress } from '@/core/models/download-task';
+import type { MediaFailureReason, MediaProgress } from '@/core/models/download-task';
 import type { MediaAnalysis, TrackAnalysis, TrackLayout } from '@/core/models/media-info';
 import type { ContainerFormat } from '@/core/models/media-segment';
 import type { OutputFormat } from '@/shared/settings/settings';
@@ -13,11 +13,14 @@ import { prepareTrack } from './track-data';
 export class MediaFailure extends Error {
   /** The stored data cannot be used by any later run: delete it (Retry downloads again). */
   readonly discardData: boolean;
+  /** Set when the user has a one-click fix for it (the Queue offers it). */
+  readonly reason: MediaFailureReason | undefined;
 
-  constructor(message: string, options: ErrorOptions & { discardData?: boolean } = {}) {
+  constructor(message: string, options: ErrorOptions & { discardData?: boolean; reason?: MediaFailureReason } = {}) {
     super(message, options);
     this.name = 'MediaFailure';
     this.discardData = options.discardData ?? false;
+    this.reason = options.reason;
   }
 }
 
@@ -161,7 +164,7 @@ export async function analyseTask(taskId: string, options: AnalyseOptions): Prom
     options.format,
     tracks.flatMap((track) => track.streams),
   );
-  if ('error' in choice) throw new MediaFailure(choice.error);
+  if ('error' in choice) throw new MediaFailure(choice.error, { reason: 'mp4-unsupported' });
   const media: MediaAnalysis = { analysedAt: (options.now ?? Date.now)(), tracks, container: choice.container };
   if (choice.reason !== undefined) media.containerReason = choice.reason;
   return { media, layout };

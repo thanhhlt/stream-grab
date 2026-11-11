@@ -4,6 +4,7 @@ import { join, resolve } from 'node:path';
 import { Browser as BrowserKind, getInstalledBrowsers } from '@puppeteer/browsers';
 import puppeteer, { TargetType, type Browser, type Page, type Target } from 'puppeteer-core';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { PARTIAL_DIRECTORY } from '@/core/download/partial-files';
 import { mergeStoredTasks } from '@/core/download/task-store';
 import { defaultAudioTracks } from '@/core/download/variant-choice';
 import { MERGE_DIRECTORY } from '@/core/media/output-files';
@@ -24,7 +25,12 @@ import {
   SLOW_FILE_PATH,
   SLOW_FILE_TITLE,
   SLOW_PAGE_PATH,
+  SLOW_PROTECTED_ETAG,
+  SLOW_PROTECTED_FILE_PATH,
+  SLOW_PROTECTED_PAGE_PATH,
+  SLOW_PROTECTED_TITLE,
   slowFileBytes,
+  slowProtectedBytes,
 } from '@tests/fixtures/progressive-routes';
 import { startFixtureSite, type FixtureSite } from './fixture-site';
 
@@ -128,15 +134,18 @@ async function probeFile(path: string) {
   return parseProbeOutput((await ffmpeg.run(probeJob('saved.mp4', new Blob([new Uint8Array(bytes)])))).stdout);
 }
 
-/** Files in the extension's OPFS merge directory (pages, the service worker and the offscreen document share it). */
-async function mergeFiles(page: Page): Promise<string[]> {
+/** Files in one of the extension's OPFS directories (pages, the service worker and the offscreen document share them). */
+async function opfsFiles(page: Page, directory: string): Promise<string[]> {
   return page.evaluate(async (directory) => {
-    const merges = await (await navigator.storage.getDirectory()).getDirectoryHandle(directory, { create: true });
+    const handle = await (await navigator.storage.getDirectory()).getDirectoryHandle(directory, { create: true });
     const names: string[] = [];
-    for await (const name of merges.keys()) names.push(name);
+    for await (const name of handle.keys()) names.push(name);
     return names;
-  }, MERGE_DIRECTORY);
+  }, directory);
 }
+
+/** Files in the extension's OPFS merge directory. */
+const mergeFiles = (page: Page): Promise<string[]> => opfsFiles(page, MERGE_DIRECTORY);
 
 /** Starts Chrome on the test profile with dist/ loaded; the extension ID derives from the path, so it stays the same. */
 async function launch(): Promise<void> {
@@ -462,6 +471,65 @@ describe('StreamGrab in Chrome (Chrome for Testing, unpacked dist/)', () => {
     expect(Buffer.compare(new Uint8Array(readFileSync(redone.output.saved?.path ?? '')), source)).toBe(0);
     await again.close();
   });
+  it('continues a file the engine fetches with a Range request after Chrome is killed mid-download (0.6.0)', async () => {
+    const pageUrl = `${site.origin}${SLOW_PROTECTED_PAGE_PATH}`;
+    const page = await browser.newPage();
+    await page.goto(pageUrl);
+    const ext = await extensionPage();
+    const { tabId, streams } = await detected(ext, pageUrl, [SLOW_PROTECTED_FILE_PATH]);
+    const stream = streams[0] as DetectedStream;
+    expect(stream.title).toBe(SLOW_PROTECTED_TITLE);
+    const started = await send<{ created: { taskId: string }[] }>(ext, 'downloads/start', { requests: [{ ...request(tabId, stream), fileName: 'Protected slow' }] });
+    const taskId = started.created[0]?.taskId ?? '';
+    const taskIn = async (context: Page) => (await tasks(context)).find((task) => task.id === taskId);
+
+    // Chrome's own download is refused (no Referer): the engine fetches the file, writing it to disk as it comes in.
+    const MiB = 1024 * 1024;
+    const partway = await waitFor('the engine fetching the file', async () => {
+      const task = await taskIn(ext);
+      if (task?.status === 'failed') throw new Error(task.statusMessage);
+      return task?.status === 'downloading' && task.progressive?.fetch === 'extension' && (task.progress?.bytes ?? 0) >= 12 * MiB ? task : undefined;
+    }, 60_000);
+    expect(partway.progress?.bytes).toBeLessThan(24 * MiB);
+    expect((await opfsFiles(ext, PARTIAL_DIRECTORY)).sort()).toEqual([`${taskId}.json`, `${taskId}.mp4`]);
+
+    // Chrome ends abruptly mid-download and starts again on the same profile.
+    browser.process()?.kill('SIGKILL');
+    await new Promise((done) => setTimeout(done, 1500));
+    await launch();
+    const again = await extensionPage();
+    // The page's Referer went with the browser session: play the video again (the run that started meanwhile may
+    // have failed for want of it; Retry then continues the file).
+    const reopened = await browser.newPage();
+    await reopened.goto(pageUrl);
+    await detected(again, pageUrl, [SLOW_PROTECTED_FILE_PATH]);
+    const settled = await waitFor('the interrupted file', async () => {
+      const task = await taskIn(again);
+      return task?.status === 'failed' || task?.status === 'completed' ? task : undefined;
+    }, 60_000);
+    if (settled.status === 'failed') expect(await send(again, 'downloads/retry', { taskIds: [taskId] })).toEqual({ retried: 1 });
+    const done = await waitFor('the continued file', async () => {
+      const task = await taskIn(again);
+      if (task?.status === 'failed' && settled.status !== 'failed') throw new Error(task.statusMessage);
+      return task?.status === 'completed' ? task : undefined;
+    }, 60_000);
+    expect(Buffer.compare(new Uint8Array(readFileSync(done.output.saved?.path ?? '')), slowProtectedBytes(await syntheticFiles()))).toBe(0);
+
+    // It went on from what was on disk (whole 8 MiB write parts), with the page as Referer and the ETag as If-Range.
+    // (A run that started before the page was open again asked without the Referer and was refused: the file stayed.)
+    const continued = site.requests.filter((entry) => entry.path === SLOW_PROTECTED_FILE_PATH && entry.ifRange !== undefined);
+    expect(continued.some((entry) => entry.referer === pageUrl)).toBe(true);
+    for (const entry of continued) {
+      expect(entry.ifRange).toBe(SLOW_PROTECTED_ETAG);
+      const from = Number(/^bytes=(\d+)-$/.exec(entry.range ?? '')?.[1]);
+      expect(from).toBeGreaterThanOrEqual(8 * MiB);
+      expect(from % (8 * MiB)).toBe(0);
+    }
+    // Saved: the file and its record are gone from the extension's storage.
+    await waitFor('the file deleted', async () => ((await opfsFiles(again, PARTIAL_DIRECTORY)).some((name) => name.startsWith(taskId)) ? undefined : true), 30_000);
+    await again.close();
+  });
+
   it('lists the VOD of a page that also plays a live channel, never the live, however often it reloads (0.4.0)', async () => {
     const pageUrl = `${site.origin}${LIVE_PAGE_PATH}`;
     const page = await browser.newPage();

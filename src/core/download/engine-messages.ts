@@ -1,11 +1,13 @@
 import { MEDIA_PROTOCOLS, PROGRESSIVE_CONTAINERS, type RequestContext } from '@/core/models/detected-stream';
 import {
   FAILURE_REASONS,
+  MEDIA_FAILURE_REASONS,
   MEDIA_STAGES,
   type EngineReport,
   type EngineTaskSpec,
   type EngineWork,
   type FailureReason,
+  type MediaFailureReason,
   type MediaProgress,
   type MediaReport,
   type MediaTaskSpec,
@@ -265,11 +267,12 @@ export function parseMediaReport(raw: unknown): MediaReport | null {
     if (outcome['status'] === 'cancelled') {
       report.outcome = { status: 'cancelled' };
     } else if (outcome['status'] === 'failed') {
-      const failed: { status: 'failed'; message: string; discardedData?: boolean } = {
+      const failed: { status: 'failed'; message: string; discardedData?: boolean; reason?: MediaFailureReason } = {
         status: 'failed',
         message: str(outcome['message'], 1000) ?? 'Media processing failed.',
       };
       if (outcome['discardedData'] === true) failed.discardedData = true;
+      if (isOneOf(outcome['reason'], MEDIA_FAILURE_REASONS)) failed.reason = outcome['reason'];
       report.outcome = failed;
     }
   }

@@ -13,6 +13,7 @@
 import { DownloadManager } from '@/core/download/download-manager';
 import { IndexedDbSegmentStorage } from '@/core/download/download-storage';
 import { parseEngineWork, parseTaskIds } from '@/core/download/engine-messages';
+import { PARTIAL_DIRECTORY, WorkerPartialFiles } from '@/core/download/partial-files';
 import { FfmpegService } from '@/core/media/ffmpeg-service';
 import { MediaManager } from '@/core/media/media-manager';
 import { OpfsOutputFiles } from '@/core/media/output-files';
@@ -73,6 +74,12 @@ const downloads = new DownloadManager({
   estimateStorage: () => navigator.storage.estimate(),
   // Progressive files fetched here (they need the page's Referer/Origin) are saved like merged videos (0.3.0).
   saveFile: async (request) => (await sendToBackground('engine/save', request)).accepted,
+  // ...written to disk by a small worker as they come in, so a later run continues them (0.6.0).
+  partialFiles: new WorkerPartialFiles(
+    // Vite bundles the worker from this exact expression (dist/workers/file-worker.js).
+    () => new Worker(new URL('../workers/file-worker.ts', import.meta.url), { type: 'module', name: 'StreamGrab files' }),
+    new OpfsOutputFiles(undefined, PARTIAL_DIRECTORY),
+  ),
 });
 
 const ffmpeg = new FfmpegService({

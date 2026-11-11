@@ -16,6 +16,7 @@ import { IndexedDbSegmentStorage } from '@/core/download/download-storage';
 import { TaskService } from '@/core/download/task-service';
 import { TaskStore } from '@/core/download/task-store';
 import { OpfsOutputFiles } from '@/core/media/output-files';
+import { PARTIAL_DIRECTORY } from '@/core/download/partial-files';
 import { getSettingsStore } from '@/shared/settings/settings-store';
 import { errorMessage } from '@/shared/utils/errors';
 import { createLogger } from '@/shared/utils/logger';
@@ -59,6 +60,8 @@ const downloads = new DownloadCoordinator({
   files: chromeFileSaver,
   // The service worker can list and delete OPFS files (not write them): orphaned merged files.
   mergeFiles: new OpfsOutputFiles(),
+  // ...and progressive files the engine kept on disk for the next run (0.6.0).
+  partialFiles: new OpfsOutputFiles(undefined, PARTIAL_DIRECTORY),
   notifier: chromeNotifier,
   logger: log,
 });

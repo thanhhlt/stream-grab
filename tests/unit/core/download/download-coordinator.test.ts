@@ -83,6 +83,8 @@ async function setup(
     elsewhere?: DetectedStream[];
     /** Merged files on disk (OPFS). */
     mergeFiles?: MemoryOutputFiles;
+    /** Progressive files the engine keeps on disk (OPFS, 0.6.0). */
+    partialFiles?: MemoryOutputFiles;
   } = {},
 ) {
   const store = new TaskStore(new FakeStorageArea('local'), new FakeStorageArea('session'));
@@ -119,6 +121,7 @@ async function setup(
     engine,
     files,
     ...(options.mergeFiles ? { mergeFiles: options.mergeFiles } : {}),
+    ...(options.partialFiles ? { partialFiles: options.partialFiles } : {}),
     notifier,
     acquireContext,
     getSettings: () => Promise.resolve({ ...DEFAULT_SETTINGS, ...options.settings }),
@@ -293,6 +296,35 @@ describe('DownloadCoordinator', () => {
       await coordinator.handleMediaReport({ taskId: 'd1', progress: mediaProgress('merging'), outcome: { status: 'failed', message: 'FFmpeg crashed' } });
       expect(await statusOf('d2')).toBe('processing');
       expect(engine.lastMediaSync).toEqual(['d2']);
+    });
+
+    it('Save as MKV: a task that failed on MP4-incompatible tracks switches to MKV and is processed again, keeping its segments', async () => {
+      const { coordinator, engine, deleted, taskOf } = await setup([
+        { task: makeTask('m', { status: 'downloaded', output: { baseName: 'Movie', format: 'mp4' } }) },
+        { task: makeTask('other', { status: 'failed', output: { baseName: 'Other', format: 'mp4' }, statusMessage: 'FFmpeg crashed' }) },
+      ]);
+      await coordinator.pump();
+      await coordinator.handleMediaReport({
+        taskId: 'm',
+        progress: mediaProgress('analysing'),
+        outcome: { status: 'failed', message: 'VP8 cannot be stored in MP4', reason: 'mp4-unsupported' },
+      });
+      expect(await taskOf('m')).toMatchObject({ status: 'failed', failureReason: 'mp4-unsupported', output: { format: 'mp4' } });
+
+      // Only tasks that failed for that reason change format.
+      await expect(coordinator.saveAsMkv(['other'])).resolves.toBe(0);
+      expect(await taskOf('other')).toMatchObject({ status: 'failed', output: { format: 'mp4' } });
+
+      await expect(coordinator.saveAsMkv(['m'])).resolves.toBe(1);
+      const task = await taskOf('m');
+      // Queued again: the engine reuses every stored segment, then FFmpeg processes the task as MKV.
+      expect(task).toMatchObject({ status: 'downloading', output: { format: 'mkv' } });
+      expect(task?.failureReason).toBeUndefined();
+      expect(task?.statusMessage).toBeUndefined();
+      expect(engine.lastSync).toContain('m');
+      await coordinator.handleReport({ taskId: 'm', progress: progress(10), outcome: { status: 'downloaded' } });
+      expect(engine.mediaSynced.at(-1)).toEqual([{ taskId: 'm', job: 'process', format: 'mkv', title: 'Movie' }]);
+      expect(deleted).not.toContain('m');
     });
 
     it('has Chrome save the merged file, then completes the task, deletes its segments and says so', async () => {
@@ -1055,6 +1087,94 @@ describe('DownloadCoordinator: progressive files (0.3.0)', () => {
     expect(files.resumed).toEqual([2]);
     expect(await taskOf('closed')).toMatchObject({ status: 'downloading', output: { downloadId: 2 } });
     expect(await taskOf('broken')).toMatchObject({ status: 'failed', statusMessage: expect.stringContaining('disk space') as string });
+  });
+});
+
+describe('DownloadCoordinator: progressive files the engine continues from disk (0.6.0)', () => {
+  const fileTask = (id: string, overrides: Partial<DownloadTask> = {}): DownloadTask =>
+    makeTask(id, {
+      source: { protocol: 'progressive', manifestUrl: `https://media.example.net/files/${id}.mp4`, title: 'Clip', tabId: 3, streamId: `f-${id}` },
+      selection: { variantId: 'file', variantLabel: 'Single quality', audioTrackIds: [], audioTrackNames: [] },
+      progressive: { container: 'mp4', fetch: 'extension' },
+      ...overrides,
+    });
+  const received = (bytes: number) => ({ segmentsTotal: 1, segmentsDone: 0, bytes, bytesPerSecond: 250_000, percent: 40, retries: 0, startedAt: 1 });
+
+  it('keeps the files of tasks that may continue them, and deletes the others and any it does not know', async () => {
+    const partialFiles = new MemoryOutputFiles();
+    for (const name of ['q.mp4', 'q.json', 'f.mp4', 'f.json', 'c.mp4', 'c.json', 'done.webm', 'gone.mp4', 'stray.bin', 'odd.name.mp4']) partialFiles.leave(name);
+    partialFiles.leave('x.mp4', true); // still being written
+    const { coordinator } = await setup(
+      [
+        { task: fileTask('q', { status: 'queued' }) },
+        { task: fileTask('f', { status: 'failed' }) },
+        { task: fileTask('c', { status: 'cancelled' }) },
+        { task: fileTask('done', { status: 'completed' }) },
+      ],
+      { partialFiles },
+    );
+    await coordinator.cleanup();
+    expect((await partialFiles.names()).sort()).toEqual(['f.json', 'f.mp4', 'q.json', 'q.mp4', 'x.mp4']);
+  });
+
+  it('deletes the file of a task waiting for its next run when it is cancelled, and of a failed one when it is removed', async () => {
+    const partialFiles = new MemoryOutputFiles();
+    for (const name of ['a.mp4', 'a.json', 'b.mp4', 'b.json', 'ab.mp4']) partialFiles.leave(name);
+    const { coordinator } = await setup(
+      [{ task: fileTask('a', { status: 'queued' }) }, { task: fileTask('b', { status: 'failed' }) }, { task: fileTask('ab', { status: 'failed' }) }],
+      {
+        partialFiles,
+        settings: { maxActiveTasks: 0 },
+      },
+    );
+    await coordinator.cancel(['a']);
+    expect((await partialFiles.names()).sort()).toEqual(['ab.mp4', 'b.json', 'b.mp4']);
+    await coordinator.afterRemove(['b']);
+    expect(await partialFiles.names()).toEqual(['ab.mp4']);
+  });
+
+  it('deletes the file once Chrome has saved it, keeps it when the save failed, and deletes a cancelled run’s', async () => {
+    const partialFiles = new MemoryOutputFiles();
+    for (const name of ['s.mp4', 's.json', 'k.mp4', 'k.json', 'x.mp4', 'x.json']) partialFiles.leave(name);
+    const { coordinator, files, engine, taskOf } = await setup(
+      [
+        { task: fileTask('s', { status: 'downloading' }) },
+        { task: fileTask('k', { status: 'downloading' }) },
+        { task: fileTask('x', { status: 'downloading' }) },
+      ],
+      { partialFiles },
+    );
+    files.manual = true;
+    await coordinator.pump();
+    expect(engine.open).toBe(true);
+    const url = URL.createObjectURL(new Blob([new Uint8Array(10)], { type: 'video/mp4' }));
+    expect(await coordinator.startSave({ taskId: 's', url, size: 10 })).toBe(true);
+    expect(await coordinator.startSave({ taskId: 'k', url, size: 10 })).toBe(true);
+    const saveOf = async (id: string) => (await taskOf(id))?.output.downloadId ?? -1;
+    files.finish(await saveOf('s'));
+    await coordinator.handleFileChange(await saveOf('s'));
+    files.interrupt(await saveOf('k'), 'FILE_NO_SPACE', false);
+    await coordinator.handleFileChange(await saveOf('k'));
+    expect(await taskOf('s')).toMatchObject({ status: 'completed' });
+    expect(await taskOf('k')).toMatchObject({ status: 'failed' });
+    expect((await partialFiles.names()).sort()).toEqual(['k.json', 'k.mp4', 'x.json', 'x.mp4']);
+
+    await coordinator.cancel(['x']); // running in the engine: deleted once the engine has stopped it
+    expect((await partialFiles.names()).sort()).toEqual(['k.json', 'k.mp4']);
+  });
+
+  it('shows what an interrupted or failed file had received, stale, until its next run confirms it', async () => {
+    const { coordinator, store, taskOf } = await setup([
+      { task: fileTask('w', { status: 'downloading', progress: received(4096) }) },
+      { task: fileTask('f', { status: 'failed', progress: received(8192) }) },
+      { task: fileTask('b', { status: 'failed', progress: received(8192), progressive: { container: 'mp4', fetch: 'browser' } }) },
+    ]);
+    await coordinator.onStartup();
+    expect((await taskOf('w'))?.progress).toMatchObject({ bytes: 4096, bytesPerSecond: 0, stale: true });
+    await store.update('w', (task) => ({ ...task, status: 'failed' }));
+    await coordinator.retry(['f', 'b']);
+    expect((await taskOf('f'))?.progress).toMatchObject({ bytes: 8192, bytesPerSecond: 0, stale: true });
+    expect((await taskOf('b'))?.progress).toBeUndefined(); // Chrome's own downloads report their own progress
   });
 });
 

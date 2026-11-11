@@ -122,6 +122,8 @@ export interface DownloadTask {
   updatedAt: number;
   status: TaskStatus;
   statusMessage?: string;
+  /** Set with a failed task whose failure has a one-click fix (media processing only). */
+  failureReason?: MediaFailureReason;
   source: {
     protocol: MediaProtocol;
     /** Manifest URL (a progressive file: the file's URL) when the task was created (may carry a signed token). */
@@ -186,6 +188,13 @@ export interface EngineTaskSpec {
 export const FAILURE_REASONS = ['expired', 'disk-full'] as const;
 export type FailureReason = (typeof FAILURE_REASONS)[number];
 
+/**
+ * Why media processing failed, when the user has a one-click way out:
+ * `mp4-unsupported`: Output format is MP4 and a track cannot be stored in it (Save as MKV).
+ */
+export const MEDIA_FAILURE_REASONS = ['mp4-unsupported'] as const;
+export type MediaFailureReason = (typeof MEDIA_FAILURE_REASONS)[number];
+
 /** Engine → service worker report. `progress` comes with every report; `outcome` once, at the end. */
 export interface EngineReport {
   taskId: string;
@@ -238,7 +247,7 @@ export interface MediaReport {
   progress: MediaProgress;
   outcome?:
     /** `discardedData`: the stored segments were unusable and are deleted (Retry downloads again). */
-    | { status: 'failed'; message: string; discardedData?: boolean }
+    | { status: 'failed'; message: string; discardedData?: boolean; reason?: MediaFailureReason }
     | { status: 'cancelled' };
 }
 
