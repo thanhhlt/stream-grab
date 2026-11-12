@@ -1,7 +1,7 @@
 # StreamGrab roadmap
 
-Plan agreed on 2026-11-11. Released versions are in [CHANGELOG.md](../CHANGELOG.md); v0.5.0
-(the Claw popup redesign) is the latest.
+Plan agreed on 2026-11-11. Released versions are in [CHANGELOG.md](../CHANGELOG.md); v0.6.0
+(Range resume, Save as MKV) is the latest.
 
 StreamGrab is built and tested by one person. There is no beta group: the release candidate is
 checked against the checklist below, and then the public Chrome Web Store listing collects real
@@ -28,7 +28,7 @@ setting does it), an Open file button (needs `downloads.open`), an FFmpeg upgrad
    `Last-Modified` from the server it starts again from the beginning, as Chrome does.
 3. A failed forced-MP4 task gets a "Save as MKV" button that merges the stored segments again;
    the first segments of every track are fetched early so the size estimate includes audio sooner.
-4. Regression tests, docs, release.
+4. Regression tests, docs, release (done 2026-11-11).
 
 ## v0.8.0: Chrome Web Store preparation
 

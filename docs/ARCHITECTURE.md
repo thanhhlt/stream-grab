@@ -1210,11 +1210,47 @@ End-to-end: the real Settings field takes `StreamGrab\Phim Việt`, stores `Stre
 and a WebM (Chrome's download) and a merged HLS video land in that folder; the real Completed
 tab's *Remove all* then empties the list after its dialog, with every file still on disk.
 
+## Version 0.6.0
+
+### Range resume of engine-fetched files
+
+A progressive file the engine fetches itself (the site needs the page's Referer, so Chrome's own
+download cannot be used) is written to OPFS instead of Blob parts. `partial-files.ts` keeps
+`files/<taskId>.<mp4|webm>` plus `<taskId>.json` (`{v:1, etag|lastModified, total}`);
+`workers/file-worker.ts` writes it through a sync access handle (a main-thread `createWritable`
+loses data on a crash), flushing every 64 MiB. `file-target.ts` holds `DiskTarget`, a
+`MemoryTarget` fallback when OPFS fails, the validator choice (strong ETag, else Last-Modified;
+none when the response is content-encoded or says `Accept-Ranges: none`) and the Content-Range
+parser.
+
+`#runFile` resumes at the stored size with `Range: bytes=N-` and `If-Range`: 206 continues, 200
+truncates and restarts (applied on the first bytes, so a refused HTML page keeps the file), 416
+with total equal to the size means complete, a wrong Content-Range starts over. No validator
+means a restart from 0, as Chrome does. Resume works across in-run retries, a refreshed link, a
+user Retry and an offscreen or browser restart (after a browser restart the request context is
+lost: the first run fails with 403, then reopen the page and Retry). Up to one 8 MiB write part
+is fetched again after a crash.
+
+Chrome saves a blob: URL of the OPFS file. The service worker deletes the partial file after the
+save completes (`#settleFile`), on cancel, on remove and in the orphan sweep (which keeps files of
+tasks that keep their data); a failed Chrome save keeps it, so Retry saves without fetching.
+
+### Save as MKV and early audio samples
+
+A forced-MP4 task whose codecs MP4 cannot hold fails with `failureReason: 'mp4-unsupported'`
+(`MEDIA_FAILURE_REASONS`, carried by `MediaFailure` through the media report) and keeps its
+segments. The Queue shows *Save as MKV* instead of Retry; `saveAsMkv` in the coordinator sets
+`output.format = 'mkv'` and calls the normal `retry`, which merges the stored segments without
+downloading again. The MP4 setting itself stays a hard choice.
+
+`samplesFirst` (`estimate.ts`) reorders the pending positions so the first three segments of
+every track download first, so the size estimate includes audio early; the plan is unchanged.
+
 ## Known limitations
 
 - **Progressive files.** Chrome's own downloads carry no Referer/Origin; the engine fallback
   needs the task's request context (lost after a browser restart until the video is played
-  again), starts over after a failure (no Range resume) and needs room for the file twice while
+  again), resumes with Range after a failure only when the server sends a strong ETag or Last-Modified (otherwise it starts over) and needs room for the file twice while
   Chrome saves it. Quitting Chrome normally cancels running downloads (Retry downloads again);
   resumption is Chrome's decision (server ranges and validators). Files show no resolution or
   codecs (no FFmpeg analysis). Audio-only files, Matroska/MOV, and files fetched by script are not
@@ -1223,8 +1259,8 @@ tab's *Remove all* then empties the list after its dialog, with every file still
   file are listed twice.
 
 - Merging is stream copy only: no re-encoding, so a forced MP4 of codecs MP4 cannot hold fails
-  (after the download, keeping the data; a task's format cannot be changed, so it must be
-  downloaded again with Auto or MKV). `auto` never has this problem.
+  (after the download, keeping the data; since 0.6.0 the Queue offers
+  Save as MKV, which merges the stored segments again). `auto` never has this problem.
 - The pre-merge analysis reads where each track starts; the merge reads every packet, and the
   check after it only counts streams and compares the duration (it fails below half the expected
   length). Error pages sent with 200 instead of segments are refused while downloading

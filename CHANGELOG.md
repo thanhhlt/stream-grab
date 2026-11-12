@@ -7,6 +7,23 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-11-11
+
+### Added
+
+- **Resume of video files the extension downloads itself** (sites that need the page's Referer):
+  the file is written to disk in the extension's private storage and continues from where it
+  stopped after an error, a Retry or a browser restart, when the server sends a strong `ETag` or
+  `Last-Modified`. Without one it starts again from the beginning, as Chrome does.
+- **Save as MKV**: a task set to MP4 that fails because MP4 cannot hold its codecs now shows a
+  *Save as MKV* button, which merges the stored segments again without downloading. The MP4
+  setting itself is unchanged.
+
+### Changed
+
+- The size estimate includes audio sooner: the first segments of every track are downloaded first.
+- Such files no longer sit in Chrome's memory while downloading (OPFS instead of Blob parts).
+
 ## [0.5.0] - 2026-11-10
 
 ### Changed
