@@ -53,6 +53,8 @@ const CONTAINER_BY_EXTENSION: Record<string, ContainerFormat> = {
   cmfa: 'fmp4',
   webm: 'webm',
   weba: 'webm',
+  vtt: 'webvtt',
+  webvtt: 'webvtt',
 };
 
 /** Container declared by a segment URL's extension, or `fallback`. */

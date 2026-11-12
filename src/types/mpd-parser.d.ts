@@ -58,6 +58,8 @@ declare module 'mpd-parser' {
     playlists?: MpdPlaylist[];
     mediaGroups?: {
       AUDIO?: Record<string, Record<string, MpdMediaGroupMember>>;
+      /** WebVTT text adaptation sets (mimeType text/vtt or contentType text), keyed by label. */
+      SUBTITLES?: Record<string, Record<string, MpdMediaGroupMember>>;
       [group: string]: unknown;
     };
   }

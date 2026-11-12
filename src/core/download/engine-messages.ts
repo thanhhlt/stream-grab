@@ -86,6 +86,10 @@ export function parseEngineTaskSpec(raw: unknown): EngineTaskSpec | null {
     audioTrackIds,
     concurrency: clampInt(raw['concurrency'], SEGMENT_CONCURRENCY),
   };
+  const subtitleTrackIds = Array.isArray(raw['subtitleTrackIds'])
+    ? raw['subtitleTrackIds'].filter((id): id is string => str(id, 64) !== undefined).slice(0, 20)
+    : [];
+  if (subtitleTrackIds.length > 0) spec.subtitleTrackIds = subtitleTrackIds;
   if (isOneOf(container, PROGRESSIVE_CONTAINERS)) {
     const bytes = nonNegative(file?.['bytes']);
     spec.file = { container, ...(bytes !== undefined && bytes > 0 ? { bytes } : {}) };

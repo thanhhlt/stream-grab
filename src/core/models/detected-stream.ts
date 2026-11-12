@@ -101,6 +101,8 @@ export interface VariantSummary {
   audioOnly: boolean;
   /** Alternative audio tracks that may be combined with this quality. */
   audioTrackIds: string[];
+  /** Subtitle tracks that may be saved with this quality (0.7.0). */
+  subtitleTrackIds?: string[];
 }
 
 export interface AudioTrackSummary {
@@ -112,6 +114,18 @@ export interface AudioTrackSummary {
   codec?: string;
 }
 
+/** A WebVTT subtitle track (0.7.0). */
+export interface SubtitleTrackSummary {
+  /** SubtitleTrack.id in the parsed manifest; for a progressive file, `track-N`. */
+  id: string;
+  name: string;
+  language?: string;
+  isDefault: boolean;
+  forced?: boolean;
+  /** Progressive files only: the `<track src>` WebVTT file. */
+  url?: string;
+}
+
 /** What parsing the manifest revealed about the media (HLS and DASH). */
 export interface MediaSummary {
   /** Seconds; absent for live streams or when no media playlist could be read. */
@@ -119,6 +133,8 @@ export interface MediaSummary {
   /** Best first. */
   variants: VariantSummary[];
   audioTracks: AudioTrackSummary[];
+  /** WebVTT subtitles (0.7.0): manifest renditions, or a progressive file's `<track>` elements. */
+  subtitleTracks?: SubtitleTrackSummary[];
 }
 
 export interface DetectedStream {
@@ -140,6 +156,11 @@ export interface DetectedStream {
   media?: MediaSummary;
   /** Progressive files only. */
   progressive?: ProgressiveInfo;
+  /**
+   * Progressive files (0.7.0): the `<track>` subtitles its <video> element last reported, kept from
+   * before the file is inspected (they are listed in `media` once it is).
+   */
+  domSubtitles?: SubtitleTrackSummary[];
   /** Dedupe keys of playlists referenced by an HLS master; they are not listed as separate videos. */
   childKeys?: string[];
   /** Top-level page URL when the stream was detected. */

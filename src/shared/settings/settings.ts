@@ -13,6 +13,10 @@ export type ResolutionPreference = (typeof RESOLUTION_PREFERENCES)[number];
 export const OUTPUT_FORMATS = ['auto', 'mp4', 'mkv'] as const;
 export type OutputFormat = (typeof OUTPUT_FORMATS)[number];
 
+/** Format of subtitle files saved next to a video (0.7.0): SubRip by default (most players read it), or WebVTT as served. */
+export const SUBTITLE_FORMATS = ['srt', 'vtt'] as const;
+export type SubtitleFormat = (typeof SUBTITLE_FORMATS)[number];
+
 /** Popup color theme: `system` follows Chrome's appearance setting (prefers-color-scheme). */
 export const THEMES = ['system', 'light', 'dark'] as const;
 export type Theme = (typeof THEMES)[number];
@@ -25,6 +29,8 @@ export interface Settings {
   /** Variant picked by default when a stream offers several resolutions. */
   preferredResolution: ResolutionPreference;
   outputFormat: OutputFormat;
+  /** Subtitle files saved next to a video (0.7.0). */
+  subtitleFormat: SubtitleFormat;
   /** Observe network traffic for supported media streams (every registered protocol). */
   autoDetect: boolean;
   /** Drop finished tasks from the queue view automatically (they stay in Completed). */
@@ -40,6 +46,7 @@ export const DEFAULT_SETTINGS: Readonly<Settings> = Object.freeze({
   maxActiveTasks: ACTIVE_TASKS.default,
   preferredResolution: 'highest',
   outputFormat: 'auto',
+  subtitleFormat: 'srt',
   autoDetect: true,
   autoRemoveCompleted: false,
   downloadFolder: '',
@@ -69,6 +76,7 @@ export function normalizeSettings(raw: unknown, fallback: Readonly<Settings> = D
       ? input['preferredResolution']
       : fallback.preferredResolution,
     outputFormat: isOneOf(input['outputFormat'], OUTPUT_FORMATS) ? input['outputFormat'] : fallback.outputFormat,
+    subtitleFormat: isOneOf(input['subtitleFormat'], SUBTITLE_FORMATS) ? input['subtitleFormat'] : fallback.subtitleFormat,
     autoDetect: bool('autoDetect'),
     autoRemoveCompleted: bool('autoRemoveCompleted'),
     downloadFolder: folder(input['downloadFolder'], fallback.downloadFolder),

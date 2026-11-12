@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<MPD xmlns="urn:mpeg:dash:schema:mpd:2011" type="static" mediaPresentationDuration="PT30S" minBufferTime="PT2S" profiles="urn:mpeg:dash:profile:isoff-on-demand:2011">
+  <Period id="p0" start="PT0S">
+    <AdaptationSet id="1" contentType="video" mimeType="video/mp4" segmentAlignment="true">
+      <Representation id="v720" bandwidth="2000000" width="1280" height="720" codecs="avc1.64001f">
+        <SegmentTemplate media="video/$Number$.m4s" initialization="video/init.mp4" duration="10" startNumber="1"/>
+      </Representation>
+    </AdaptationSet>
+    <AdaptationSet id="2" contentType="audio" mimeType="audio/mp4" lang="en">
+      <Representation id="a128" bandwidth="128000" codecs="mp4a.40.2">
+        <SegmentTemplate media="audio/$Number$.m4s" initialization="audio/init.mp4" duration="10" startNumber="1"/>
+      </Representation>
+    </AdaptationSet>
+    <AdaptationSet id="3" mimeType="text/vtt" lang="en" label="English">
+      <Representation id="sub-en" bandwidth="256">
+        <BaseURL>subs/en.vtt</BaseURL>
+      </Representation>
+    </AdaptationSet>
+    <AdaptationSet id="4" mimeType="text/vtt" lang="fr">
+      <Representation id="sub-fr" bandwidth="256">
+        <SegmentTemplate media="subs/fr/$Number$.vtt" duration="10" startNumber="1"/>
+      </Representation>
+    </AdaptationSet>
+    <AdaptationSet id="5" contentType="text" mimeType="application/mp4" lang="de">
+      <Representation id="sub-de" bandwidth="256" codecs="wvtt">
+        <SegmentTemplate media="subs/de/$Number$.m4s" initialization="subs/de/init.mp4" duration="10" startNumber="1"/>
+      </Representation>
+    </AdaptationSet>
+  </Period>
+</MPD>

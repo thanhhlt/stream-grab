@@ -1,5 +1,5 @@
-import type { RequestContext } from '@/core/models/detected-stream';
-import type { DomSource } from '@/shared/types/page-metadata';
+import type { RequestContext, SubtitleTrackSummary } from '@/core/models/detected-stream';
+import type { DomSource, DomSubtitle } from '@/shared/types/page-metadata';
 import { defaultReferrer } from '@/shared/utils/url';
 import type { DetectionCandidate } from './detection-manager';
 
@@ -28,5 +28,20 @@ export function domSourceCandidate(
   };
   if (source.title !== undefined) candidate.title = source.title;
   if (source.protocol === 'progressive' && source.container !== undefined) candidate.progressive = { container: source.container };
+  if (source.protocol === 'progressive' && source.subtitles) candidate.subtitles = trackSubtitles(source.subtitles);
   return candidate;
+}
+
+/** `<track>` elements as subtitle tracks of a progressive file (0.7.0); ids are `track-N` in document order. */
+export function trackSubtitles(subtitles: readonly DomSubtitle[]): SubtitleTrackSummary[] {
+  return subtitles.map((subtitle, index) => {
+    const track: SubtitleTrackSummary = {
+      id: `track-${index}`,
+      name: subtitle.label ?? subtitle.language ?? `Subtitles ${index + 1}`,
+      isDefault: subtitle.isDefault,
+      url: subtitle.url,
+    };
+    if (subtitle.language !== undefined) track.language = subtitle.language;
+    return track;
+  });
 }

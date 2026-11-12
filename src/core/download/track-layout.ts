@@ -3,7 +3,7 @@ import { TRACK_TYPES, type ContainerFormat, type MediaSegment } from '@/core/mod
 import type { AudioTrack } from '@/core/models/streaming-manifest';
 import { isOneOf, isRecord } from '@/shared/utils/guards';
 
-const CONTAINERS: readonly ContainerFormat[] = ['mpeg-ts', 'fmp4', 'webm', 'packed-audio', 'unknown'];
+const CONTAINERS: readonly ContainerFormat[] = ['mpeg-ts', 'fmp4', 'webm', 'packed-audio', 'webvtt', 'unknown'];
 const MAX_TRACKS = 32;
 const MAX_POSITIONS = 1_000_000;
 

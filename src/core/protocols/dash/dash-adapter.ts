@@ -38,6 +38,7 @@ export function buildDashManifest(parsed: ParsedMpd, requestedUrl: string, reque
     audioTracks: parsed.audioTracks,
     childUrls: [],
   };
+  if (parsed.subtitleTracks.length > 0) manifest.subtitleTracks = parsed.subtitleTracks;
   if (parsed.durationSec !== undefined) manifest.durationSec = parsed.durationSec;
   return manifest;
 }
@@ -114,6 +115,17 @@ export class DashAdapter implements StreamingProtocolAdapter {
       const audio = audioId === undefined ? undefined : parsed.audioRepresentations.get(audioId);
       if (!audio) throw new StreamGrabError(`Audio track ${track.name} is no longer in the MPD`, 'MANIFEST_INVALID');
       segments.push(...dashSegments(audio, parsed.url, { id: track.id, type: 'audio' }));
+    }
+
+    for (const trackId of options.subtitleTrackIds ?? []) {
+      const track = manifest.subtitleTracks?.find((candidate) => candidate.id === trackId);
+      if (!track || !variant.subtitleTrackIds?.includes(trackId)) {
+        throw new StreamGrabError(`Subtitle track ${trackId} does not belong to this variant`, 'UNSUPPORTED');
+      }
+      const subtitleId = track.dash?.representationId;
+      const subtitles = subtitleId === undefined ? undefined : parsed.subtitleRepresentations.get(subtitleId);
+      if (!subtitles) throw new StreamGrabError(`Subtitle track ${track.name} is no longer in the MPD`, 'MANIFEST_INVALID');
+      segments.push(...dashSegments(subtitles, parsed.url, { id: track.id, type: 'subtitle' }));
     }
     return segments;
   }

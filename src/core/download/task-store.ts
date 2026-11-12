@@ -11,11 +11,13 @@ import {
   type MediaProgress,
   type ProgressiveTaskInfo,
   type TaskProgress,
+  type TaskSubtitle,
 } from '@/core/models/download-task';
 import { STORAGE_KEYS } from '@/shared/constants';
-import { OUTPUT_FORMATS } from '@/shared/settings/settings';
+import { OUTPUT_FORMATS, SUBTITLE_FORMATS } from '@/shared/settings/settings';
 import type { RemovableKeyValueArea } from '@/shared/storage/storage-area';
 import { isOneOf, isRecord } from '@/shared/utils/guards';
+import { parseHttpUrl } from '@/shared/utils/url';
 import { parseMediaAnalysis, parseMediaProgress, parseTrackProgress } from './engine-messages';
 
 /**
@@ -258,6 +260,11 @@ export function parseTask(raw: unknown): DownloadTask | null {
   if (isOneOf(raw['failureReason'], MEDIA_FAILURE_REASONS)) task.failureReason = raw['failureReason'];
   const pageUrl = str(source['pageUrl']);
   if (pageUrl !== undefined) task.source.pageUrl = pageUrl;
+  const subtitles = parseTaskSubtitles(selection['subtitles']);
+  if (subtitles.length > 0) {
+    task.selection.subtitles = subtitles;
+    task.output.subtitleFormat = isOneOf(output['subtitleFormat'], SUBTITLE_FORMATS) ? output['subtitleFormat'] : 'srt';
+  }
   for (const key of ['width', 'height', 'bandwidth', 'durationSec'] as const) {
     const value = num(selection[key]);
     if (value !== undefined && value > 0) task.selection[key] = value;
@@ -354,4 +361,27 @@ export function mergeStoredTasks(tasksRaw: unknown, progressRaw: unknown): Downl
     if (entry.updatedAt !== undefined && entry.updatedAt > merged.updatedAt) merged.updatedAt = entry.updatedAt;
     return merged;
   });
+}
+
+/** Subtitle tracks of a stored task (0.7.0); damaged entries are dropped. */
+export function parseTaskSubtitles(raw: unknown): TaskSubtitle[] {
+  if (!Array.isArray(raw)) return [];
+  const subtitles: TaskSubtitle[] = [];
+  for (const item of raw.slice(0, 20)) {
+    if (!isRecord(item)) continue;
+    const id = item['id'];
+    const name = item['name'];
+    if (typeof id !== 'string' || id.length === 0 || id.length > 64 || typeof name !== 'string' || name.length > 200) continue;
+    const subtitle: TaskSubtitle = { id, name };
+    const language = item['language'];
+    if (typeof language === 'string' && language.length > 0 && language.length <= 35) subtitle.language = language;
+    if (item['forced'] === true) subtitle.forced = true;
+    if (item['url'] !== undefined) {
+      const url = typeof item['url'] === 'string' ? parseHttpUrl(item['url']) : null;
+      if (url === null) continue;
+      subtitle.url = url.href;
+    }
+    subtitles.push(subtitle);
+  }
+  return subtitles;
 }

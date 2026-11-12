@@ -1,4 +1,4 @@
-import type { OutputFormat } from '@/shared/settings/settings';
+import type { OutputFormat, SubtitleFormat } from '@/shared/settings/settings';
 import type { MediaProtocol, ProgressiveContainer, RequestContext } from './detected-stream';
 import type { MediaAnalysis, OutputContainer } from './media-info';
 
@@ -61,8 +61,21 @@ export interface DownloadRequest {
   variantId: string;
   /** Alternative audio tracks to include. */
   audioTrackIds: string[];
+  /** WebVTT subtitle tracks to save with the video (0.7.0; absent from older popups). */
+  subtitleTrackIds?: string[];
   /** Base file name without extension; empty → generated. */
   fileName: string;
+}
+
+/** A subtitle track chosen for a task (0.7.0). */
+export interface TaskSubtitle {
+  /** SubtitleTrack.id in the manifest; `track-N` for a progressive file's `<track>`. */
+  id: string;
+  name: string;
+  language?: string;
+  forced?: boolean;
+  /** Progressive files: the `<track src>` WebVTT file (there is no manifest to read it from again). */
+  url?: string;
 }
 
 /** Download progress of a task, reported by the engine. */
@@ -142,12 +155,16 @@ export interface DownloadTask {
     bandwidth?: number;
     audioTrackIds: string[];
     audioTrackNames: string[];
+    /** WebVTT subtitles saved with the video (0.7.0). */
+    subtitles?: TaskSubtitle[];
     durationSec?: number;
   };
   output: {
     /** Sanitised base name without extension, unique among active tasks. */
     baseName: string;
     format: OutputFormat;
+    /** Format of the subtitle files (0.7.0), from Settings when the task was created; set only with subtitles. */
+    subtitleFormat?: SubtitleFormat;
     /** chrome.downloads ID of the merged file, from the moment Chrome starts saving it. */
     downloadId?: number;
     /** The saved file, once completed: full path as Chrome reports it, and size. */
@@ -179,6 +196,8 @@ export interface EngineTaskSpec {
   context: RequestContext;
   variant: { id: string; height?: number; bandwidth?: number };
   audioTrackIds: string[];
+  /** WebVTT subtitle tracks downloaded with the segments (0.7.0); absent when none. */
+  subtitleTrackIds?: string[];
   /** Simultaneous segment requests (Settings, 1–16). */
   concurrency: number;
   file?: { container: ProgressiveContainer; bytes?: number };

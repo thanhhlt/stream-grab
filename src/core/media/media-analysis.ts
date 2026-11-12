@@ -50,6 +50,7 @@ const EXTENSIONS: Record<ContainerFormat, string> = {
   fmp4: '.mp4',
   webm: '.webm',
   'packed-audio': '.aac',
+  webvtt: '.vtt',
   unknown: '.bin',
 };
 

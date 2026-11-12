@@ -1,5 +1,6 @@
 import type {
   AudioTrackSummary,
+  SubtitleTrackSummary,
   ManifestSummary,
   MediaSummary,
   StreamingProtocol,
@@ -46,6 +47,13 @@ export function summarizeManifest(manifest: StreamingManifest): MediaSummary {
     return summary;
   });
   const listed = new Set(audioTracks.map((track) => track.id));
+  const subtitleTracks: SubtitleTrackSummary[] = (manifest.subtitleTracks ?? []).slice(0, MAX_SUMMARY_ITEMS).map((track) => {
+    const summary: SubtitleTrackSummary = { id: track.id, name: track.name, isDefault: track.isDefault };
+    if (track.language !== undefined) summary.language = track.language;
+    if (track.forced) summary.forced = true;
+    return summary;
+  });
+  const listedSubtitles = new Set(subtitleTracks.map((track) => track.id));
   const variants: VariantSummary[] = [...manifest.variants]
     .sort(compareVariants)
     .slice(0, MAX_SUMMARY_ITEMS)
@@ -55,6 +63,8 @@ export function summarizeManifest(manifest: StreamingManifest): MediaSummary {
         audioOnly: variant.audioOnly,
         audioTrackIds: variant.audioTrackIds.filter((id) => listed.has(id)),
       };
+      const subtitleTrackIds = (variant.subtitleTrackIds ?? []).filter((id) => listedSubtitles.has(id));
+      if (subtitleTrackIds.length > 0) summary.subtitleTrackIds = subtitleTrackIds;
       if (variant.width !== undefined) summary.width = variant.width;
       if (variant.height !== undefined) summary.height = variant.height;
       if (variant.bandwidth !== undefined) summary.bandwidth = variant.bandwidth;
@@ -64,6 +74,7 @@ export function summarizeManifest(manifest: StreamingManifest): MediaSummary {
       return summary;
     });
   const media: MediaSummary = { variants, audioTracks };
+  if (subtitleTracks.length > 0) media.subtitleTracks = subtitleTracks;
   if (manifest.durationSec !== undefined) media.durationSec = manifest.durationSec;
   return media;
 }

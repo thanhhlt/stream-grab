@@ -649,3 +649,70 @@ describe('DetectionManager: live streams (0.4.0)', () => {
     expect(inspect).toHaveBeenCalledTimes(2);
   });
 });
+
+describe('DetectionManager: <track> subtitles of progressive files (0.7.0)', () => {
+  const FILE = 'https://media.example.net/v/clip.mp4';
+  const outcome: InspectionOutcome = { kind: 'progressive', finalUrl: FILE, info: { container: 'mp4', mimeType: 'video/mp4' } };
+  const EN = { id: 'track-0', name: 'English', language: 'en', isDefault: true, url: 'https://media.example.net/v/en.vtt' };
+  const FR = { id: 'track-1', name: 'fr', language: 'fr', isDefault: false, url: 'https://media.example.net/v/fr.vtt' };
+  const domCandidate = (subtitles?: NonNullable<DetectionCandidate['subtitles']>) =>
+    candidate(FILE, { match: { protocol: 'progressive', evidence: 'dom' }, progressive: { container: 'mp4' }, ...(subtitles ? { subtitles } : {}) });
+
+  it('lists the tracks reported before the file was inspected, and those added later', async () => {
+    const { manager, area } = setup({ outcomes: { [FILE]: outcome } });
+    await manager.handleCandidate(domCandidate([EN]));
+    await manager.idle();
+    let [stream] = await manager.getStreams(1);
+    expect(stream?.media).toEqual({
+      variants: [{ id: PROGRESSIVE_VARIANT_ID, audioOnly: false, audioTrackIds: [], subtitleTrackIds: ['track-0'] }],
+      audioTracks: [],
+      subtitleTracks: [EN],
+    });
+
+    await manager.handleCandidate(domCandidate([EN, FR]));
+    await manager.idle();
+    [stream] = await manager.getStreams(1);
+    expect(stream?.media?.subtitleTracks).toEqual([EN, FR]);
+    expect(stream?.media?.variants[0]?.subtitleTrackIds).toEqual(['track-0', 'track-1']);
+    // Persisted with the stream.
+    expect(area.data.get(detectionStorageKey(1))).toMatchObject({ streams: [{ media: { subtitleTracks: [EN, FR] } }] });
+  });
+
+  it('drops tracks the player removed, and keeps tracks of a file inspected only after a restart', async () => {
+    const { manager } = setup({ outcomes: { [FILE]: outcome } });
+    await manager.handleCandidate(domCandidate([EN]));
+    await manager.idle();
+    await manager.handleCandidate(domCandidate([]));
+    await manager.idle();
+    const [stream] = await manager.getStreams(1);
+    expect(stream?.media?.subtitleTracks).toBeUndefined();
+    expect(stream?.media?.variants[0]?.subtitleTrackIds).toBeUndefined();
+    expect(stream?.domSubtitles).toBeUndefined();
+  });
+
+  it('keeps the reported tracks with a stored stream whose inspection failed (restart-safe)', async () => {
+    const { manager, area } = setup({ outcomes: { [FILE]: { kind: 'failed', reason: 'HTTP 500' } } });
+    await manager.handleCandidate(domCandidate([EN]));
+    await manager.idle();
+    expect(area.data.get(detectionStorageKey(1))).toMatchObject({ streams: [{ status: 'error', domSubtitles: [EN] }] });
+  });
+
+  it('does not let a DOM report replace the Referer seen on the network', async () => {
+    const { manager } = setup({ outcomes: { [FILE]: outcome } });
+    const network = { referer: 'https://site.example/watch/1' };
+    await manager.handleCandidate(candidate(FILE, { match: { protocol: 'progressive', evidence: 'content-type' }, progressive: { container: 'mp4' }, requestContext: network }));
+    await manager.handleCandidate({ ...domCandidate([EN]), requestContext: { referer: 'https://site.example/' } });
+    await manager.idle();
+    const [stream] = await manager.getStreams(1);
+    expect(stream?.requestContext).toEqual(network);
+    expect(stream?.media?.subtitleTracks).toEqual([EN]);
+  });
+
+  it('keeps a file without tracks free of subtitle fields', async () => {
+    const { manager } = setup({ outcomes: { [FILE]: outcome } });
+    await manager.handleCandidate(domCandidate());
+    await manager.idle();
+    const [stream] = await manager.getStreams(1);
+    expect(stream?.media).toEqual({ variants: [{ id: PROGRESSIVE_VARIANT_ID, audioOnly: false, audioTrackIds: [] }], audioTracks: [] });
+  });
+});

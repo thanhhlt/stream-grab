@@ -41,7 +41,7 @@ DASH text adaptation sets are ignored, and the merge maps only video and audio.
 - **Joining:** segmented WebVTT is joined into one file (repeated headers removed) and its cue
   times are aligned with the video through `X-TIMESTAMP-MAP`.
 - **Output:** by default each chosen subtitle is saved as a **separate file** next to the video
-  (`.vtt`, or `.srt`). A setting switches to embedding it in the merged file instead (MKV keeps
+  (`.srt` by default; `.vtt` is a setting). A setting switches to embedding it in the merged file instead (MKV keeps
   WebVTT; MP4 needs `mov_text`) or doing both. Progressive files are never merged, so they always
   get separate files. Each track keeps its language and name, as audio tracks do.
 - **UI:** subtitles are picked by language in the Detected tab, like audio tracks; Settings has
@@ -51,12 +51,25 @@ DASH text adaptation sets are ignored, and the merge maps only video and audio.
 
 Phases:
 
-1. Analysis and Chrome spikes: does the bundled FFmpeg.wasm core have the WebVTT demuxer, the
-   `mov_text` encoder and the SRT muxer; `X-TIMESTAMP-MAP` against the current `-itsoffset`
-   alignment (also across discontinuities); one extra `chrome.downloads` file per subtitle with
-   the current naming and Completed list.
+1. Analysis and Chrome spikes (done 2026-11-12): the bundled FFmpeg 5.1.4 core has the WebVTT
+   demuxer, muxer and codec, the SRT muxer and the `mov_text` encoder; Matroska keeps WebVTT and
+   both files still play in Chrome. A `STYLE` block makes its WebVTT demuxer drop every cue, so
+   joined files leave it out. FFmpeg does not move a subtitle input to 0, so cues are written on
+   the merged file's timeline and get no `-itsoffset`: `cue − LOCAL + MPEGTS/90000 − first PTS of
+   the run + start of the run` (the concat demuxer starts a run at the sum of the earlier runs'
+   durations), as hls.js does. A cue after the video's end lengthens the file, so cues are cut
+   there. Chrome keeps `.vtt` for `text/vtt` and `.srt` for `application/x-subrip` (an untyped or
+   `text/plain` Blob becomes `.txt`), from a blob: or a data: URL; `uniquify` renames a subtitle on
+   its own, so its name is taken from the saved video's final name.
 2. Parse HLS/DASH subtitle renditions and `<track>`, download and join WebVTT, save separate
-   `.vtt`/`.srt` files; unit tests.
+   `.vtt`/`.srt` files; unit tests. Split in two:
+   - 2a (done 2026-11-12): WebVTT parser, joiner (dedupe, split cues, cut to the video) and SRT
+     writer; HLS `TYPE=SUBTITLES` and DASH `text/vtt` tracks (fMP4 text skipped); `<track>` of
+     progressive files; subtitle lists in the Detected data, requests, tasks and the engine spec;
+     Settings `subtitleFormat` (SRT by default).
+   - 2b: the engine downloads subtitle segments with the others, joins them on the saved video's
+     timeline, and the files are saved after the video as `<video name>.<lang>.srt|vtt`;
+     progressive `<track>` files are fetched by the service worker; Completed and cleanup cover them.
 3. Embed in MKV/MP4 (when the setting asks for it), subtitle picker in the popup, Settings; e2e.
 4. Regression tests, docs, release.
 

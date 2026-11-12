@@ -3,6 +3,7 @@ import {
   ACTIVE_TASK_STATUSES,
   type DownloadRequest,
   type DownloadTask,
+  type TaskSubtitle,
 } from '@/core/models/download-task';
 import type { StreamingManifest } from '@/core/models/streaming-manifest';
 import type { VideoVariant } from '@/core/models/video-variant';
@@ -39,19 +40,36 @@ export function parseDownloadRequests(raw: unknown): DownloadRequest[] {
   const requests: DownloadRequest[] = [];
   for (const item of raw['requests'].slice(0, MAX_REQUESTS_PER_CALL)) {
     if (!isRecord(item)) continue;
-    const { tabId, streamId, variantId, audioTrackIds, fileName } = item;
+    const { tabId, streamId, variantId, audioTrackIds, subtitleTrackIds, fileName } = item;
     if (typeof tabId !== 'number' || !Number.isInteger(tabId) || tabId < 0) continue;
     if (typeof streamId !== 'string' || streamId.length === 0 || streamId.length > 64) continue;
     if (typeof variantId !== 'string' || variantId.length === 0 || variantId.length > 64) continue;
     if (!Array.isArray(audioTrackIds) || audioTrackIds.length > 20) continue;
     if (!audioTrackIds.every((id): id is string => typeof id === 'string' && id.length <= 64)) continue;
     if (typeof fileName !== 'string' || fileName.length > 500) continue;
-    requests.push({ tabId, streamId, variantId, audioTrackIds, fileName });
+    if (subtitleTrackIds !== undefined && !isIdList(subtitleTrackIds)) continue;
+    const request: DownloadRequest = { tabId, streamId, variantId, audioTrackIds, fileName };
+    if (subtitleTrackIds !== undefined && subtitleTrackIds.length > 0) request.subtitleTrackIds = [...new Set(subtitleTrackIds)];
+    requests.push(request);
   }
   return requests;
 }
 
 class RequestError extends Error {}
+
+function isIdList(raw: unknown): raw is string[] {
+  return Array.isArray(raw) && raw.length <= 20 && raw.every((id) => typeof id === 'string' && id.length > 0 && id.length <= 64);
+}
+
+/** The requested subtitle tracks, in request order; each must be offered for the chosen quality. */
+function chosenSubtitles(ids: readonly string[] | undefined, offered: readonly TaskSubtitle[], variantIds: readonly string[]): TaskSubtitle[] {
+  return (ids ?? []).map((id) => {
+    const track = offered.find((candidate) => candidate.id === id);
+    if (!track || !variantIds.includes(id)) throw new RequestError('The selected subtitles are no longer offered for this quality.');
+    return track;
+  });
+}
+
 
 /**
  * Turns the popup's download requests into queued tasks.
@@ -144,6 +162,11 @@ export class TaskService {
       }
       return track;
     });
+    const subtitles = chosenSubtitles(
+      request.subtitleTrackIds,
+      (manifest.subtitleTracks ?? []).map((track) => taskSubtitle(track)),
+      variant.subtitleTrackIds ?? [],
+    );
 
     const label = variantLabel(variant);
     const title = stream.title ?? (fileNameOf(stream.url) || 'video');
@@ -174,6 +197,10 @@ export class TaskService {
     if (variant.height !== undefined) task.selection.height = variant.height;
     if (variant.bandwidth !== undefined) task.selection.bandwidth = variant.bandwidth;
     if (manifest.durationSec !== undefined) task.selection.durationSec = manifest.durationSec;
+    if (subtitles.length > 0) {
+      task.selection.subtitles = subtitles;
+      task.output.subtitleFormat = settings.subtitleFormat;
+    }
     if (active.some((other) => isSameDownload(other, task))) {
       throw new RequestError('This video is already in the queue with the same quality and audio.');
     }
@@ -197,6 +224,11 @@ export class TaskService {
     if (request.variantId !== PROGRESSIVE_VARIANT_ID || request.audioTrackIds.length > 0) {
       throw new RequestError('The selected quality is no longer offered. Reopen the list and choose again.');
     }
+    const subtitles = chosenSubtitles(
+      request.subtitleTrackIds,
+      (stream.media?.subtitleTracks ?? []).filter((track) => track.url !== undefined).map((track) => taskSubtitle(track)),
+      stream.media?.variants.find((variant) => variant.id === PROGRESSIVE_VARIANT_ID)?.subtitleTrackIds ?? [],
+    );
     const title = stream.title ?? (fileNameOf(stream.url) || 'video');
     const wanted = request.fileName.trim() === '' ? defaultBaseName(title) : sanitizeBaseName(request.fileName);
     const now = this.#now();
@@ -212,6 +244,10 @@ export class TaskService {
     };
     if (stream.pageUrl !== undefined) task.source.pageUrl = stream.pageUrl;
     if (stream.durationHint !== undefined) task.selection.durationSec = stream.durationHint;
+    if (subtitles.length > 0) {
+      task.selection.subtitles = subtitles;
+      task.output.subtitleFormat = settings.subtitleFormat;
+    }
     if (active.some((other) => isSameDownload(other, task))) {
       throw new RequestError('This video is already in the queue with the same quality and audio.');
     }
@@ -227,7 +263,15 @@ export class TaskService {
   }
 }
 
-/** Same video (manifest without tokens), same quality, same audio tracks. */
+function taskSubtitle(track: { id: string; name: string; language?: string; forced?: boolean; url?: string }): TaskSubtitle {
+  const subtitle: TaskSubtitle = { id: track.id, name: track.name };
+  if (track.language !== undefined) subtitle.language = track.language;
+  if (track.forced === true) subtitle.forced = true;
+  if (track.url !== undefined) subtitle.url = track.url;
+  return subtitle;
+}
+
+/** Same video (manifest without tokens), same quality, same audio tracks; subtitles do not change the video file. */
 function isSameDownload(a: DownloadTask, b: DownloadTask): boolean {
   const tracks = (task: DownloadTask) => [...task.selection.audioTrackIds].sort().join(',');
   return (

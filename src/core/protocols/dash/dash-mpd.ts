@@ -1,6 +1,6 @@
 import { parse, type MpdManifest, type MpdPlaylist } from 'mpd-parser';
 import type { MediaSegment, TrackType } from '@/core/models/media-segment';
-import type { AudioTrack } from '@/core/models/streaming-manifest';
+import type { AudioTrack, SubtitleTrack } from '@/core/models/streaming-manifest';
 import type { VideoVariant } from '@/core/models/video-variant';
 import { codecKind, splitCodecs } from '@/core/protocols/codecs';
 import {
@@ -29,6 +29,7 @@ export const DASH_LIMITS = {
   maxSegmentsPerRepresentation: 200_000,
   maxRepresentations: 200,
   maxAudioTracks: 100,
+  maxSubtitleTracks: 100,
 } as const;
 
 export interface ParsedMpd {
@@ -42,10 +43,14 @@ export interface ParsedMpd {
   scan: DashScan;
   variants: VideoVariant[];
   audioTracks: AudioTrack[];
+  /** WebVTT text adaptation sets (0.7.0). */
+  subtitleTracks: SubtitleTrack[];
   /** Playlists by Representation@id, for the main track of each variant. */
   mainRepresentations: Map<string, MpdPlaylist>;
   /** Playlists by Representation@id, for each audio track. */
   audioRepresentations: Map<string, MpdPlaylist>;
+  /** Playlists by Representation@id, for each subtitle track. */
+  subtitleRepresentations: Map<string, MpdPlaylist>;
 }
 
 const BOM = new RegExp('^\\uFEFF');
@@ -154,8 +159,11 @@ export function parseMpd(text: string, url: string, now: number): ParsedMpd {
     audioTracks.length = 0;
   }
   if (variants.length === 0) throw invalid('MPD contains no playable video or audio representations');
+  const subtitleRepresentations = new Map<string, MpdPlaylist>();
+  const subtitleTracks = toSubtitleTracks(manifest, url, subtitleRepresentations);
   for (const variant of variants) {
     variant.audioTrackIds = audioTracks.map((track) => track.id);
+    if (subtitleTracks.length > 0) variant.subtitleTrackIds = subtitleTracks.map((track) => track.id);
   }
 
   const parsed: ParsedMpd = {
@@ -164,14 +172,53 @@ export function parseMpd(text: string, url: string, now: number): ParsedMpd {
     scan,
     variants,
     audioTracks,
+    subtitleTracks,
     mainRepresentations,
     audioRepresentations,
+    subtitleRepresentations,
   };
   const duration = positiveNumber(manifest.duration);
   if (!scan.live && duration !== undefined) parsed.durationSec = duration;
   const minimumUpdatePeriodMs = nonNegativeInt(manifest.minimumUpdatePeriod);
   if (minimumUpdatePeriodMs !== undefined) parsed.minimumUpdatePeriodMs = minimumUpdatePeriodMs;
   return parsed;
+}
+
+/** Text tracks packed in fMP4 (`wvtt`, `stpp`/TTML) are not supported; mpd-parser lists `contentType="text"` sets as WebVTT. */
+function isPlainWebVtt(playlist: MpdPlaylist, mpdUrl: string): boolean {
+  if (codecsOf(playlist).some((codec) => codec !== 'vtt' && codec !== 'webvtt')) return false;
+  const first = Array.isArray(playlist.segments) ? playlist.segments[0] : undefined;
+  const reference = first?.resolvedUri ?? first?.uri ?? playlist.resolvedUri ?? '';
+  const resolved = reference === '' ? null : resolveHttpUrl(reference, mpdUrl);
+  return resolved !== null && containerFromUrl(resolved, 'webvtt') === 'webvtt';
+}
+
+function toSubtitleTracks(manifest: MpdManifest, url: string, representations: Map<string, MpdPlaylist>): SubtitleTrack[] {
+  const tracks: SubtitleTrack[] = [];
+  for (const members of Object.values(manifest.mediaGroups?.SUBTITLES ?? {})) {
+    for (const [name, member] of Object.entries(members)) {
+      if (tracks.length >= DASH_LIMITS.maxSubtitleTracks) return tracks;
+      const best = [...(member.playlists ?? [])]
+        .filter((playlist) => isPlainWebVtt(playlist, url))
+        .sort((a, b) => bandwidthOf(b) - bandwidthOf(a))[0];
+      if (!best) continue;
+      const representationId = nonEmptyString(best.attributes?.NAME, 256) ?? `subtitle-representation-${tracks.length}`;
+      if (representations.has(representationId)) continue;
+      representations.set(representationId, best);
+      // mpd-parser writes "und" when the adaptation set has no @lang.
+      const language = nonEmptyString(member.language, 35);
+      const track: SubtitleTrack = {
+        id: `subtitle-${tracks.length}`,
+        name: nonEmptyString(name) ?? language ?? `Subtitles ${tracks.length + 1}`,
+        isDefault: member.default === true,
+        forced: false,
+        dash: { representationId },
+      };
+      if (language !== undefined && language !== 'und') track.language = language;
+      tracks.push(track);
+    }
+  }
+  return tracks;
 }
 
 /**
@@ -192,7 +239,7 @@ export function dashSegments(playlist: MpdPlaylist, mpdUrl: string, track: { id:
       url,
       duration: positiveNumber(playlist.targetDuration) ?? 0,
       discontinuity: 0,
-      container: containerFromUrl(url, 'fmp4'),
+      container: track.type === 'subtitle' ? 'webvtt' : containerFromUrl(url, 'fmp4'),
     });
     return builder.segments;
   }
@@ -217,7 +264,8 @@ export function dashSegments(playlist: MpdPlaylist, mpdUrl: string, track: { id:
       throw invalid(`Segment ${position} has an invalid duration`);
     }
 
-    if (segment.map) {
+    // WebVTT has no initialization; mpd-parser gives a text SegmentTemplate one that points at the MPD itself.
+    if (segment.map && track.type !== 'subtitle') {
       const mapReference = segment.map.resolvedUri ?? segment.map.uri ?? '';
       const mapUrl = mapReference === '' ? null : resolveHttpUrl(mapReference, mpdUrl);
       if (mapUrl === null) throw invalid(`Initialization of segment ${position} has an unsupported URI`);
@@ -228,7 +276,8 @@ export function dashSegments(playlist: MpdPlaylist, mpdUrl: string, track: { id:
       builder.setInit(undefined, discontinuity);
     }
 
-    const fields: MediaFields = { url, duration, discontinuity, container: containerFromUrl(url, 'fmp4') };
+    const container = track.type === 'subtitle' ? 'webvtt' : containerFromUrl(url, 'fmp4');
+    const fields: MediaFields = { url, duration, discontinuity, container };
     const byteRange = toByteRange(segment.byterange, `Segment ${position}`);
     if (byteRange) fields.byteRange = byteRange;
     builder.addMedia(fields);

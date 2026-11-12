@@ -19,9 +19,12 @@ export interface VideoVariant {
   audioOnly: boolean;
   /** Alternative audio tracks that may be combined with this variant; empty when audio is muxed or absent. */
   audioTrackIds: string[];
+  /** Subtitle tracks that may be saved with this variant (0.7.0). */
+  subtitleTrackIds?: string[];
   hls?: {
     playlistUrl: string;
     audioGroupId?: string;
+    subtitleGroupId?: string;
   };
   dash?: {
     /** Representation@id (unique within a Period; periods are joined by it). */

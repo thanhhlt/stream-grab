@@ -35,12 +35,23 @@ export interface DomSource {
   container?: ProgressiveContainer;
   /** Title of the referencing <video> element: an exact association, unlike frame-level titles. */
   title?: string;
+  /** Progressive files (0.7.0): the <video>'s `<track kind=subtitles|captions src>` elements, in document order. */
+  subtitles?: DomSubtitle[];
+}
+
+export interface DomSubtitle {
+  url: string;
+  /** srclang */
+  language?: string;
+  label?: string;
+  isDefault: boolean;
 }
 
 export const METADATA_LIMITS = {
   maxTextLength: 300,
   maxVideos: 50,
   maxSources: 50,
+  maxSubtitles: 20,
   maxUrlLength: 4096,
 } as const;
 
@@ -91,6 +102,23 @@ export function parseFrameMetadata(raw: unknown): FrameMetadata | null {
   return metadata;
 }
 
+function parseDomSubtitles(raw: unknown[]): DomSubtitle[] {
+  const subtitles: DomSubtitle[] = [];
+  for (const item of raw.slice(0, METADATA_LIMITS.maxSubtitles)) {
+    if (!isRecord(item)) continue;
+    const { url } = item;
+    if (typeof url !== 'string' || url.length > METADATA_LIMITS.maxUrlLength || !parseHttpUrl(url)) continue;
+    const subtitle: DomSubtitle = { url, isDefault: item['isDefault'] === true };
+    // A BCP 47 tag ("en", "pt-BR"); anything else is not a language.
+    const language = typeof item['language'] === 'string' && /^[A-Za-z0-9-]{1,35}$/.test(item['language']) ? item['language'] : undefined;
+    const label = cleanText(item['label'], 200);
+    if (language !== undefined) subtitle.language = language;
+    if (label !== undefined) subtitle.label = label;
+    subtitles.push(subtitle);
+  }
+  return subtitles;
+}
+
 export function parseDomSources(raw: unknown): DomSource[] {
   if (!isRecord(raw) || !Array.isArray(raw['sources'])) return [];
   const sources: DomSource[] = [];
@@ -104,6 +132,7 @@ export function parseDomSources(raw: unknown): DomSource[] {
     else continue;
     const title = cleanText(item['title']);
     if (title !== undefined) source.title = title;
+    if (source.protocol === 'progressive' && Array.isArray(item['subtitles'])) source.subtitles = parseDomSubtitles(item['subtitles']);
     sources.push(source);
   }
   return sources;

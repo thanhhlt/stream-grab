@@ -17,6 +17,8 @@ export interface SegmentOptions {
    * track (or its first one). Pass [] for video only.
    */
   audioTrackIds?: readonly string[];
+  /** WebVTT subtitle tracks to include (0.7.0); none by default. */
+  subtitleTrackIds?: readonly string[];
   signal?: AbortSignal;
 }
 
@@ -35,7 +37,7 @@ export interface StreamingProtocolAdapter {
   /** Variants sorted best first (resolution, then bandwidth). */
   getAvailableVariants(manifest: StreamingManifest): Promise<VideoVariant[]>;
   /**
-   * All segments needed for `variant` (plus selected audio tracks), each with
+   * All segments needed for `variant` (plus selected audio and subtitle tracks), each with
    * its track and position, so ordering is independent of download order.
    */
   getSegments(manifest: StreamingManifest, variant: VideoVariant, options?: SegmentOptions): Promise<MediaSegment[]>;

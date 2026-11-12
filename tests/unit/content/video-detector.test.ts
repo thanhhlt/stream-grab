@@ -25,7 +25,7 @@ describe('findDomSources', () => {
       { url: 'https://cdn.example/dash/manifest', protocol: 'dash' },
       { url: 'https://site.example/hls/live', protocol: 'hls' },
       // Since 0.3.0 progressive files are listed too.
-      { url: 'https://site.example/watch/clip.mp4', protocol: 'progressive', container: 'mp4' },
+      { url: 'https://site.example/watch/clip.mp4', protocol: 'progressive', container: 'mp4', subtitles: [] },
     ]);
   });
 
@@ -40,10 +40,10 @@ describe('findDomSources', () => {
       <video><source src="/stream.m3u8" type="video/mp4"></video>
       <audio src="song.mp4"></audio>`);
     expect(findDomSources(root, BASE)).toEqual([
-      { url: 'https://site.example/watch/media/intro.webm?sig=abc', protocol: 'progressive', container: 'webm', title: 'Intro' },
-      { url: 'https://site.example/v/42', protocol: 'progressive', container: 'webm' },
-      { url: 'https://site.example/v/43', protocol: 'progressive', container: 'mp4' },
-      { url: 'https://site.example/watch/movie.m4v', protocol: 'progressive', container: 'mp4' },
+      { url: 'https://site.example/watch/media/intro.webm?sig=abc', protocol: 'progressive', container: 'webm', title: 'Intro', subtitles: [] },
+      { url: 'https://site.example/v/42', protocol: 'progressive', container: 'webm', subtitles: [] },
+      { url: 'https://site.example/v/43', protocol: 'progressive', container: 'mp4', subtitles: [] },
+      { url: 'https://site.example/watch/movie.m4v', protocol: 'progressive', container: 'mp4', subtitles: [] },
       // A manifest extension wins over a wrong type attribute.
       { url: 'https://site.example/stream.m3u8', protocol: 'hls' },
     ]);
@@ -114,7 +114,7 @@ describe('parseDomSources', () => {
       parseDomSources({
         sources: [
           { url: 'https://a.example/a.mp4', protocol: 'progressive', container: 'mp4', title: '  Clip  ' },
-          { url: 'https://a.example/b.webm', protocol: 'progressive', container: 'webm' },
+          { url: 'https://a.example/b.webm', protocol: 'progressive', container: 'webm', subtitles: [] },
           { url: 'https://a.example/c.mkv', protocol: 'progressive', container: 'mkv' },
           { url: 'https://a.example/d.mp4', protocol: 'progressive' },
           { url: 'https://a.example/e.m3u8', protocol: 'hls', container: 'mp4' },
@@ -122,7 +122,7 @@ describe('parseDomSources', () => {
       }),
     ).toEqual([
       { url: 'https://a.example/a.mp4', protocol: 'progressive', container: 'mp4', title: 'Clip' },
-      { url: 'https://a.example/b.webm', protocol: 'progressive', container: 'webm' },
+      { url: 'https://a.example/b.webm', protocol: 'progressive', container: 'webm', subtitles: [] },
       { url: 'https://a.example/e.m3u8', protocol: 'hls' },
     ]);
   });

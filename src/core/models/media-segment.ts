@@ -8,7 +8,7 @@ export interface ByteRange {
  * Container of a segment, as declared by the manifest. Merging (Phase 9) uses
  * it to pick the demux workflow and verifies it against the bytes.
  */
-export type ContainerFormat = 'mpeg-ts' | 'fmp4' | 'webm' | 'packed-audio' | 'unknown';
+export type ContainerFormat = 'mpeg-ts' | 'fmp4' | 'webm' | 'packed-audio' | 'webvtt' | 'unknown';
 
 /**
  * Encryption that the extension can undo with keys the page itself fetches.
@@ -19,8 +19,11 @@ export type SegmentEncryption =
   | { method: 'AES-128'; keyUrl: string; iv: string }
   | { method: 'SAMPLE-AES'; keyUrl: string; iv: string };
 
-/** `main`: the variant's own playlist (video, possibly with muxed audio). `audio`: an alternative audio rendition. */
-export const TRACK_TYPES = ['main', 'audio'] as const;
+/**
+ * `main`: the variant's own playlist (video, possibly with muxed audio). `audio`: an alternative audio rendition.
+ * `subtitle` (0.7.0): a WebVTT text rendition (segmented, or one file).
+ */
+export const TRACK_TYPES = ['main', 'audio', 'subtitle'] as const;
 export type TrackType = (typeof TRACK_TYPES)[number];
 
 export interface MediaSegment {

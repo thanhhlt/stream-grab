@@ -7,6 +7,7 @@ import {
   type MediaProtocol,
   type ProgressiveInfo,
   type RequestContext,
+  type SubtitleTrackSummary,
 } from '@/core/models/detected-stream';
 import { describeDrm } from '@/core/protocols/drm';
 import { createLimiter, type Limiter } from '@/shared/utils/concurrency';
@@ -31,6 +32,8 @@ export interface DetectionCandidate {
   timestamp: number;
   /** Title known exactly for this URL (its own <video> element); wins over frame-level titles. */
   title?: string;
+  /** Progressive files (0.7.0): WebVTT `<track>` elements of the referencing <video>. */
+  subtitles?: SubtitleTrackSummary[];
 }
 
 export interface PageInfo {
@@ -267,7 +270,10 @@ export class DetectionManager {
       stream.url = candidate.url;
       changed = true;
     }
+    // A DOM report only guesses the Referer; it never replaces a context seen on the network.
+    const guessed = candidate.match?.evidence === 'dom' && stream.evidence.some((evidence) => evidence !== 'dom');
     if (
+      !guessed &&
       !isEmptyRequestContext(candidate.requestContext) &&
       requestContextKey(stream.requestContext) !== requestContextKey(candidate.requestContext)
     ) {
@@ -285,6 +291,7 @@ export class DetectionManager {
       stream.title = candidate.title;
       changed = true;
     }
+    if (candidate.subtitles && this.#setDomSubtitles(stream, candidate.subtitles)) changed = true;
     if (!changed) return;
     this.#markDirty(tab);
     // A fresh URL or context (e.g. a re-signed link after expiry) is worth another inspection.
@@ -341,6 +348,7 @@ export class DetectionManager {
     if (tab.pageUrl !== undefined) stream.pageUrl = tab.pageUrl;
     if (candidate.title !== undefined) stream.title = candidate.title;
     if (protocol === 'progressive' && candidate.progressive) stream.progressive = { ...candidate.progressive };
+    if (candidate.subtitles) this.#setDomSubtitles(stream, candidate.subtitles);
     tab.streams.set(id, stream);
     this.#markDirty(tab);
     if (inspect) this.#scheduleInspection(tab, id);
@@ -483,6 +491,7 @@ export class DetectionManager {
     stream.inspectedAt = this.#now();
     stream.progressive = info;
     stream.media = { variants: [{ id: PROGRESSIVE_VARIANT_ID, audioOnly: false, audioTrackIds: [] }], audioTracks: [] };
+    this.#applyDomSubtitles(stream);
     stream.status = 'ready';
     delete stream.statusMessage;
     const target = dedupeKey(finalUrl);
@@ -493,6 +502,30 @@ export class DetectionManager {
       }
     }
     this.#markDirty(tab);
+  }
+
+  /** Records a progressive file's current `<track>` list (an empty one clears it); true when it changed. */
+  #setDomSubtitles(stream: DetectedStream, tracks: SubtitleTrackSummary[]): boolean {
+    if (stream.protocol !== 'progressive') return false;
+    if (JSON.stringify(stream.domSubtitles ?? []) === JSON.stringify(tracks)) return false;
+    if (tracks.length > 0) stream.domSubtitles = tracks;
+    else delete stream.domSubtitles;
+    this.#applyDomSubtitles(stream);
+    return true;
+  }
+
+  /** Lists a progressive file's `<track>` subtitles in its media summary, once the file was inspected. */
+  #applyDomSubtitles(stream: DetectedStream): void {
+    const media = stream.media;
+    if (stream.protocol !== 'progressive' || !media) return;
+    const tracks = stream.domSubtitles ?? [];
+    const ids = tracks.map((track) => track.id);
+    if (tracks.length > 0) media.subtitleTracks = tracks;
+    else delete media.subtitleTracks;
+    for (const variant of media.variants) {
+      if (ids.length > 0) variant.subtitleTrackIds = ids;
+      else delete variant.subtitleTrackIds;
+    }
   }
 
   #schedulePageInfo(tab: TabState, id: string): void {

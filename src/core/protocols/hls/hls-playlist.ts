@@ -1,6 +1,6 @@
 import { Parser, type Manifest, type Segment } from 'm3u8-parser';
 import type { MediaSegment, SegmentEncryption, TrackType } from '@/core/models/media-segment';
-import type { AudioTrack } from '@/core/models/streaming-manifest';
+import type { AudioTrack, SubtitleTrack } from '@/core/models/streaming-manifest';
 import type { VideoVariant } from '@/core/models/video-variant';
 import { codecKind, splitCodecs } from '@/core/protocols/codecs';
 import {
@@ -27,6 +27,7 @@ export const HLS_LIMITS = {
   maxSegments: 200_000,
   maxVariants: 200,
   maxAudioTracks: 100,
+  maxSubtitleTracks: 100,
 } as const;
 
 export interface ParsedMasterPlaylist {
@@ -35,6 +36,8 @@ export interface ParsedMasterPlaylist {
   url: string;
   variants: VideoVariant[];
   audioTracks: AudioTrack[];
+  /** WebVTT renditions (TYPE=SUBTITLES); CLOSED-CAPTIONS (CEA-608 in the video) are not listed. */
+  subtitleTracks: SubtitleTrack[];
   iFrameUrls: string[];
   keys: KeyScan;
 }
@@ -105,6 +108,8 @@ function toMaster(manifest: Manifest, url: string, keys: KeyScan): ParsedMasterP
     }
   }
 
+  const subtitleTracks = toSubtitleTracks(manifest, url);
+
   const variants: VideoVariant[] = [];
   for (const playlist of manifest.playlists ?? []) {
     if (variants.length >= HLS_LIMITS.maxVariants) break;
@@ -117,15 +122,21 @@ function toMaster(manifest: Manifest, url: string, keys: KeyScan): ParsedMasterP
     const width = nonNegativeInt(attributes.RESOLUTION?.width);
     const height = nonNegativeInt(attributes.RESOLUTION?.height);
     const audioGroupId = typeof attributes.AUDIO === 'string' ? attributes.AUDIO : undefined;
+    const subtitleGroupId = typeof attributes.SUBTITLES === 'string' ? attributes.SUBTITLES : undefined;
 
+    const hls: NonNullable<VideoVariant['hls']> = audioGroupId === undefined ? { playlistUrl } : { playlistUrl, audioGroupId };
     const variant: VideoVariant = {
       id: `video-${variants.length}`,
       protocol: 'hls',
       codecs,
       audioOnly: height === undefined && codecs.length > 0 && videoCodec === undefined,
       audioTrackIds: audioGroupId === undefined ? [] : audioTracks.filter((t) => t.hls?.groupId === audioGroupId).map((t) => t.id),
-      hls: audioGroupId === undefined ? { playlistUrl } : { playlistUrl, audioGroupId },
+      hls,
     };
+    if (subtitleGroupId !== undefined) {
+      hls.subtitleGroupId = subtitleGroupId;
+      variant.subtitleTrackIds = subtitleTracks.filter((t) => t.hls?.groupId === subtitleGroupId).map((t) => t.id);
+    }
     const optional = {
       bandwidth: nonNegativeInt(attributes.BANDWIDTH),
       averageBandwidth: nonNegativeInt(attributes['AVERAGE-BANDWIDTH']),
@@ -146,7 +157,31 @@ function toMaster(manifest: Manifest, url: string, keys: KeyScan): ParsedMasterP
     .map((playlist) => resolveHttpUrl(playlist.uri, url))
     .filter((resolved): resolved is string => resolved !== null);
 
-  return { kind: 'master', url, variants, audioTracks, iFrameUrls, keys };
+  return { kind: 'master', url, variants, audioTracks, subtitleTracks, iFrameUrls, keys };
+}
+
+/** TYPE=SUBTITLES renditions; URI is mandatory for them, so one without a usable URI is skipped. */
+function toSubtitleTracks(manifest: Manifest, url: string): SubtitleTrack[] {
+  const tracks: SubtitleTrack[] = [];
+  for (const [groupId, members] of Object.entries(manifest.mediaGroups?.['SUBTITLES'] ?? {})) {
+    for (const [name, rendition] of Object.entries(members)) {
+      if (tracks.length >= HLS_LIMITS.maxSubtitleTracks) return tracks;
+      const trackName = nonEmptyString(name);
+      const playlistUrl = rendition.uri === undefined ? null : resolveHttpUrl(rendition.uri, url);
+      if (trackName === undefined || playlistUrl === null) continue;
+      const track: SubtitleTrack = {
+        id: `subtitle-${tracks.length}`,
+        name: trackName,
+        isDefault: rendition.default === true,
+        forced: rendition.forced === true,
+        hls: { groupId, playlistUrl },
+      };
+      const language = nonEmptyString(rendition.language, 35);
+      if (language !== undefined) track.language = language;
+      tracks.push(track);
+    }
+  }
+  return tracks;
 }
 
 function toMedia(manifest: Manifest, url: string, keys: KeyScan): ParsedMediaPlaylist {
@@ -232,7 +267,7 @@ export function toMediaSegments(playlist: ParsedMediaPlaylist, track: { id: stri
       duration: segment.duration,
       mediaSequence,
       discontinuity,
-      container: segment.map ? 'fmp4' : containerFromUrl(url, 'unknown'),
+      container: track.type === 'subtitle' ? 'webvtt' : segment.map ? 'fmp4' : containerFromUrl(url, 'unknown'),
     };
     const byteRange = toByteRange(segment.byterange, `Segment ${position}`);
     if (byteRange) fields.byteRange = byteRange;

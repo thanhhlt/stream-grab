@@ -969,6 +969,9 @@ export class DownloadCoordinator {
       audioTrackIds: task.selection.audioTrackIds,
       concurrency: settings.segmentConcurrency,
     };
+    // Subtitles of a stream come with its segments; a progressive file's `<track>` files are fetched when it is saved.
+    const subtitles = task.progressive ? [] : (task.selection.subtitles ?? []);
+    if (subtitles.length > 0) spec.subtitleTrackIds = subtitles.map((subtitle) => subtitle.id);
     // A progressive file the engine fetches with the page's Referer/Origin (0.3.0).
     const file = task.progressive;
     if (file) spec.file = { container: file.container, ...(file.bytes !== undefined ? { bytes: file.bytes } : {}) };

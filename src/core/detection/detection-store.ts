@@ -7,6 +7,7 @@ import {
   MEDIA_PROTOCOLS,
   PROGRESSIVE_CONTAINERS,
   type AudioTrackSummary,
+  type SubtitleTrackSummary,
   type DetectedStream,
   type ManifestSummary,
   type MediaSummary,
@@ -16,6 +17,7 @@ import {
 } from '@/core/models/detected-stream';
 import type { RemovableKeyValueArea } from '@/shared/storage/storage-area';
 import { isOneOf, isRecord } from '@/shared/utils/guards';
+import { parseHttpUrl } from '@/shared/utils/url';
 
 /**
  * Detections of one tab as persisted in chrome.storage.session: in memory only,
@@ -115,6 +117,8 @@ function parseVariantSummary(raw: unknown): VariantSummary | null {
     audioOnly: raw['audioOnly'] === true,
     audioTrackIds: stringList(raw['audioTrackIds']),
   };
+  const subtitleTrackIds = stringList(raw['subtitleTrackIds']);
+  if (subtitleTrackIds.length > 0) summary.subtitleTrackIds = subtitleTrackIds;
   for (const key of ['width', 'height', 'bandwidth', 'frameRate'] as const) {
     const value = finiteNumber(raw[key]);
     if (value !== undefined && value > 0) summary[key] = value;
@@ -136,6 +140,23 @@ function parseAudioTrackSummary(raw: unknown): AudioTrackSummary | null {
   if (language !== undefined) summary.language = language;
   const codec = optionalString(raw['codec']);
   if (codec !== undefined) summary.codec = codec;
+  return summary;
+}
+
+export function parseSubtitleTrackSummary(raw: unknown): SubtitleTrackSummary | null {
+  if (!isRecord(raw)) return null;
+  const id = optionalString(raw['id']);
+  const name = optionalString(raw['name']);
+  if (id === undefined || id.length > 64 || name === undefined || name.length > 200) return null;
+  const summary: SubtitleTrackSummary = { id, name, isDefault: raw['isDefault'] === true };
+  const language = optionalString(raw['language']);
+  if (language !== undefined && language.length <= 35) summary.language = language;
+  if (raw['forced'] === true) summary.forced = true;
+  if (raw['url'] !== undefined) {
+    const url = typeof raw['url'] === 'string' ? parseHttpUrl(raw['url']) : null;
+    if (url === null) return null;
+    summary.url = url.href;
+  }
   return summary;
 }
 
@@ -165,6 +186,8 @@ function parseMediaSummary(raw: unknown): MediaSummary | undefined {
     variants: list(raw['variants'], parseVariantSummary),
     audioTracks: list(raw['audioTracks'], parseAudioTrackSummary),
   };
+  const subtitleTracks = list(raw['subtitleTracks'], parseSubtitleTrackSummary);
+  if (subtitleTracks.length > 0) media.subtitleTracks = subtitleTracks;
   const durationSec = finiteNumber(raw['durationSec']);
   if (durationSec !== undefined && durationSec >= 0) media.durationSec = durationSec;
   return media;
@@ -229,6 +252,13 @@ export function parseDetectedStream(raw: unknown): DetectedStream | null {
     const progressive = parseProgressiveInfo(raw['progressive']);
     if (!progressive) return null;
     stream.progressive = progressive;
+    if (Array.isArray(raw['domSubtitles'])) {
+      const subtitles = raw['domSubtitles']
+        .slice(0, MAX_SUMMARY_ITEMS)
+        .map(parseSubtitleTrackSummary)
+        .filter((track): track is SubtitleTrackSummary => track !== null);
+      if (subtitles.length > 0) stream.domSubtitles = subtitles;
+    }
   }
   return stream;
 }

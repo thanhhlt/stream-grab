@@ -20,6 +20,26 @@ export interface AudioTrack {
   };
 }
 
+/** A WebVTT text subtitle rendition (0.7.0). Subtitles inside fMP4 (`wvtt`, `stpp`) and CEA-608/708 are not listed. */
+export interface SubtitleTrack {
+  /** Stable within the manifest it came from. */
+  id: string;
+  name: string;
+  language?: string;
+  isDefault: boolean;
+  /** HLS FORCED=YES: shown only for foreign-language parts of the audio. */
+  forced: boolean;
+  hls?: {
+    groupId: string;
+    /** Rendition playlist of WebVTT segments. */
+    playlistUrl: string;
+  };
+  dash?: {
+    /** Representation of the text adaptation set (its highest-bandwidth one). */
+    representationId: string;
+  };
+}
+
 /** Protocol-independent view of a parsed manifest. */
 export interface StreamingManifest {
   protocol: StreamingProtocol;
@@ -36,6 +56,8 @@ export interface StreamingManifest {
   encryption: EncryptionKind;
   variants: VideoVariant[];
   audioTracks: AudioTrack[];
+  /** WebVTT subtitle renditions (0.7.0); absent or empty when there are none. */
+  subtitleTracks?: SubtitleTrack[];
   /** Playlists this manifest references (HLS master: variants, renditions, I-frame playlists). */
   childUrls: string[];
   hls?: {

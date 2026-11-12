@@ -135,7 +135,7 @@ describe('engine messages', () => {
     });
     expect(parseMediaReport({ taskId: 't', progress: { ...mediaProgress, stage: 'dancing' } })).toBeNull();
     expect(parseMediaReport({ taskId: 't', progress: { ...mediaProgress, stage: 'merging' }, outcome: { status: 'cancelled' } })?.outcome).toEqual({ status: 'cancelled' });
-    expect(parseMediaAnalysis({ ...media, tracks: [{ ...media.tracks[0], trackType: 'subtitle' }] })).toBeNull();
+    expect(parseMediaAnalysis({ ...media, tracks: [{ ...media.tracks[0], trackType: 'chapters' }] })).toBeNull();
     expect(parseMediaAnalysis(JSON.parse(JSON.stringify(media)))).toEqual(media);
   });
 

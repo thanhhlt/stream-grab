@@ -60,6 +60,7 @@ export function buildHlsManifest(
   const childUrls = [
     ...top.variants.map((variant) => variant.hls?.playlistUrl),
     ...top.audioTracks.map((track) => track.hls?.playlistUrl),
+    ...top.subtitleTracks.map((track) => track.hls?.playlistUrl),
     ...top.iFrameUrls,
   ].filter((url): url is string => url !== undefined);
   const manifest: StreamingManifest = {
@@ -75,6 +76,7 @@ export function buildHlsManifest(
     childUrls: [...new Set(childUrls)],
     hls: { kind: 'master' },
   };
+  if (top.subtitleTracks.length > 0) manifest.subtitleTracks = top.subtitleTracks;
   if (firstVariant && !firstVariant.isLive) manifest.durationSec = firstVariant.durationSec;
   return manifest;
 }
@@ -165,6 +167,15 @@ export class HlsAdapter implements StreamingProtocolAdapter {
       if (track.hls?.playlistUrl === undefined) continue;
       const audio = await this.#loadMedia(track.hls.playlistUrl, context, options.signal);
       segments.push(...toMediaSegments(audio, { id: track.id, type: 'audio' }));
+    }
+
+    for (const trackId of options.subtitleTrackIds ?? []) {
+      const track = manifest.subtitleTracks?.find((candidate) => candidate.id === trackId);
+      if (!track?.hls || !variant.subtitleTrackIds?.includes(trackId)) {
+        throw new StreamGrabError(`Subtitle track ${trackId} does not belong to this variant`, 'UNSUPPORTED');
+      }
+      const subtitles = await this.#loadMedia(track.hls.playlistUrl, context, options.signal);
+      segments.push(...toMediaSegments(subtitles, { id: track.id, type: 'subtitle' }));
     }
     return segments;
   }
