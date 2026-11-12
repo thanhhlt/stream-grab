@@ -27,6 +27,7 @@ import { MOVIE_BASE as BASE, mediaPlaylist, movieSite, SEGMENT_SIZE } from '@tes
 import dashDrm from '@tests/fixtures/manifests/dash/drm.mpd?raw';
 import dashSegmentBase from '@tests/fixtures/manifests/dash/segment-base.mpd?raw';
 import dashStatic from '@tests/fixtures/manifests/dash/static-separate-av.mpd?raw';
+import dashSubtitles from '@tests/fixtures/manifests/dash/subtitles.mpd?raw';
 import hlsLive from '@tests/fixtures/manifests/hls/media-live.m3u8?raw';
 import hlsSampleAes from '@tests/fixtures/manifests/hls/media-sample-aes.m3u8?raw';
 
@@ -1085,5 +1086,64 @@ describe('DownloadManager: progressive files continue from disk (0.6.0)', () => 
     ]);
     expect(await saved()).toEqual(BYTES);
     await manager.syncSettled([]);
+  });
+});
+
+describe('DownloadManager: subtitle tracks (0.7.0)', () => {
+  it('downloads the chosen WebVTT tracks with the segments, a single subtitle file whole, named in the layout', async () => {
+    const base = 'https://cdn.example.com/vod/subbed/';
+    const vtt = (text: string) => `WEBVTT\n\n00:00:01.000 --> 00:00:02.000\n${text}\n`;
+    const site = new FakeMediaSite().serve(`${base}manifest.mpd`, dashSubtitles);
+    site.serveAll(`${base}video/`, 400).serveAll(`${base}audio/`, 200);
+    site.serve(`${base}subs/en.vtt`, vtt('Hello'), 'text/vtt');
+    for (const n of [1, 2, 3]) site.serve(`${base}subs/fr/${n}.vtt`, vtt(`Bonjour ${n}`), 'text/vtt');
+    // Chunks this small would cut any single file into ranged pieces: a subtitle file stays whole.
+    const { manager, outcome, storage } = setup(site, { chunkSize: 16 });
+    manager.sync([
+      spec({
+        protocol: 'dash',
+        manifestUrl: `${base}manifest.mpd`,
+        variant: { id: 'video-0', height: 720, bandwidth: 2000000 },
+        audioTrackIds: [],
+        subtitleTrackIds: ['subtitle-0', 'subtitle-1'],
+      }),
+    ]);
+    await manager.idle();
+    expect(outcome()).toEqual({ status: 'downloaded' });
+    expect(site.requests.filter((request) => request.url === `${base}subs/en.vtt`)).toEqual([{ url: `${base}subs/en.vtt`, range: undefined }]);
+    const text = async (trackId: string) => {
+      const parts = await storage.trackData('t1', trackId);
+      return new Blob(parts.map((part) => part.data)).text();
+    };
+    expect(await text('subtitle-0')).toBe(vtt('Hello'));
+    expect(await text('subtitle-1')).toBe([1, 2, 3].map((n) => vtt(`Bonjour ${n}`)).join(''));
+    const layout = (await storage.getPlan('t1'))?.layout ?? [];
+    expect(layout.filter((track) => track.trackType === 'subtitle')).toEqual([
+      expect.objectContaining({ trackId: 'subtitle-0', name: 'English', language: 'en', container: 'webvtt', segments: 1 }),
+      expect.objectContaining({ trackId: 'subtitle-1', language: 'fr', container: 'webvtt', segments: 3 }),
+    ]);
+  });
+
+  it('never fails the video for subtitles: a missing playlist leaves its track out, a refused segment is stored empty', async () => {
+    const vtt = 'WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nHello\n';
+    const master = [
+      '#EXTM3U',
+      '#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="s",NAME="English",LANGUAGE="en",URI="subs/en/index.m3u8"',
+      '#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="s",NAME="Deutsch",LANGUAGE="de",URI="subs/de/index.m3u8"',
+      '#EXT-X-STREAM-INF:BANDWIDTH=2000000,RESOLUTION=1280x720,SUBTITLES="s"',
+      'v720/index.m3u8',
+    ].join('\n');
+    const site = movieSite(4).serve(`${BASE}subbed.m3u8`, master);
+    site.serve(`${BASE}subs/en/index.m3u8`, mediaPlaylist(4).replaceAll('.ts', '.vtt'));
+    for (const n of [0, 1, 3]) site.serve(`${BASE}subs/en/seg-${n}.vtt`, vtt, 'text/vtt');
+    // subs/en/seg-2.vtt and the German playlist answer 404.
+    const { manager, outcome, storage } = setup(site);
+    manager.sync([spec({ manifestUrl: `${BASE}subbed.m3u8`, audioTrackIds: [], subtitleTrackIds: ['subtitle-0', 'subtitle-1'] })]);
+    await manager.idle();
+    expect(outcome()).toEqual({ status: 'downloaded' });
+    const layout = (await storage.getPlan('t1'))?.layout ?? [];
+    expect(layout.map((track) => track.trackId)).toEqual(['main', 'subtitle-0']);
+    const { complete } = await storage.inspectTask('t1');
+    expect(complete.filter((segment) => segment.trackId === 'subtitle-0').map((segment) => segment.bytes)).toEqual([vtt.length, vtt.length, 0, vtt.length]);
   });
 });

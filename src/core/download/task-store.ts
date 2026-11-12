@@ -10,6 +10,8 @@ import {
   type DownloadTask,
   type MediaProgress,
   type ProgressiveTaskInfo,
+  type SavedFile,
+  type SubtitleOutput,
   type TaskProgress,
   type TaskSubtitle,
 } from '@/core/models/download-task';
@@ -277,12 +279,11 @@ export function parseTask(raw: unknown): DownloadTask | null {
   if (media) task.media = media;
   const downloadId = num(output['downloadId']);
   if (downloadId !== undefined && Number.isInteger(downloadId) && downloadId >= 0) task.output.downloadId = downloadId;
-  const saved = output['saved'];
-  if (isRecord(saved)) {
-    const path = str(saved['path']);
-    const bytes = num(saved['bytes']);
-    const savedAt = num(saved['savedAt']);
-    if (path !== undefined && bytes !== undefined && bytes >= 0 && savedAt !== undefined) task.output.saved = { path, bytes, savedAt };
+  const saved = parseSavedFile(output['saved']);
+  if (saved) task.output.saved = saved;
+  if (subtitles.length > 0) {
+    const files = parseSubtitleOutputs(output['subtitles'], subtitles);
+    if (files.length > 0) task.output.subtitles = files;
   }
   if (raw['dismissed'] === true) task.dismissed = true;
   if (protocol === 'progressive') {
@@ -361,6 +362,36 @@ export function mergeStoredTasks(tasksRaw: unknown, progressRaw: unknown): Downl
     if (entry.updatedAt !== undefined && entry.updatedAt > merged.updatedAt) merged.updatedAt = entry.updatedAt;
     return merged;
   });
+}
+
+function parseSavedFile(raw: unknown): SavedFile | undefined {
+  if (!isRecord(raw)) return undefined;
+  const path = str(raw['path']);
+  const bytes = num(raw['bytes']);
+  const savedAt = num(raw['savedAt']);
+  return path !== undefined && bytes !== undefined && bytes >= 0 && savedAt !== undefined ? { path, bytes, savedAt } : undefined;
+}
+
+/** Subtitle files of a stored task (0.7.0), for its chosen tracks only; damaged entries are dropped. */
+export function parseSubtitleOutputs(raw: unknown, chosen: readonly TaskSubtitle[]): SubtitleOutput[] {
+  if (!Array.isArray(raw)) return [];
+  const files: SubtitleOutput[] = [];
+  for (const item of raw.slice(0, 20)) {
+    if (!isRecord(item)) continue;
+    const trackId = item['trackId'];
+    if (typeof trackId !== 'string' || !chosen.some((subtitle) => subtitle.id === trackId) || files.some((file) => file.trackId === trackId)) continue;
+    const file: SubtitleOutput = { trackId };
+    const url = item['url'];
+    if (typeof url === 'string' && url.startsWith('blob:') && url.length <= 200) file.url = url;
+    const downloadId = num(item['downloadId']);
+    if (downloadId !== undefined && Number.isInteger(downloadId) && downloadId >= 0) file.downloadId = downloadId;
+    const saved = parseSavedFile(item['saved']);
+    if (saved) file.saved = saved;
+    const error = str(item['error']);
+    if (error !== undefined) file.error = error.slice(0, 500);
+    files.push(file);
+  }
+  return files;
 }
 
 /** Subtitle tracks of a stored task (0.7.0); damaged entries are dropped. */

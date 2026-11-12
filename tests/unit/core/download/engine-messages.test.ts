@@ -4,6 +4,7 @@ import {
   parseEngineWork,
   parseMediaAnalysis,
   parseMediaReport,
+  parseMediaTaskSpec,
   parseSaveRequest,
   parseTaskIds,
 } from '@/core/download/engine-messages';
@@ -175,5 +176,24 @@ describe('engine messages', () => {
     expect(parseSaveRequest(save, origin)).toEqual(save);
     expect(parseSaveRequest({ ...save, container: 'mp4' }, origin)).toBeNull(); // half a merged-video save
     expect(parseSaveRequest({ ...save, url: 'https://cdn.example.com/clip.mp4' }, origin)).toBeNull();
+  });
+
+  it('carries subtitle settings of media jobs and subtitle files of merged saves, blob: URLs of this extension only (0.7.0)', () => {
+    const job = { taskId: 't', job: 'process', format: 'mkv', title: 'Movie' };
+    expect(parseMediaTaskSpec({ ...job, subtitles: { protocol: 'hls', format: 'srt' } })).toEqual({ ...job, subtitles: { protocol: 'hls', format: 'srt' } });
+    expect(parseMediaTaskSpec({ ...job, subtitles: { protocol: 'progressive', format: 'srt' } })).toEqual(job);
+    expect(parseMediaTaskSpec({ ...job, subtitles: { protocol: 'dash', format: 'ass' } })).toEqual(job);
+
+    const origin = 'chrome-extension://abcdef/';
+    const request = { taskId: 't', url: 'blob:chrome-extension://abcdef/1', container: 'mkv', size: 10, media };
+    const subtitles = [
+      { trackId: 'subtitle-0', url: 'blob:chrome-extension://abcdef/2', size: 40 },
+      { trackId: 'subtitle-1', error: 'The subtitle track is not WebVTT.' },
+      { trackId: 'subtitle-2', url: 'https://evil.example/x.srt', size: 1 },
+      { trackId: 'subtitle-3', url: 'blob:chrome-extension://abcdef/3' },
+    ];
+    expect(parseSaveRequest({ ...request, subtitles }, origin)?.subtitles).toEqual(subtitles.slice(0, 2));
+    // A progressive file's save never carries subtitle files.
+    expect(parseSaveRequest({ taskId: 't', url: 'blob:chrome-extension://abcdef/1', size: 10, subtitles }, origin)?.subtitles).toBeUndefined();
   });
 });

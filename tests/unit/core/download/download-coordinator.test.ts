@@ -85,6 +85,8 @@ async function setup(
     mergeFiles?: MemoryOutputFiles;
     /** Progressive files the engine keeps on disk (OPFS, 0.6.0). */
     partialFiles?: MemoryOutputFiles;
+    /** Fetches `<track>` subtitle files of progressive files (0.7.0). */
+    fetch?: CoordinatorDeps['fetch'];
   } = {},
 ) {
   const store = new TaskStore(new FakeStorageArea('local'), new FakeStorageArea('session'));
@@ -122,6 +124,7 @@ async function setup(
     files,
     ...(options.mergeFiles ? { mergeFiles: options.mergeFiles } : {}),
     ...(options.partialFiles ? { partialFiles: options.partialFiles } : {}),
+    ...(options.fetch ? { fetch: options.fetch } : {}),
     notifier,
     acquireContext,
     getSettings: () => Promise.resolve({ ...DEFAULT_SETTINGS, ...options.settings }),

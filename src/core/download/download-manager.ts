@@ -5,7 +5,9 @@ import type { TrackLayout } from '@/core/models/media-info';
 import type { MediaSegment } from '@/core/models/media-segment';
 import type { FetchFunction } from '@/core/network/manifest-fetcher';
 import { describeDrm } from '@/core/protocols/drm';
-import type { ProtocolRegistry } from '@/core/protocols/protocol-adapter';
+import type { StreamingManifest } from '@/core/models/streaming-manifest';
+import type { VideoVariant } from '@/core/models/video-variant';
+import type { ProtocolRegistry, StreamingProtocolAdapter } from '@/core/protocols/protocol-adapter';
 import { errorMessage, StreamGrabError } from '@/shared/utils/errors';
 import { stableHash } from '@/shared/utils/hash';
 import { Aes128KeyCache } from './aes';
@@ -430,12 +432,18 @@ export class DownloadManager {
         if (kind === 'aborted') throw error;
         if (error instanceof StorageWriteError) throw await this.#storageFailure(error);
         const where = `Segment ${position + 1} of ${run.plan.length}`;
+        const givingUp = kind === 'fatal' || attempt >= this.#policy.maxAttempts;
         if (kind === 'expired') {
           if (await this.#refresh(run, generation, signal)) {
             attempt -= 1; // a refresh is not a failed attempt; refreshes themselves are capped
             continue;
           }
-          throw expiredLink(error);
+          if (segment.trackType !== 'subtitle') throw expiredLink(error);
+        }
+        if (segment.trackType === 'subtitle' && (givingUp || kind === 'expired')) {
+          // Subtitles never cost the video (0.7.0): the segment is stored empty, and its cues are missing from the file.
+          await this.#skipSegment(run, key, segment, dirty);
+          break;
         }
         if (kind === 'fatal') {
           throw new TaskFailure(error instanceof SegmentFatalError ? error.message : `${where}: ${describeSegmentError(error)}`, {
@@ -452,6 +460,18 @@ export class DownloadManager {
       }
     }
     await this.#checkSpace();
+  }
+
+  /** Stores a segment as complete without data (a subtitle segment the server would not give). */
+  async #skipSegment(run: Run, key: { taskId: string; trackId: string; index: number }, segment: MediaSegment, dirty: boolean): Promise<void> {
+    try {
+      if (dirty) await this.#deps.storage.deleteSegment(key.taskId, key.trackId, key.index);
+      await this.#deps.storage.completeSegment({ ...key, bytes: 0, parts: 0 });
+    } catch (error) {
+      throw await this.#storageFailure(storageFailure(error));
+    }
+    run.tracker.segmentDone(0, segment);
+    this.#report(run);
   }
 
   /** @throws TaskFailure (disk full) when less than the reserve is free. */
@@ -741,12 +761,12 @@ export class DownloadManager {
       if (manifest.isLive) throw new TaskFailure('Live streams cannot be downloaded yet.');
       const variant = matchVariant(manifest.variants, spec.variant);
       if (!variant) throw new TaskFailure('The selected quality is no longer offered. Download the video again.');
-      const segments = await adapter.getSegments(manifest, variant, { audioTrackIds: spec.audioTrackIds, signal });
+      const segments = await this.#segments(adapter, manifest, variant, spec, signal);
       if (segments.some((segment) => segment.encryption?.method === 'SAMPLE-AES')) {
         throw new TaskFailure('SAMPLE-AES encrypted streams are not supported yet.');
       }
       const split = await this.#splitSingleFiles(spec.taskId, segments, signal);
-      return { segments: split, layout: buildLayout(split, manifest.audioTracks) };
+      return { segments: split, layout: buildLayout(split, manifest.audioTracks, manifest.subtitleTracks) };
     } catch (error) {
       if (error instanceof TaskFailure || isAbortError(error)) throw error;
       if (error instanceof StreamGrabError && error.code === 'MANIFEST_UNAVAILABLE' && /HTTP (401|403|404|410)/.test(error.message)) {
@@ -757,9 +777,42 @@ export class DownloadManager {
   }
 
   /**
+   * The segments of the variant, its audio tracks and its subtitle tracks.
+   * Subtitles never cost the video (0.7.0): when the list with them fails, it
+   * is made without them, and each subtitle track is then added on its own if
+   * it can be (a track whose playlist is gone is left out).
+   */
+  async #segments(
+    adapter: StreamingProtocolAdapter,
+    manifest: StreamingManifest,
+    variant: VideoVariant,
+    spec: EngineTaskSpec,
+    signal: AbortSignal,
+  ): Promise<MediaSegment[]> {
+    const subtitleTrackIds = spec.subtitleTrackIds ?? [];
+    const media = { audioTrackIds: spec.audioTrackIds, signal };
+    if (subtitleTrackIds.length === 0) return adapter.getSegments(manifest, variant, media);
+    try {
+      return await adapter.getSegments(manifest, variant, { ...media, subtitleTrackIds });
+    } catch (error) {
+      if (isAbortError(error)) throw error;
+    }
+    const segments = await adapter.getSegments(manifest, variant, media);
+    for (const trackId of subtitleTrackIds) {
+      try {
+        const withTrack = await adapter.getSegments(manifest, variant, { audioTrackIds: [], subtitleTrackIds: [trackId], signal });
+        segments.push(...withTrack.filter((segment) => segment.trackType === 'subtitle'));
+      } catch (error) {
+        if (isAbortError(error)) throw error;
+      }
+    }
+    return segments;
+  }
+
+  /**
    * A track that is one whole file (DASH SegmentBase, plain MP4) would be one
    * request: when the server reports its size, cut it into ranged chunks so it
-   * downloads in parallel and resumes in pieces.
+   * downloads in parallel and resumes in pieces. Subtitle files stay whole.
    */
   async #splitSingleFiles(taskId: string, segments: MediaSegment[], signal: AbortSignal): Promise<MediaSegment[]> {
     const chunkSize = this.#deps.chunkSize ?? DEFAULT_CHUNK_SIZE;
@@ -768,7 +821,8 @@ export class DownloadManager {
     const result: MediaSegment[] = [];
     for (const track of byTrack.values()) {
       const only = track.length === 1 ? track[0] : undefined;
-      const size = only && only.kind === 'media' && !only.byteRange && !only.encryption
+      // A subtitle file is small, and each request of it must be a whole WebVTT file.
+      const size = only && only.kind === 'media' && only.trackType !== 'subtitle' && !only.byteRange && !only.encryption
         ? await this.#probeSize(taskId, only.url, signal)
         : undefined;
       if (!only || size === undefined || size <= chunkSize) {

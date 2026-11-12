@@ -26,7 +26,21 @@ const MIME_EXTENSIONS: Record<string, string[]> = {
   'video/webm': ['webm'],
   'text/html': ['htm', 'html'],
   'text/plain': ['txt', 'text'],
+  // Subtitle files (0.7.0; checked in Chrome 157).
+  'text/vtt': ['vtt'],
+  'application/x-subrip': ['srt'],
 };
+
+/** The Blob of a blob: URL (Node's registry), or of a data: URL (subtitle files the service worker saves, 0.7.0). */
+export function blobOfUrl(url: string): Blob | undefined {
+  const data = /^data:([^;,]*)(;base64)?,(.*)$/s.exec(url);
+  if (data) {
+    const [, type = '', base64, body = ''] = data;
+    const bytes = base64 ? Buffer.from(body, 'base64') : Buffer.from(decodeURIComponent(body), 'utf8');
+    return new Blob([bytes], { type });
+  }
+  return resolveObjectURL(url) as unknown as Blob | undefined;
+}
 
 /**
  * What Chrome does to the file name it is given (net::GenerateFileName →
@@ -70,7 +84,7 @@ export class FakeFiles implements FileSaver {
     const taken = new Set([...this.entries.values()].filter((entry) => entry.state !== 'interrupted').map((entry) => entry.path));
     // Chrome decides the name once the response (the Blob) tells it the content's type.
     const remote = this.#remote(url);
-    const name = chromeFileName(fileName, remote ? remote.mime : (resolveObjectURL(url)?.type ?? ''));
+    const name = chromeFileName(fileName, remote ? remote.mime : (blobOfUrl(url)?.type ?? ''));
     let path = `/Downloads/${name}`;
     for (let n = 1; taken.has(path); n++) path = `/Downloads/${name.replace(/(\.\w+)$/, ` (${n})$1`)}`;
     const entry: SavedEntry = { state: 'in_progress', path, bytes: 0, url };
@@ -96,9 +110,9 @@ export class FakeFiles implements FileSaver {
       entry.state = 'interrupted';
       entry.error = error;
     } else {
-      const blob = resolveObjectURL(entry.url);
+      const blob = blobOfUrl(entry.url);
       if (blob) {
-        entry.data = blob as unknown as Blob;
+        entry.data = blob;
         entry.bytes = blob.size;
         entry.state = 'complete';
       } else {

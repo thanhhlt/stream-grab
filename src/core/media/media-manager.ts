@@ -3,13 +3,14 @@ import { isAbortError } from '@/core/download/retry-policy';
 import { DEFAULT_RESERVE_BYTES, freeBytesOf, type EstimateStorage } from '@/core/download/storage-space';
 import type { MediaAnalysis } from '@/core/models/media-info';
 import { formatBytes } from '@/shared/utils/bytes';
-import type { MediaProgress, MediaReport, MediaStage, MediaTaskSpec, SaveRequest } from '@/core/models/download-task';
+import type { MediaProgress, MediaReport, MediaStage, MediaTaskSpec, SaveRequest, SubtitleFileRequest } from '@/core/models/download-task';
 import { errorMessage } from '@/shared/utils/errors';
 import type { Logger } from '@/shared/utils/logger';
 import { FfmpegError, type FfmpegRunner } from './ffmpeg-job';
 import { analyseTask, MediaFailure } from './media-analysis';
 import { mergeTask } from './media-merge';
 import { mergeFileName, type OutputFileStore } from './output-files';
+import { buildSubtitleFiles } from './subtitle-files';
 
 export interface MediaManagerDeps {
   storage: SegmentStorage;
@@ -111,6 +112,9 @@ function percentAt(stage: MediaStage, fraction = 0): number {
  * saving; the service worker follows the save and drops the task from its
  * work list when it is over, which releases the URL and deletes the file (not
  * sooner: a download Chrome has not started yet fails when its file is gone).
+ * A task with subtitle tracks (0.7.0) also gets their files, timed on the
+ * merged file (subtitle-files.ts), as blob: URLs held the same way: the
+ * service worker saves them after the video, named after it.
  * Stored segments are the service worker's to delete after a save; the engine
  * deletes them only on cancel, or when they turned out to be unusable.
  *
@@ -123,8 +127,8 @@ export class MediaManager {
   readonly #createUrl: (blob: Blob) => string;
   readonly #revokeUrl: (url: string) => void;
   readonly #jobs = new Map<string, Job>();
-  /** Merged files Chrome is saving: task → blob: URL and file on disk. */
-  readonly #held = new Map<string, { url: string; file: string | undefined }>();
+  /** Merged files Chrome is saving: task → blob: URLs (the video's, then its subtitle files') and file on disk. */
+  readonly #held = new Map<string, { urls: string[]; file: string | undefined }>();
   /** Makes each merge's file name unique, also within one millisecond. */
   #attempts = 0;
 
@@ -184,7 +188,7 @@ export class MediaManager {
     const held = this.#held.get(taskId);
     this.#held.delete(taskId);
     if (!held) return;
-    this.#revokeUrl(held.url);
+    for (const url of held.urls) this.#revokeUrl(url);
     void this.#removeFile(held.file);
   }
 
@@ -274,7 +278,7 @@ export class MediaManager {
     const { spec, controller } = job;
     const { storage, ffmpeg } = this.#deps;
     const signal = controller.signal;
-    let url: string | undefined;
+    const urls: string[] = [];
     let file: string | undefined;
     try {
       const { media, layout } = await analyseTask(spec.taskId, {
@@ -310,20 +314,53 @@ export class MediaManager {
         this.#deps.logger?.warn('The merged file could not be written to disk, so it was kept in memory', { error: merged.fileError });
       }
       signal.throwIfAborted();
-      url = this.#createUrl(merged.data);
+      // Subtitle files (0.7.0) on the merged file's timeline; one that cannot be made does not stop the video.
+      const subtitles: SubtitleFileRequest[] = [];
+      if (spec.subtitles) {
+        const made = await buildSubtitleFiles(spec.taskId, {
+          storage,
+          ffmpeg,
+          signal,
+          media,
+          layout,
+          protocol: spec.subtitles.protocol,
+          format: spec.subtitles.format,
+          ...(merged.durationSec !== undefined ? { durationSec: merged.durationSec } : {}),
+          ...(this.#deps.commandTimeoutMs !== undefined ? { timeoutMs: this.#deps.commandTimeoutMs } : {}),
+        });
+        for (const subtitle of made) {
+          if ('error' in subtitle) {
+            this.#deps.logger?.warn('A subtitle file could not be made', { trackId: subtitle.trackId, error: subtitle.error });
+            subtitles.push(subtitle);
+            continue;
+          }
+          const subtitleUrl = this.#createUrl(subtitle.data);
+          urls.push(subtitleUrl);
+          subtitles.push({ trackId: subtitle.trackId, url: subtitleUrl, size: subtitle.data.size });
+        }
+      }
+      const url = this.#createUrl(merged.data);
+      urls.unshift(url);
       this.#update(job, 'saving', 1);
-      const accepted = await this.#deps.save({ taskId: spec.taskId, url, container: merged.container, size: merged.data.size, media });
+      const accepted = await this.#deps.save({
+        taskId: spec.taskId,
+        url,
+        container: merged.container,
+        size: merged.data.size,
+        media,
+        ...(subtitles.length > 0 ? { subtitles } : {}),
+      });
       signal.throwIfAborted();
       if (!accepted) {
         // Cancelled or removed while merging: the service worker no longer wants it.
-        this.#revokeUrl(url);
+        for (const held of urls) this.#revokeUrl(held);
         await this.#removeFile(file);
         this.#deps.report({ taskId: spec.taskId, progress: job.progress, outcome: { status: 'cancelled' } });
         return;
       }
-      this.#held.set(spec.taskId, { url, file });
+      this.#held.set(spec.taskId, { urls, file });
     } catch (error) {
-      if (url !== undefined) this.#revokeUrl(url);
+      for (const url of urls) this.#revokeUrl(url);
       // Whatever went wrong, the file (complete or not) is of no use: Retry merges into a new one.
       await this.#removeFile(file);
       if (signal.aborted || isAbortError(error)) {

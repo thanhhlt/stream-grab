@@ -13,15 +13,26 @@ import {
   type MediaTaskSpec,
   type ProgressiveTaskInfo,
   type SaveRequest,
+  type SubtitleOutput,
   type TaskProgress,
   type TaskStatus,
 } from '@/core/models/download-task';
-import type { Settings } from '@/shared/settings/settings';
+import type { Settings, SubtitleFormat } from '@/shared/settings/settings';
 import { errorMessage } from '@/shared/utils/errors';
 import type { Logger } from '@/shared/utils/logger';
 import { dedupeKey } from '@/shared/utils/url';
 import type { SegmentStorage } from './download-storage';
 import { inDownloadFolder } from './file-name';
+import {
+  awaitsSave,
+  convertTrackFile,
+  isSaving,
+  MAX_TRACK_FILE_BYTES,
+  savedBaseName,
+  subtitleDataUrl,
+  subtitleFileName,
+  subtitleSaveFailure,
+} from './subtitle-saves';
 import { fileProgress, percentOf, ProgressTracker } from './progress';
 import type { TaskStore } from './task-store';
 
@@ -100,8 +111,15 @@ export interface CoordinatorDeps {
   newLeaseId?: () => string;
   /** Timer of the progress poll of progressive downloads (setTimeout; injectable for tests). */
   schedule?: (callback: () => void, delayMs: number) => void;
+  /** Fetches a progressive file's `<track>` subtitle files (0.7.0); `fetch` by default. */
+  fetch?: (url: string, init: RequestInit) => Promise<Response>;
   logger?: Logger;
 }
+
+/** A subtitle file a merged video was handed over without (the engine did not make it). */
+export const SUBTITLE_MISSING_MESSAGE = 'The subtitle track was not among the downloaded data.';
+/** Subtitle files of a merged video that were waiting when the engine (and its blob: URLs) went away. */
+export const SUBTITLE_LOST_MESSAGE = 'The subtitle file was lost when the browser or the extension restarted. Download the video again to get it.';
 
 export const DOWNLOADED_MESSAGE = 'Downloaded. Waiting for FFmpeg to merge the tracks into one file.';
 
@@ -236,8 +254,13 @@ function withoutRunData(task: DownloadTask): DownloadTask {
     dismissed: _dismissed,
     ...rest
   } = task;
-  const { downloadId: _downloadId, saved: _saved, ...output } = task.output;
+  const { downloadId: _downloadId, saved: _saved, subtitles: _subtitles, ...output } = task.output;
   return { ...rest, output };
+}
+
+/** Done subtitle entries need no blob: URL any more; unfinished ones end with `error`. */
+function settledSubtitles(files: readonly SubtitleOutput[], error: string): SubtitleOutput[] {
+  return files.map(({ url: _url, ...file }) => (file.saved || file.error !== undefined ? file : { ...file, error }));
 }
 
 const awaitsProcessing = (task: DownloadTask): boolean => task.status === 'downloaded';
@@ -293,6 +316,8 @@ export class DownloadCoordinator {
   readonly #fileSpeeds = new Map<string, { tracker: ProgressTracker; received: number }>();
   #pollScheduled = false;
   #chain: Promise<unknown> = Promise.resolve();
+  /** Subtitle saves of one task run one after another, so a file is never handed to Chrome twice. */
+  readonly #subtitleChains = new Map<string, Promise<unknown>>();
 
   constructor(deps: CoordinatorDeps) {
     this.#deps = deps;
@@ -321,6 +346,11 @@ export class DownloadCoordinator {
       if (task.status === 'processing') await this.#settleSave(downloadId);
       // Progressive files Chrome downloads: finished, interrupted (the browser closed) or still running.
       else if (task.status === 'downloading' && task.progressive) await this.#recoverFile(task, downloadId);
+      // A progressive file's subtitle files that were not saved yet, or whose saves ended meanwhile.
+      else if (task.status === 'completed' && task.output.subtitles?.some((file) => awaitsSave(file) || isSaving(file))) {
+        // Not awaited: fetching `<track>` files from the site must not hold up the queue.
+        void this.#continueSubtitles(task.id);
+      }
     }
     if (await this.#deps.engine.exists()) await this.#deps.engine.reacquireContexts().catch(() => undefined);
     else await this.#serial(() => this.#markInterrupted());
@@ -377,7 +407,14 @@ export class DownloadCoordinator {
       await this.#deps.engine.ensure();
       const downloads: EngineTaskSpec[] = [];
       for (const task of engineTasks) downloads.push(await this.#spec(task, settings));
-      const media = processing.map((task): MediaTaskSpec => ({ taskId: task.id, job: 'process', format: task.output.format, title: task.source.title }));
+      const media = processing.map((task): MediaTaskSpec => {
+        const spec: MediaTaskSpec = { taskId: task.id, job: 'process', format: task.output.format, title: task.source.title };
+        const protocol = task.source.protocol;
+        if ((task.selection.subtitles?.length ?? 0) > 0 && (protocol === 'hls' || protocol === 'dash')) {
+          spec.subtitles = { protocol, format: task.output.subtitleFormat ?? 'srt' };
+        }
+        return spec;
+      });
       await this.#deps.engine.sync({ downloads, media });
     });
   }
@@ -499,13 +536,21 @@ export class DownloadCoordinator {
       if (failed?.status === 'failed') this.#deps.notifier?.failed(failed);
       return false;
     }
+    // Subtitle files wait for the video (subtitle-saves.ts); one per chosen track.
+    const chosen = file ? [] : (task.selection.subtitles ?? []);
+    const subtitles = chosen.map((subtitle): SubtitleOutput => {
+      const made = request.subtitles?.find((candidate) => candidate.trackId === subtitle.id);
+      if (made?.url !== undefined) return { trackId: subtitle.id, url: made.url };
+      return { trackId: subtitle.id, error: made?.error ?? SUBTITLE_MISSING_MESSAGE };
+    });
     const saving = await this.#deps.store.update(task.id, (current) => {
       if (current.status !== wanted) return current;
       if (file) return { ...current, output: { ...current.output, downloadId }, updatedAt: this.#now() };
+      const { subtitles: _previous, ...output } = current.output;
       return {
         ...current,
         ...(media ? { media } : {}),
-        output: { ...current.output, downloadId },
+        output: { ...output, downloadId, ...(subtitles.length > 0 ? { subtitles } : {}) },
         processing: { stage: 'saving', step: 1, steps: 1, percent: 97, startedAt: current.processing?.startedAt ?? this.#now() },
         updatedAt: this.#now(),
       };
@@ -557,27 +602,188 @@ export class DownloadCoordinator {
    */
   async #settleSave(downloadId: number): Promise<void> {
     const state = await this.#deps.files?.find(downloadId).catch(() => undefined);
-    if (!state || state.state === 'in_progress') return;
-    const task = (await this.#deps.store.list()).find(
+    const tasks = await this.#deps.store.list();
+    const task = tasks.find(
       (candidate) =>
         candidate.output.downloadId === downloadId &&
         (candidate.status === 'processing' || (candidate.status === 'downloading' && candidate.progressive !== undefined)),
     );
-    if (!task) return;
+    if (!task) {
+      // A subtitle file (0.7.0): a merged video completes once its subtitle files are saved.
+      const owner = tasks.find((candidate) => candidate.output.subtitles?.some((file) => file.downloadId === downloadId));
+      const videoId = owner?.output.downloadId;
+      if (owner?.status === 'processing' && videoId !== undefined) {
+        if (await this.#deps.files?.find(videoId).catch(() => undefined)) await this.#settleSave(videoId);
+        // The video was removed from Chrome's downloads while its subtitles were saved: nothing else would end the task.
+        else await this.#finishMerged(owner.id, videoId, { state: 'interrupted', path: '', bytes: 0, error: 'FILE_REMOVED' }, subtitleSaveFailure(undefined));
+      } else if (owner?.status === 'completed') {
+        await this.#continueSubtitles(owner.id);
+      }
+      return;
+    }
+    if (!state || state.state === 'in_progress') return;
     if (task.progressive) {
       await this.#settleFile(task, downloadId, state);
       return;
     }
+    if (state.state === 'complete' && task.output.subtitles?.some((file) => awaitsSave(file) || isSaving(file))) {
+      if (!(await this.#deps.engine.exists())) {
+        // The engine's blob: URLs went with it: the video stays saved, subtitle files not saved yet are lost.
+        await this.#checkSubtitles(task.id);
+        await this.#cancelSubtitleSaves(await this.#task(task.id));
+        await this.#finishMerged(task.id, downloadId, state, SUBTITLE_LOST_MESSAGE);
+        return;
+      }
+      // The video is saved: its subtitle files follow, named after it; the task completes once they are done.
+      await this.#saveSubtitles(task.id, state.path);
+      if (await this.#checkSubtitles(task.id)) return;
+    }
+    await this.#finishMerged(task.id, downloadId, state);
+  }
+
+  async #task(taskId: string): Promise<DownloadTask | undefined> {
+    return (await this.#deps.store.list()).find((task) => task.id === taskId);
+  }
+
+  /**
+   * Hands a task's waiting subtitle files to Chrome, named after the saved
+   * video (`videoPath`, Chrome's final path). Merged videos' files are the
+   * engine's blob: URLs; a progressive file's `<track>` files are fetched now.
+   * One at a time per task (a file is never started twice).
+   */
+  #saveSubtitles(taskId: string, videoPath: string): Promise<void> {
+    const run = () => this.#startSubtitleSaves(taskId, videoPath);
+    const next = (this.#subtitleChains.get(taskId) ?? Promise.resolve())
+      .then(run, run)
+      .catch((error: unknown) => {
+        this.#deps.logger?.warn('Could not save subtitle files', { taskId, error: errorMessage(error) });
+      });
+    this.#subtitleChains.set(taskId, next);
+    void next.finally(() => {
+      if (this.#subtitleChains.get(taskId) === next) this.#subtitleChains.delete(taskId);
+    });
+    return next;
+  }
+
+  async #startSubtitleSaves(taskId: string, videoPath: string): Promise<void> {
+    const files = this.#deps.files;
+    const task = await this.#task(taskId);
+    if (!task || !files || (task.status !== 'processing' && task.status !== 'completed')) return;
+    const chosen = task.selection.subtitles ?? [];
+    const format = task.output.subtitleFormat ?? 'srt';
+    const videoBase = savedBaseName(videoPath) || task.output.baseName;
+    for (const entry of task.output.subtitles ?? []) {
+      if (!awaitsSave(entry)) continue;
+      const subtitle = chosen.find((candidate) => candidate.id === entry.trackId);
+      let result: Pick<SubtitleOutput, 'downloadId' | 'error'>;
+      try {
+        if (!subtitle) throw new Error('the track is no longer part of the task');
+        const url = entry.url ?? (task.progressive ? await this.#trackFileUrl(task.id, subtitle.url, format) : undefined);
+        if (url === undefined) throw new Error('the file is gone');
+        const fileName = await this.#inFolder(subtitleFileName(videoBase, subtitle, chosen, format));
+        result = { downloadId: await files.save({ url, fileName }) };
+      } catch (error) {
+        result = { error: `The subtitle file could not be saved: ${errorMessage(error)}.` };
+      }
+      let recorded = false as boolean;
+      await this.#deps.store.update(taskId, (current) => {
+        const list = current.output.subtitles;
+        const at = list?.findIndex((file) => file.trackId === entry.trackId) ?? -1;
+        const waiting = list?.[at];
+        if (current.status !== task.status || !list || !waiting || !awaitsSave(waiting)) return current;
+        recorded = true;
+        const subtitles = list.map((file, index) => (index === at ? { ...file, ...result } : file));
+        return { ...current, output: { ...current.output, subtitles }, updatedAt: this.#now() };
+      });
+      // Cancelled or removed meanwhile: nobody follows this save.
+      if (!recorded && result.downloadId !== undefined) await files.cancel(result.downloadId).catch(() => undefined);
+    }
+  }
+
+  /** A progressive file's `<track>` file, fetched with the page's Referer/Origin and converted, as a data: URL. */
+  async #trackFileUrl(taskId: string, url: string | undefined, format: SubtitleFormat): Promise<string> {
+    if (url === undefined) throw new Error('the page gave no address for it');
+    const context = await this.#deps.store.findContext(taskId);
+    const release = context !== undefined && !isEmptyRequestContext(context) ? await this.#deps.acquireContext(url, context) : undefined;
+    let text: string;
+    try {
+      const fetchFile = this.#deps.fetch ?? ((input: string, init: RequestInit) => fetch(input, init));
+      const response = await fetchFile(url, { credentials: 'include', cache: 'no-store', signal: AbortSignal.timeout(30_000) });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      if (Number(response.headers.get('content-length') ?? 0) > MAX_TRACK_FILE_BYTES) throw new Error('the file is too large');
+      text = await response.text();
+      if (text.length > MAX_TRACK_FILE_BYTES) throw new Error('the file is too large');
+    } finally {
+      await release?.().catch(() => undefined);
+    }
+    return subtitleDataUrl(convertTrackFile(text, format), format);
+  }
+
+  /**
+   * Records how Chrome's saves of a task's subtitle files ended. True while
+   * one is still running.
+   */
+  async #checkSubtitles(taskId: string): Promise<boolean> {
+    const task = await this.#task(taskId);
+    const saving = task?.output.subtitles?.filter(isSaving) ?? [];
+    if (saving.length === 0) return false;
+    const outcomes = new Map<number, Pick<SubtitleOutput, 'saved' | 'error'>>();
+    let running = false;
+    for (const { downloadId } of saving) {
+      if (downloadId === undefined) continue;
+      const state = await this.#deps.files?.find(downloadId).catch(() => undefined);
+      if (!state) outcomes.set(downloadId, { error: "The subtitle file was removed from Chrome's downloads." });
+      else if (state.state === 'in_progress') running = true;
+      else if (state.state === 'complete') outcomes.set(downloadId, { saved: { path: state.path, bytes: state.bytes, savedAt: this.#now() } });
+      else outcomes.set(downloadId, { error: subtitleSaveFailure(state.error) });
+    }
+    if (outcomes.size > 0) {
+      await this.#deps.store.update(taskId, (current) => {
+        const list = current.output.subtitles;
+        if (!list) return current;
+        const subtitles = list.map((file) => {
+          const outcome = file.downloadId !== undefined && isSaving(file) ? outcomes.get(file.downloadId) : undefined;
+          return outcome ? { ...file, ...outcome } : file;
+        });
+        return { ...current, output: { ...current.output, subtitles }, updatedAt: this.#now() };
+      });
+    }
+    return running;
+  }
+
+  /** A completed progressive file's subtitle files: saves not started yet (a restart came first), then how they ended. */
+  async #continueSubtitles(taskId: string): Promise<void> {
+    const task = await this.#task(taskId);
+    if (task?.status !== 'completed' || !task.output.saved) return;
+    if (task.output.subtitles?.some(awaitsSave)) await this.#saveSubtitles(taskId, task.output.saved.path);
+    await this.#checkSubtitles(taskId);
+  }
+
+  async #cancelSubtitleSaves(task: DownloadTask | undefined): Promise<void> {
+    for (const file of task?.output.subtitles ?? []) {
+      if (isSaving(file) && file.downloadId !== undefined) await this.#deps.files?.cancel(file.downloadId).catch(() => undefined);
+    }
+  }
+
+  /**
+   * A merged video Chrome completed or gave up on: the task completes or
+   * fails. Its subtitle files are settled by now; any that is not ends with
+   * `unsaved`.
+   */
+  async #finishMerged(taskId: string, downloadId: number, state: SaveState, unsaved = subtitleSaveFailure(undefined)): Promise<void> {
     const failure = state.state === 'complete' ? '' : ((await this.#folderFailure(state, KEPT)) ?? saveFailureMessage(state.error));
     let settled: DownloadTask | undefined;
-    await this.#deps.store.update(task.id, (current) => {
+    await this.#deps.store.update(taskId, (current) => {
       if (current.status !== 'processing' || current.output.downloadId !== downloadId) return current;
       const { processing: _processing, statusMessage: _message, ...rest } = current;
       const now = this.#now();
-      settled =
-        state.state === 'complete'
-          ? { ...rest, status: 'completed', updatedAt: now, output: { ...current.output, saved: { path: state.path, bytes: state.bytes, savedAt: now } } }
-          : { ...rest, status: 'failed', statusMessage: failure, updatedAt: now };
+      if (state.state === 'complete') {
+        const subtitles = current.output.subtitles ? settledSubtitles(current.output.subtitles, unsaved) : undefined;
+        const output = { ...current.output, saved: { path: state.path, bytes: state.bytes, savedAt: now }, ...(subtitles ? { subtitles } : {}) };
+        settled = { ...rest, status: 'completed', updatedAt: now, output };
+      } else {
+        settled = { ...rest, status: 'failed', statusMessage: failure, updatedAt: now };
+      }
       return settled;
     });
     if (!settled) return;
@@ -595,9 +801,12 @@ export class DownloadCoordinator {
   async cancel(taskIds: readonly string[]): Promise<number> {
     const tasks = await this.#deps.store.list();
     const targets = tasks.filter((task) => taskIds.includes(task.id) && CANCELLABLE_TASK_STATUSES.includes(task.status));
+    // Subtitle files Chrome is saving, as the tasks stood when they were cancelled (a save may start meanwhile).
+    const subtitleSaves = new Map<string, DownloadTask>();
     for (const task of targets) {
       // Cancelling deletes the data, so no progress is left to show.
       await this.#deps.store.update(task.id, (current) => {
+        subtitleSaves.set(task.id, current);
         const cancelled: DownloadTask = { ...withoutRunData(current), status: 'cancelled', updatedAt: this.#now() };
         if (current.progressive) cancelled.progressive = withoutResume(current.progressive);
         return cancelled;
@@ -611,6 +820,7 @@ export class DownloadCoordinator {
       if ((task.status === 'processing' || task.status === 'downloading') && task.output.downloadId !== undefined) {
         await this.#deps.files?.cancel(task.output.downloadId).catch(() => undefined);
       }
+      await this.#cancelSubtitleSaves(subtitleSaves.get(task.id) ?? task);
       if (task.progressive?.resumeId !== undefined) await this.#deps.files?.cancel(task.progressive.resumeId).catch(() => undefined);
     }
     const running = targets.filter(inEngine).map((task) => task.id);
@@ -858,7 +1068,10 @@ export class DownloadCoordinator {
       if (state.state === 'complete') {
         const bytes = state.bytes;
         const progress = fileProgress(current.progress ?? fileProgress(emptyProgress(now), 0, undefined, false), bytes, bytes, true);
-        settled = { ...rest, status: 'completed', progress, updatedAt: now, output: { ...current.output, saved: { path: state.path, bytes, savedAt: now } } };
+        // The page's `<track>` files are saved next (0.7.0), named after the saved file.
+        const subtitles = (current.selection.subtitles ?? []).map((subtitle): SubtitleOutput => ({ trackId: subtitle.id }));
+        const output = { ...current.output, saved: { path: state.path, bytes, savedAt: now }, ...(subtitles.length > 0 ? { subtitles } : {}) };
+        settled = { ...rest, status: 'completed', progress, updatedAt: now, output };
       } else {
         // Chrome keeps the partial file of a download it can resume: Retry continues it.
         const resumable = current.progressive.fetch === 'browser' && state.canResume === true;
@@ -875,6 +1088,8 @@ export class DownloadCoordinator {
       // Chrome has its copy: the engine's file on disk goes (a failed save keeps it for Retry).
       await this.#deletePartialFiles(task.id);
       this.#deps.notifier?.completed(settled);
+      // Not awaited: the subtitle files are fetched from the site, and startSave may be on the stack.
+      if (settled.output.subtitles) void this.#continueSubtitles(task.id);
     } else {
       this.#deps.notifier?.failed(settled);
     }

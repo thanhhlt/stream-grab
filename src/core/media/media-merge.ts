@@ -56,6 +56,8 @@ export async function mergeTask(taskId: string, options: MergeTaskOptions): Prom
   const { storage, signal, media } = options;
   const tracks: MergeTrack[] = [];
   for (const layout of options.layout) {
+    // Subtitles are saved as files of their own (subtitle-files.ts).
+    if (layout.trackType === 'subtitle') continue;
     const analysis = media.tracks.find((track) => track.trackId === layout.trackId);
     if (!analysis) throw new MediaFailure(`Internal error: no analysis for track ${layout.trackId}. ${KEPT}`);
     const parts = await storage.trackData(taskId, layout.trackId);

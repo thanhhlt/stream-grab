@@ -102,9 +102,12 @@ export async function analyseTask(taskId: string, options: AnalyseOptions): Prom
 
   const tracks: TrackAnalysis[] = [];
   let loaded = false;
-  for (const [position, track] of layout.entries()) {
-    const step = { step: position + 1, steps: layout.length, ...(track.name !== undefined ? { detail: track.name } : {}) };
-    const done = (position / layout.length) * 100;
+  // Subtitle tracks are text for the subtitle files (subtitle-files.ts), not media FFmpeg merges.
+  const mediaTracks = layout.filter((track) => track.trackType !== 'subtitle');
+  if (mediaTracks.length === 0) throw new MediaFailure(OLD_LAYOUT_MESSAGE);
+  for (const [position, track] of mediaTracks.entries()) {
+    const step = { step: position + 1, steps: mediaTracks.length, ...(track.name !== undefined ? { detail: track.name } : {}) };
+    const done = (position / mediaTracks.length) * 100;
     const parts = await storage.trackData(taskId, track.trackId);
     signal.throwIfAborted();
     const data = new Blob(parts.map((part) => part.data));

@@ -67,9 +67,13 @@ Phases:
      writer; HLS `TYPE=SUBTITLES` and DASH `text/vtt` tracks (fMP4 text skipped); `<track>` of
      progressive files; subtitle lists in the Detected data, requests, tasks and the engine spec;
      Settings `subtitleFormat` (SRT by default).
-   - 2b: the engine downloads subtitle segments with the others, joins them on the saved video's
-     timeline, and the files are saved after the video as `<video name>.<lang>.srt|vtt`;
-     progressive `<track>` files are fetched by the service worker; Completed and cleanup cover them.
+   - 2b (done 2026-11-12): the engine downloads subtitle segments with the others (a subtitle
+     playlist or segment that fails never fails the video), joins them on the merged file's
+     timeline (joined runs probed one by one; a segment after a timestamp reset goes to the part it
+     fits), and the files are saved after the video as `<video name>.<lang>.srt|vtt`; the task
+     completes once they are saved. Progressive `<track>` files are fetched by the service worker
+     and saved as data: URLs (at most 1.5 MB each). Cancel, Retry and a restart cover them.
+     Not yet shown in the popup (Phase 3).
 3. Embed in MKV/MP4 (when the setting asks for it), subtitle picker in the popup, Settings; e2e.
 4. Regression tests, docs, release.
 

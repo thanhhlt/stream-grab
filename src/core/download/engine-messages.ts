@@ -12,6 +12,7 @@ import {
   type MediaReport,
   type MediaTaskSpec,
   type SaveRequest,
+  type SubtitleFileRequest,
   type TaskProgress,
   type TrackProgress,
 } from '@/core/models/download-task';
@@ -24,7 +25,7 @@ import {
 } from '@/core/models/media-info';
 import { TRACK_TYPES } from '@/core/models/media-segment';
 import { SEGMENT_CONCURRENCY } from '@/shared/constants';
-import { clampInt, OUTPUT_FORMATS } from '@/shared/settings/settings';
+import { clampInt, OUTPUT_FORMATS, SUBTITLE_FORMATS } from '@/shared/settings/settings';
 import { isOneOf, isRecord } from '@/shared/utils/guards';
 
 /**
@@ -109,7 +110,12 @@ export function parseMediaTaskSpec(raw: unknown): MediaTaskSpec | null {
   if (!isRecord(raw)) return null;
   const taskId = str(raw['taskId'], 64);
   if (taskId === undefined || raw['job'] !== 'process' || !isOneOf(raw['format'], OUTPUT_FORMATS)) return null;
-  return { taskId, job: 'process', format: raw['format'], title: typeof raw['title'] === 'string' ? raw['title'].slice(0, 500) : '' };
+  const spec: MediaTaskSpec = { taskId, job: 'process', format: raw['format'], title: typeof raw['title'] === 'string' ? raw['title'].slice(0, 500) : '' };
+  const subtitles = raw['subtitles'];
+  if (isRecord(subtitles) && (subtitles['protocol'] === 'hls' || subtitles['protocol'] === 'dash') && isOneOf(subtitles['format'], SUBTITLE_FORMATS)) {
+    spec.subtitles = { protocol: subtitles['protocol'], format: subtitles['format'] };
+  }
+  return spec;
 }
 
 /** `engine/sync` payload: everything the engine should run. */
@@ -301,6 +307,26 @@ export function parseSaveRequest(raw: unknown, extensionOrigin: string): SaveReq
     if (!media || !isOneOf(raw['container'], OUTPUT_CONTAINERS)) return null;
     request.container = raw['container'];
     request.media = media;
+    // Subtitle files (0.7.0) come with a merged video only, as blob: URLs of the same document.
+    if (Array.isArray(raw['subtitles'])) {
+      const subtitles = raw['subtitles']
+        .slice(0, 20)
+        .map((item) => parseSubtitleFileRequest(item, extensionOrigin))
+        .filter((item) => item !== null);
+      if (subtitles.length > 0) request.subtitles = subtitles;
+    }
   }
   return request;
+}
+
+function parseSubtitleFileRequest(raw: unknown, extensionOrigin: string): SubtitleFileRequest | null {
+  if (!isRecord(raw)) return null;
+  const trackId = str(raw['trackId'], 64);
+  if (trackId === undefined) return null;
+  const error = str(raw['error'], 500);
+  if (error !== undefined) return { trackId, error };
+  const url = str(raw['url'], 200);
+  const size = nonNegative(raw['size']);
+  if (url === undefined || size === undefined || !url.startsWith(`blob:${extensionOrigin.replace(/\/$/, '')}/`)) return null;
+  return { trackId, url, size };
 }

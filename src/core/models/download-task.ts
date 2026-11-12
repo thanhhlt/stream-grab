@@ -169,6 +169,8 @@ export interface DownloadTask {
     downloadId?: number;
     /** The saved file, once completed: full path as Chrome reports it, and size. */
     saved?: SavedFile;
+    /** Subtitle files saved next to the video (0.7.0), one per chosen track, once the video is handed to Chrome. */
+    subtitles?: SubtitleOutput[];
   };
   progress?: TaskProgress;
   /** Media processing progress, while `processing`. */
@@ -185,6 +187,20 @@ export interface SavedFile {
   path: string;
   bytes: number;
   savedAt: number;
+}
+
+/**
+ * A subtitle file of a task (0.7.0). It is saved after the video, named after
+ * the video's final name: `url` waits for that (a blob: URL the engine holds,
+ * merged videos only), `downloadId` follows Chrome's save, then `saved` or
+ * `error` tell how it ended. A track that could not be made has only `error`.
+ */
+export interface SubtitleOutput {
+  trackId: string;
+  url?: string;
+  downloadId?: number;
+  saved?: SavedFile;
+  error?: string;
 }
 
 /** What the engine needs to run one task; built by the service worker. */
@@ -254,6 +270,8 @@ export interface MediaTaskSpec {
   format: OutputFormat;
   /** Written into the file's metadata. */
   title: string;
+  /** Subtitle tracks were downloaded with the segments (0.7.0): how to time them, and the file format to write. */
+  subtitles?: { protocol: 'hls' | 'dash'; format: SubtitleFormat };
 }
 
 /**
@@ -283,6 +301,18 @@ export interface SaveRequest {
   /** Bytes. */
   size: number;
   media?: MediaAnalysis;
+  /**
+   * Merged videos with subtitles (0.7.0): each track's file as a blob: URL held
+   * like the video's, or why it could not be made.
+   */
+  subtitles?: SubtitleFileRequest[];
+}
+
+export interface SubtitleFileRequest {
+  trackId: string;
+  url?: string;
+  size?: number;
+  error?: string;
 }
 
 /** Everything the engine should be running: downloads and media jobs. */

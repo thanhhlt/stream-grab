@@ -1,6 +1,6 @@
 import type { TrackLayout } from '@/core/models/media-info';
 import { TRACK_TYPES, type ContainerFormat, type MediaSegment } from '@/core/models/media-segment';
-import type { AudioTrack } from '@/core/models/streaming-manifest';
+import type { AudioTrack, SubtitleTrack } from '@/core/models/streaming-manifest';
 import { isOneOf, isRecord } from '@/shared/utils/guards';
 
 const CONTAINERS: readonly ContainerFormat[] = ['mpeg-ts', 'fmp4', 'webm', 'packed-audio', 'webvtt', 'unknown'];
@@ -10,9 +10,14 @@ const MAX_POSITIONS = 1_000_000;
 /**
  * The layout of a download's segment list, per track, in the order tracks
  * first appear (the variant's own track first). Built after single files were
- * split into ranged chunks, so positions match what storage holds.
+ * split into ranged chunks, so positions match what storage holds. Audio
+ * and subtitle tracks take their name and language from the manifest.
  */
-export function buildLayout(segments: readonly MediaSegment[], audioTracks: readonly AudioTrack[] = []): TrackLayout[] {
+export function buildLayout(
+  segments: readonly MediaSegment[],
+  audioTracks: readonly AudioTrack[] = [],
+  subtitleTracks: readonly SubtitleTrack[] = [],
+): TrackLayout[] {
   const tracks = new Map<string, TrackLayout & { lastDiscontinuity: number | undefined }>();
   for (const segment of segments) {
     let track = tracks.get(segment.trackId);
@@ -27,10 +32,13 @@ export function buildLayout(segments: readonly MediaSegment[], audioTracks: read
         durationSec: 0,
         lastDiscontinuity: undefined,
       };
-      const audio = audioTracks.find((candidate) => candidate.id === segment.trackId);
-      if (audio) {
-        track.name = audio.name;
-        if (audio.language !== undefined) track.language = audio.language;
+      const named =
+        segment.trackType === 'subtitle'
+          ? subtitleTracks.find((candidate) => candidate.id === segment.trackId)
+          : audioTracks.find((candidate) => candidate.id === segment.trackId);
+      if (named) {
+        track.name = named.name;
+        if (named.language !== undefined) track.language = named.language;
       }
       tracks.set(segment.trackId, track);
     }
