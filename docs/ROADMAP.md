@@ -18,6 +18,23 @@ use. 1.0.0 means "stable and public", not a feature milestone.
 Not planned: DRM, SAMPLE-AES, live download, an "always ask where to save" setting (Chrome's own
 setting does it), an Open file button (needs `downloads.open`), an FFmpeg upgrade.
 
+## Funding: donate-only (decided 2026-11-12)
+
+StreamGrab stays free and fully featured, funded by voluntary donations only (see the Donate link
+item under v0.8.0). No paid plan, license check or feature limit is built for 0.x or 1.0.0.
+
+A paid plan is a question for after v1.0.0, and only if there is real demand. If it comes:
+
+- Only **new** features may be paid; nothing users already have for free is removed or limited.
+- It needs its own payment provider (Chrome Web Store payments no longer exist), a license server,
+  an updated privacy policy (a license check is a network call, so "nothing is sent anywhere" no
+  longer holds) and a host permission for that server.
+- Selling makes the developer a "trader" under the EU DSA: name and address shown publicly on the
+  store listing.
+- The code is GPL-3.0-or-later, so anyone can fork it without the check; the limit only stops
+  ordinary users. The license stays GPL (the bundled FFmpeg core is GPL).
+- The store description must not promise "free forever".
+
 ## v0.6.0: phases
 
 1. Analysis and Chrome spikes (done 2026-11-11): a worker's OPFS sync access handle keeps every
