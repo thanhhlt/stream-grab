@@ -3,6 +3,7 @@ import { extensionFor } from '@/core/download/file-name';
 import type { DetectedStream } from '@/core/models/detected-stream';
 import { sendToBackground } from '@/shared/messaging/client';
 import { errorMessage } from '@/shared/utils/errors';
+import { parseSubtitleLanguages } from '@/shared/settings/settings';
 import { parseHttpUrl } from '@/shared/utils/url';
 import { EmptyState } from '../components/EmptyState';
 import { SelectionBar } from '../components/SelectionBar';
@@ -88,6 +89,11 @@ export function DetectedPage({ onShowQueue, onQueued }: DetectedPageProps) {
   const streams = detections.streams;
   const preference = settings?.preferredResolution ?? 'highest';
   const extension = extensionFor(settings?.outputFormat ?? 'auto');
+  const subtitles = {
+    languages: parseSubtitleLanguages(settings?.subtitleLanguages ?? ''),
+    mode: settings?.subtitleMode ?? 'file',
+    format: settings?.subtitleFormat ?? 'srt',
+  } as const;
   const availability = new Map(streams.map((stream) => [stream.id, downloadAvailability(stream)]));
   const selectableIds = streams.filter((stream) => availability.get(stream.id)?.ok).map((stream) => stream.id);
   // Streams that disappeared or became unavailable drop out of the selection by themselves.
@@ -96,7 +102,7 @@ export function DetectedPage({ onShowQueue, onQueued }: DetectedPageProps) {
   const labelCounts = new Map<string, number>();
   for (const stream of streams) labelCounts.set(streamLabel(stream), (labelCounts.get(streamLabel(stream)) ?? 0) + 1);
   const choiceOf = (stream: DetectedStream): StreamChoice | undefined =>
-    choices[stream.id] ?? defaultChoice(stream, preference);
+    choices[stream.id] ?? defaultChoice(stream, preference, subtitles.languages);
 
   const toggle = <T,>(set: ReadonlySet<T>, value: T, include: boolean): Set<T> => {
     const next = new Set(set);
@@ -237,6 +243,7 @@ export function DetectedPage({ onShowQueue, onQueued }: DetectedPageProps) {
                   setExpanded((previous) => toggle(previous, stream.id, !previous.has(stream.id)));
                 }}
                 extension={stream.progressive ? `.${stream.progressive.container}` : extension}
+                subtitles={subtitles}
                 onDownload={() => {
                   startDownloads([stream.id]);
                 }}

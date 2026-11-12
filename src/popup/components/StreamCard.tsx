@@ -1,7 +1,8 @@
 import type { DetectedStream } from '@/core/models/detected-stream';
 import { fileNameOf, hostnameOf } from '@/shared/utils/url';
 import { formatDuration, mediaFacts, qualityOptions, statusView, streamLabel, streamTags } from '../format';
-import { withVariant, type Availability, type StreamChoice } from '../selection';
+import type { SubtitleFormat, SubtitleMode } from '@/shared/settings/settings';
+import { offeredSubtitles, withVariant, type Availability, type StreamChoice } from '../selection';
 import { Badge, ProtocolBadge } from './Badge';
 import { BUTTON } from './buttons';
 import { Icon } from './Icon';
@@ -19,6 +20,8 @@ interface StreamCardProps {
   expanded: boolean;
   onToggleExpanded: () => void;
   extension: string;
+  /** Settings → subtitles (0.7.0): languages to preselect when the quality changes, where they go. */
+  subtitles: { languages: readonly string[]; mode: SubtitleMode; format: SubtitleFormat };
   onDownload: () => void;
   busy: boolean;
   /** Why the last attempt to queue this video failed. */
@@ -32,6 +35,19 @@ interface StreamCardProps {
 function audioSummary(stream: DetectedStream, choice: StreamChoice): string {
   const names = (stream.media?.audioTracks ?? []).filter((track) => choice.audioTrackIds.includes(track.id)).map((track) => track.name);
   return names.length > 0 ? [...new Set(names)].join(', ') : 'No audio track';
+}
+
+/**
+ * Nhãn nút Options: "Audio: English", "English · 2 subs" (có phụ đề: bỏ "Audio:" để số phụ đề không
+ * bị cắt), "Subtitles: Tiếng Việt" (khi không có lựa chọn audio) hoặc "Options".
+ */
+function optionsSummary(stream: DetectedStream, choice: StreamChoice, hasAudioChoice: boolean, subtitleNames: string[]): string {
+  if (hasAudioChoice) {
+    const audio = audioSummary(stream, choice);
+    if (subtitleNames.length === 0) return `Audio: ${audio}`;
+    return `${audio} · ${subtitleNames.length} ${subtitleNames.length === 1 ? 'sub' : 'subs'}`;
+  }
+  return subtitleNames.length > 0 ? `Subtitles: ${subtitleNames.join(', ')}` : 'Options';
 }
 
 /** Các phần nằm dưới tiêu đề trải từ cột ô poster tới mép phải (docs/DESIGN.md, "Detected rows"). */
@@ -51,6 +67,14 @@ export function StreamCard(props: StreamCardProps) {
   const variants = stream.media?.variants ?? [];
   const variant = variants.find((candidate) => candidate.id === choice?.variantId);
   const audioTracks = (stream.media?.audioTracks ?? []).filter((track) => variant?.audioTrackIds.includes(track.id));
+  const subtitleTracks = offeredSubtitles(stream, variant);
+  // Theo thứ tự đã chọn (thứ tự ngôn ngữ trong Settings, rồi thứ tự bấm).
+  const subtitleNames = (choice?.subtitleTrackIds ?? []).flatMap((id) => subtitleTracks.find((track) => track.id === id)?.name ?? []);
+  const optionsTitle = `${[audioTracks.length > 0 ? 'Audio tracks' : '', subtitleTracks.length > 0 ? 'subtitles' : '', 'file name']
+    .filter(Boolean)
+    .join(', ')
+    .replace(/^./, (first) => first.toUpperCase())
+    .replace(/, (?=[^,]*$)/, ' and ')}`;
   const optionsId = `opt-${stream.id}`;
   const ready = availability.ok && choice !== undefined;
   const tags = streamTags(stream);
@@ -128,7 +152,7 @@ export function StreamCard(props: StreamCardProps) {
             title={facts.qualities ? `Available: ${facts.qualities}` : undefined}
             value={choice.variantId}
             onChange={(event) => {
-              props.onChoiceChange(withVariant(stream, choice, event.currentTarget.value));
+              props.onChoiceChange(withVariant(stream, choice, event.currentTarget.value, props.subtitles.languages));
             }}
             className="max-w-36"
           >
@@ -143,10 +167,10 @@ export function StreamCard(props: StreamCardProps) {
             aria-expanded={expanded}
             aria-controls={optionsId}
             onClick={props.onToggleExpanded}
-            title={audioTracks.length > 0 ? 'Audio tracks and file name' : 'File name'}
+            title={optionsTitle}
             className="inline-flex h-[30px] min-w-0 cursor-pointer items-center gap-1 rounded-full bg-surface pr-[9px] pl-[11px] text-control text-ink transition-colors duration-120 ease-out hover:bg-line"
           >
-            <span className="truncate">{audioTracks.length > 0 ? `Audio: ${audioSummary(stream, choice)}` : 'Options'}</span>
+            <span className="truncate">{optionsSummary(stream, choice, audioTracks.length > 0, subtitleNames)}</span>
             <Icon
               name="chevron"
               className={`size-[13px] text-muted transition-transform duration-200 ease-out ${expanded ? 'rotate-180' : ''}`}
@@ -182,6 +206,7 @@ export function StreamCard(props: StreamCardProps) {
           choice={choice}
           onChange={props.onChoiceChange}
           extension={props.extension}
+          subtitles={props.subtitles}
           codecs={facts.codecs}
         />
       )}

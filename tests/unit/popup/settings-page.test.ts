@@ -62,3 +62,43 @@ describe('Settings: subfolder of Downloads (0.4.0)', () => {
     expect(input.value).toBe('');
   });
 });
+
+describe('Settings: subtitles (0.7.0)', () => {
+  it('saves the languages as tags and names them, and where subtitles go and their format', async () => {
+    const { local } = await installPopupChrome();
+    const view = await render(SettingsPage, {});
+    unmount = () => view.root.unmount();
+    const input = view.container.querySelector<HTMLInputElement>('#subtitle-languages');
+    if (!input) throw new Error('no languages field');
+    const stored = () => local.data.get(STORAGE_KEYS.settings) as { subtitleLanguages?: string; subtitleMode?: string; subtitleFormat?: string } | undefined;
+    expect(input.value).toBe('');
+    expect(view.container.textContent).toContain('No subtitles preselected');
+
+    await type(input, 'nothing here!');
+    await key(input, 'Enter');
+    expect(view.container.querySelector('[role="alert"]')?.textContent).toContain('No language code found');
+    expect(stored()?.subtitleLanguages ?? '').toBe('');
+
+    await type(input, 'VI; pt-br en');
+    await key(input, 'Enter');
+    expect(stored()?.subtitleLanguages).toBe('vi, pt-BR, en');
+    expect(input.value).toBe('vi, pt-BR, en');
+    expect(view.container.textContent).toContain('Preselects: Vietnamese, Brazilian Portuguese, English');
+
+    const radio = (name: string, value: string) => view.container.querySelector<HTMLInputElement>(`input[name="${name}"][value="${value}"]`);
+    expect(radio('subtitle-mode', 'file')?.checked).toBe(true);
+    expect(radio('subtitle-format', 'srt')?.checked).toBe(true);
+    expect(radio('subtitle-mode', 'embed')?.parentElement?.textContent).toBe('In video');
+    await act(async () => {
+      radio('subtitle-mode', 'both')?.click();
+      radio('subtitle-format', 'vtt')?.click();
+      await settle();
+    });
+    expect(stored()).toMatchObject({ subtitleMode: 'both', subtitleFormat: 'vtt' });
+
+    await click(view.container, 'Reset to defaults');
+    await act(settle);
+    expect(stored()).toMatchObject({ subtitleLanguages: '', subtitleMode: 'file', subtitleFormat: 'srt' });
+    expect(input.value).toBe('');
+  });
+});

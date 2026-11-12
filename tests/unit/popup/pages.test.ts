@@ -251,3 +251,29 @@ describe('Completed tab', () => {
     expect(view.container.textContent).toContain('No completed downloads');
   });
 });
+
+describe('Completed tab: subtitles (0.7.0)', () => {
+  it('names the subtitles of a saved video and where they are, a failed file in the warning colour', async () => {
+    await installPopupChrome();
+    const base = saved('subbed', 5, '/Downloads/Movie.mkv', 1_000, 1);
+    const task: DownloadTask = {
+      ...base,
+      selection: { ...base.selection, subtitles: [{ id: 'en', name: 'English' }, { id: 'vi', name: 'Tiếng Việt' }] },
+      output: {
+        ...base.output,
+        subtitles: [
+          { trackId: 'en', embedded: true, downloadId: 6, saved: { path: '/Downloads/Movie.en.srt', bytes: 10, savedAt: 1 } },
+          { trackId: 'vi', error: 'The subtitle file could not be saved.' },
+        ],
+      },
+    };
+    const view = await render(CompletedPage, { tasks: [task, saved('plain', 7, '/Downloads/Plain.mp4', 1_000, 2)] });
+    unmount = () => view.root.unmount();
+    const rows = [...view.container.querySelectorAll('li')];
+    const line = [...(rows[1]?.querySelectorAll('p') ?? [])].find((p) => p.textContent?.startsWith('Subtitles:'));
+    expect(line?.textContent).toBe('Subtitles: English (in video, .srt), Tiếng Việt (not saved)');
+    expect(line?.getAttribute('title')).toBe('English: in video, .srt\nTiếng Việt: not saved (The subtitle file could not be saved.)');
+    expect(line?.querySelector('.text-warning')?.textContent).toBe('Tiếng Việt (not saved)');
+    expect(rows[0]?.textContent).not.toContain('Subtitles');
+  });
+});

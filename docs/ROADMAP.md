@@ -82,8 +82,11 @@ Phases:
      muxer always enables the first one), cut at the video's expected end and counted when the
      result is checked. A merge that fails with subtitles is run again without them, and they are
      saved as files instead.
-   - 3b: subtitle picker in the Detected tab (preselected by the default languages), Settings
-     UI, subtitles in the Completed tab; e2e.
+   - 3b (done 2026-11-12): subtitle picker in the Detected tab's Options (one track per
+     Settings language ticked, in that order, never a forced one; a note says where they go),
+     Settings rows for the languages, where subtitles go (Files / In video / Both) and the file
+     format (SRT / WebVTT), and a Subtitles line in the Completed tab; e2e on a subtitled HLS
+     demo stream through the real popup.
 4. Regression tests, docs, release.
 
 ## v0.8.0: Chrome Web Store preparation

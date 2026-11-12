@@ -633,6 +633,125 @@ describe('StreamGrab in Chrome (Chrome for Testing, unpacked dist/)', () => {
     await ext.close();
   });
 
+  it('ticks subtitles of the Settings languages in the real popup, puts them in the video and saves them as SRT files (0.7.0)', async () => {
+    const ext = await extensionPage();
+    const settings = () => ext.evaluate(async (key) => (await chrome.storage.local.get(key))[key] as Record<string, unknown> | undefined, STORAGE_KEYS.settings);
+    await ext.evaluate(() => {
+      [...document.querySelectorAll<HTMLElement>('[role="tab"]')].find((tab) => tab.textContent?.startsWith('Settings'))?.click();
+    });
+    await ext.waitForSelector('#subtitle-languages');
+    await ext.type('#subtitle-languages', 'VI');
+    await ext.keyboard.press('Enter');
+    await ext.evaluate(() => {
+      document.querySelector<HTMLInputElement>('input[name="subtitle-mode"][value="both"]')?.click();
+    });
+    await waitFor(
+      'the subtitle settings',
+      async () => {
+        const stored = await settings();
+        return stored?.['subtitleLanguages'] === 'vi' && stored['subtitleMode'] === 'both' ? true : undefined;
+      },
+      10_000,
+    );
+
+    const demoUrl = `${site.origin}/download?subtitles`;
+    const demo = await browser.newPage();
+    await demo.goto(demoUrl);
+    const { streams } = await detected(ext, demoUrl, ['/download/subtitled/subtitled.m3u8']);
+    const stream = streams[0] as DetectedStream;
+    expect(stream.media?.subtitleTracks?.map((track) => track.name)).toEqual(['English', 'Tiếng Việt']);
+
+    // The real popup, opened for the demo tab.
+    await demo.bringToFront();
+    const known = new Set(browser.targets());
+    const worker = await (await serviceWorker()).worker();
+    await worker?.evaluate(() => chrome.action.openPopup());
+    const popupTarget = await browser.waitForTarget((target) => !known.has(target) && target.url().includes('/popup/index.html'), { timeout: 10_000 });
+    const popup = await popupTarget.asPage();
+    const row = `li[data-stream-id="${stream.id}"]`;
+    const toggle = `${row} button[aria-controls]`;
+    await popup.waitForSelector(toggle);
+    expect(await popup.$eval(toggle, (button) => button.textContent)).toBe('English · 1 sub');
+    await popup.$eval(toggle, (button) => {
+      (button as HTMLButtonElement).click();
+    });
+    await popup.waitForSelector(`${row} fieldset`);
+    const subtitleBoxes = () =>
+      popup.$$eval(`${row} fieldset`, (fieldsets) =>
+        fieldsets
+          .filter((fieldset) => fieldset.querySelector('legend')?.textContent === 'Subtitles')
+          .flatMap((fieldset) => [...fieldset.querySelectorAll('input')].map((input) => ({ name: input.parentElement?.textContent, checked: input.checked }))),
+      );
+    expect(await subtitleBoxes()).toEqual([
+      { name: 'English', checked: false },
+      { name: 'Tiếng Việt', checked: true },
+    ]);
+    expect(await popup.$eval(row, (item) => item.textContent)).toContain('Added to the video and saved as SRT files next to the video');
+    await popup.$$eval(`${row} fieldset input`, (inputs) => {
+      inputs
+        .find((input) => input.parentElement?.textContent === 'English' && input.closest('fieldset')?.querySelector('legend')?.textContent === 'Subtitles')
+        ?.click();
+    });
+    expect(await popup.$eval(toggle, (button) => button.textContent)).toBe('English · 2 subs');
+    await popup.$eval(`${row} button[aria-label^="Download "]`, (button) => {
+      button.click();
+    });
+
+    const task = await waitFor('the subtitled video and its subtitle files', async () => {
+      const found = (await tasks(ext)).find((candidate) => candidate.source.streamId === stream.id);
+      if (found?.status === 'failed') throw new Error(`failed: ${found.statusMessage ?? ''}`);
+      return found?.status === 'completed' ? found : undefined;
+    });
+    expect(task.output).toMatchObject({ subtitleMode: 'both', subtitleFormat: 'srt' });
+    const video = task.output.saved?.path ?? '';
+    const base = video.replace(/\.(mp4|mkv)$/, '');
+    const files = (task.output.subtitles ?? []).map((entry) => {
+      const language = task.selection.subtitles?.find((subtitle) => subtitle.id === entry.trackId)?.language ?? '';
+      expect(entry.embedded).toBe(true);
+      expect(entry.saved?.path).toBe(`${base}.${language}.srt`);
+      return { language, text: readFileSync(entry.saved?.path ?? '', 'utf8') };
+    });
+    // In the order picked: the Settings language first, then the one ticked.
+    expect(files.map((file) => file.language)).toEqual(['vi', 'en']);
+    const vietnamese = files[0]?.text ?? '';
+    expect(vietnamese).toContain('Dòng tiếng Việt số 1\r\n');
+    expect(vietnamese).toMatch(/^1\r\n00:00:0\d,\d{3} --> 00:00:0\d,\d{3}\r\n/);
+    // A cue every 20 s of the 8-minute video.
+    expect(vietnamese.match(/ --> /g)?.length).toBe(DEMO_SECONDS / 20);
+    expect(files[1]?.text).toContain('English line 24');
+
+    // Inside the video too: two subtitle streams with their languages.
+    const name = `saved.${video.endsWith('.mkv') ? 'mkv' : 'mp4'}`;
+    const probe = await ffmpeg.run({
+      tool: 'ffprobe',
+      args: ['-hide_banner', '-v', 'error', '-show_streams', '-select_streams', 's', '-of', 'json', `/in/${name}`],
+      inputs: [{ name, data: new Blob([new Uint8Array(readFileSync(video))]) }],
+      outputs: [],
+    });
+    const embedded = (JSON.parse(probe.stdout) as { streams: { tags?: Record<string, string> }[] }).streams;
+    expect(embedded.map((subtitle) => subtitle.tags?.['language'])).toEqual(['vie', 'eng']);
+
+    // The Completed tab names them.
+    await popup.evaluate(() => {
+      [...document.querySelectorAll<HTMLElement>('[role="tab"]')].find((tab) => tab.textContent?.startsWith('Completed'))?.click();
+    });
+    await waitFor(
+      'the subtitles in the Completed tab',
+      async () =>
+        (await popup.evaluate(() => document.body.innerText)).includes('Subtitles: Tiếng Việt (in video, .srt), English (in video, .srt)') ? true : undefined,
+      10_000,
+    );
+
+    // Back to the defaults for whatever runs next.
+    await ext.evaluate(async (key) => {
+      const current = (await chrome.storage.local.get(key))[key] as Record<string, unknown> | undefined;
+      await chrome.storage.local.set({ [key]: { ...current, subtitleLanguages: '', subtitleMode: 'file' } });
+    }, STORAGE_KEYS.settings);
+    await popup.close();
+    await demo.close();
+    await ext.close();
+  });
+
   it('switches the theme from Settings and the header without scrolling the popup itself (0.5.0)', async () => {
     const ext = await extensionPage();
     await ext.setViewport({ width: 400, height: 560 });

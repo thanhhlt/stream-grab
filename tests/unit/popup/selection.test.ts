@@ -5,8 +5,10 @@ import {
   downloadAvailability,
   selectAllState,
   toRequest,
+  defaultSubtitleTracks,
   withAudioTrack,
   withFileName,
+  withSubtitleTrack,
   withVariant,
 } from '@/popup/selection';
 
@@ -72,8 +74,8 @@ describe('downloadAvailability', () => {
       reason: 'Access denied (HTTP 403).',
     });
     const choice = defaultChoice(file, 'highest');
-    expect(choice).toEqual({ variantId: 'file', audioTrackIds: [], fileName: 'Movie_Title', fileNameEdited: false });
-    expect(toRequest(file, choice ?? { variantId: '', audioTrackIds: [], fileName: '', fileNameEdited: false })).toEqual({
+    expect(choice).toEqual({ variantId: 'file', audioTrackIds: [], subtitleTrackIds: [], fileName: 'Movie_Title', fileNameEdited: false });
+    expect(toRequest(file, choice ?? { variantId: '', audioTrackIds: [], subtitleTrackIds: [], fileName: '', fileNameEdited: false })).toEqual({
       tabId: 4,
       streamId: 's1',
       variantId: 'file',
@@ -88,6 +90,7 @@ describe('choices', () => {
     expect(defaultChoice(stream(), '720')).toEqual({
       variantId: 'video-1',
       audioTrackIds: ['audio-0'],
+      subtitleTrackIds: [],
       fileName: 'Movie_Title_720p',
       fileNameEdited: false,
     });
@@ -101,7 +104,7 @@ describe('choices', () => {
     expect(french.audioTrackIds).toEqual(['audio-1']);
 
     const sd = withVariant(stream(), french, 'video-2');
-    expect(sd).toEqual({ variantId: 'video-2', audioTrackIds: [], fileName: 'Movie_Title_360p', fileNameEdited: false });
+    expect(sd).toEqual({ variantId: 'video-2', audioTrackIds: [], subtitleTrackIds: [], fileName: 'Movie_Title_360p', fileNameEdited: false });
 
     const named = withFileName(initial, 'My copy');
     expect(withVariant(stream(), named, 'video-1')).toMatchObject({ fileName: 'My copy', fileNameEdited: true, variantId: 'video-1' });
@@ -118,6 +121,69 @@ describe('choices', () => {
       audioTrackIds: ['audio-0'],
       fileName: 'Movie_Title_1080p',
     });
+  });
+});
+
+describe('subtitles (0.7.0)', () => {
+  const subtitled = (): DetectedStream => {
+    const base = stream();
+    const media = base.media ?? { variants: [], audioTracks: [] };
+    return {
+      ...base,
+      media: {
+        ...media,
+        variants: media.variants.map((variant) =>
+          variant.id === 'video-2' ? { ...variant, subtitleTrackIds: ['sub-de'] } : { ...variant, subtitleTrackIds: ['sub-en', 'sub-en-forced', 'sub-vi', 'sub-pt'] },
+        ),
+        subtitleTracks: [
+          { id: 'sub-en-forced', name: 'English (forced)', language: 'en', isDefault: false, forced: true },
+          { id: 'sub-en', name: 'English', language: 'en-US', isDefault: false },
+          { id: 'sub-vi', name: 'Tiếng Việt', language: 'vie', isDefault: false },
+          { id: 'sub-pt', name: 'Português', language: 'pt-PT', isDefault: false },
+          { id: 'sub-de', name: 'Deutsch', language: 'ger', isDefault: true },
+        ],
+      },
+    };
+  };
+  const tracks = () => subtitled().media?.subtitleTracks ?? [];
+
+  it('preselects one track per Settings language, in that order, never a forced one', () => {
+    expect(defaultSubtitleTracks(tracks(), [])).toEqual([]);
+    expect(defaultSubtitleTracks(tracks(), ['vi', 'en'])).toEqual(['sub-vi', 'sub-en']);
+    // ISO 639-2/B "ger" is German; a region asks for that region or none, not another one.
+    expect(defaultSubtitleTracks(tracks(), ['de', 'pt-BR', 'fr'])).toEqual(['sub-de']);
+    expect(defaultSubtitleTracks(tracks(), ['pt'])).toEqual(['sub-pt']);
+    expect(defaultSubtitleTracks(tracks(), ['en-us'])).toEqual(['sub-en']);
+    // The default track of a language wins over the first one.
+    const twoEnglish = [...tracks(), { id: 'sub-en-sdh', name: 'English SDH', language: 'en', isDefault: true }];
+    expect(defaultSubtitleTracks(twoEnglish, ['en'])).toEqual(['sub-en-sdh']);
+    // Codes outside the ISO 639 table, a script against a script + region, underscores, no language.
+    const more = [
+      { id: 'mt', name: 'Malti', language: 'mt', isDefault: false },
+      { id: 'zh', name: '繁體中文', language: 'zh_Hant_TW', isDefault: false },
+      { id: 'mi', name: 'Māori', language: 'mao', isDefault: false },
+      { id: 'und', name: 'Unknown', language: 'und', isDefault: false },
+    ];
+    expect(defaultSubtitleTracks(more, ['MT', 'zh-Hant', 'mi', 'und'])).toEqual(['mt', 'zh', 'mi']);
+    expect(defaultSubtitleTracks(more, ['zh-Hans'])).toEqual([]);
+  });
+
+  it('chooses only what the quality offers, keeps a pick when the quality offers the same tracks', () => {
+    const choice = defaultChoice(subtitled(), 'highest', ['en', 'de']);
+    expect(choice?.subtitleTrackIds).toEqual(['sub-en']);
+    if (!choice) throw new Error('no choice');
+    const picked = withSubtitleTrack(withSubtitleTrack(choice, 'sub-en', false), 'sub-vi', true);
+    expect(picked.subtitleTrackIds).toEqual(['sub-vi']);
+    expect(withVariant(subtitled(), picked, 'video-1', ['en', 'de']).subtitleTrackIds).toEqual(['sub-vi']);
+    // Other tracks: that quality's defaults.
+    expect(withVariant(subtitled(), picked, 'video-2', ['en', 'de']).subtitleTrackIds).toEqual(['sub-de']);
+  });
+
+  it('sends the chosen tracks the quality still offers', () => {
+    const choice = defaultChoice(subtitled(), 'highest', ['vi', 'en']);
+    if (!choice) throw new Error('no choice');
+    expect(toRequest(subtitled(), choice)).toMatchObject({ variantId: 'video-0', subtitleTrackIds: ['sub-vi', 'sub-en'] });
+    expect(toRequest(subtitled(), { ...choice, subtitleTrackIds: ['sub-gone', 'sub-de'] })).not.toHaveProperty('subtitleTrackIds');
   });
 });
 

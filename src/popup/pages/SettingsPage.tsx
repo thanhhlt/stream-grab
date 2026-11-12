@@ -2,11 +2,17 @@ import { useState, type CSSProperties } from 'react';
 import { MAX_FOLDER_LENGTH, parseDownloadFolder } from '@/core/download/file-name';
 import { ACTIVE_TASKS, SEGMENT_CONCURRENCY } from '@/shared/constants';
 import {
+  normalizeSubtitleLanguages,
   OUTPUT_FORMATS,
+  parseSubtitleLanguages,
   RESOLUTION_PREFERENCES,
+  SUBTITLE_FORMATS,
+  SUBTITLE_MODES,
   THEMES,
   type OutputFormat,
   type ResolutionPreference,
+  type SubtitleFormat,
+  type SubtitleMode,
   type Theme,
 } from '@/shared/settings/settings';
 import { isOneOf } from '@/shared/utils/guards';
@@ -41,6 +47,21 @@ const THEME_LABELS: Record<Theme, string> = {
 };
 
 const THEME_OPTIONS = THEMES.map((value) => ({ value, label: THEME_LABELS[value] }));
+
+const SUBTITLE_MODE_LABELS: Record<SubtitleMode, string> = {
+  file: 'Files',
+  embed: 'In video',
+  both: 'Both',
+};
+
+const SUBTITLE_MODE_OPTIONS = SUBTITLE_MODES.map((value) => ({ value, label: SUBTITLE_MODE_LABELS[value] }));
+
+const SUBTITLE_FORMAT_LABELS: Record<SubtitleFormat, string> = {
+  srt: 'SRT',
+  vtt: 'WebVTT',
+};
+
+const SUBTITLE_FORMAT_OPTIONS = SUBTITLE_FORMATS.map((value) => ({ value, label: SUBTITLE_FORMAT_LABELS[value] }));
 
 /** Thanh trượt vẽ như thanh tiến độ (`.range` trong styles.css): phần đã chọn tới giá trị hiện tại. */
 const rangeClass = 'range w-full';
@@ -108,6 +129,86 @@ function DownloadFolderInput({ value, onSave }: { value: string; onSave: (folder
       ) : (
         <p className="truncate text-tech text-muted" title={`Downloads/${value}`}>
           Saving to: Downloads{value === '' ? '' : `/${value}`}
+        </p>
+      )}
+    </div>
+  );
+}
+
+/** "en, pt-BR" → "English, Brazilian Portuguese" (the tag itself when Chrome has no name for it). */
+function languageNames(tags: readonly string[]): string {
+  let names: Intl.DisplayNames | undefined;
+  try {
+    names = new Intl.DisplayNames(['en'], { type: 'language' });
+  } catch {
+    names = undefined;
+  }
+  return tags
+    .map((tag) => {
+      try {
+        return names?.of(tag) ?? tag;
+      } catch {
+        return tag;
+      }
+    })
+    .join(', ');
+}
+
+/**
+ * Subtitle languages preselected in the Detected tab: saved on Enter or when the field loses
+ * focus, in the form Settings keeps ("en, pt-BR"), with their names below. Text with no language
+ * code in it stays in the field with the reason, unsaved.
+ */
+function SubtitleLanguagesInput({ value, onSave }: { value: string; onSave: (languages: string) => void }) {
+  /** What the user is typing; null shows the saved value (also after Reset to defaults). */
+  const [draft, setDraft] = useState<string | null>(null);
+  const [problem, setProblem] = useState<string | null>(null);
+  const commit = () => {
+    if (draft === null) return;
+    const languages = normalizeSubtitleLanguages(draft);
+    if (languages === '' && draft.trim() !== '') {
+      setProblem('No language code found. Use codes such as en, vi or pt-BR.');
+      return;
+    }
+    setProblem(null);
+    setDraft(null);
+    if (languages !== value) onSave(languages);
+  };
+  const tags = parseSubtitleLanguages(value);
+  return (
+    <div className="flex flex-col gap-1">
+      <input
+        id="subtitle-languages"
+        type="text"
+        value={draft ?? value}
+        placeholder="None: pick subtitles yourself"
+        maxLength={200}
+        spellCheck={false}
+        autoComplete="off"
+        aria-invalid={problem !== null}
+        aria-describedby={problem !== null ? 'subtitle-languages-desc subtitle-languages-error' : 'subtitle-languages-desc'}
+        onChange={(event) => {
+          setDraft(event.currentTarget.value);
+          setProblem(null);
+        }}
+        onBlur={commit}
+        onKeyDown={(event) => {
+          if (event.key === 'Enter') commit();
+          if (event.key === 'Escape' && draft !== null) {
+            event.preventDefault();
+            setDraft(null);
+            setProblem(null);
+          }
+        }}
+        className={inputClass}
+      />
+      {problem !== null ? (
+        <p id="subtitle-languages-error" role="alert" className="text-meta text-danger">
+          {problem}
+        </p>
+      ) : (
+        <p className="truncate text-tech text-muted" title={tags.length > 0 ? languageNames(tags) : undefined}>
+          {tags.length > 0 ? `Preselects: ${languageNames(tags)}` : 'No subtitles preselected'}
         </p>
       )}
     </div>
@@ -235,6 +336,63 @@ export function SettingsPage() {
               onSave={(folder) => {
                 update({ downloadFolder: folder });
               }}
+            />
+          }
+        />
+
+        <SettingRow
+          id="subtitle-languages"
+          label="Subtitle languages"
+          description="Subtitles in these languages are ticked in the Detected tab, one per language, in this order. Language codes such as en, vi or pt-BR."
+          stacked
+          control={
+            <SubtitleLanguagesInput
+              value={settings.subtitleLanguages}
+              onSave={(subtitleLanguages) => {
+                update({ subtitleLanguages });
+              }}
+            />
+          }
+        />
+
+        <SettingRow
+          id="subtitle-mode"
+          label="Where subtitles go"
+          description="In video puts them inside the MP4/MKV (HLS and DASH; direct video files get files)."
+          group
+          control={
+            <Segmented
+              id="subtitle-mode"
+              name="subtitle-mode"
+              value={settings.subtitleMode}
+              options={SUBTITLE_MODE_OPTIONS}
+              labelledBy="subtitle-mode-label"
+              describedBy="subtitle-mode-desc"
+              onChange={(subtitleMode) => {
+                update({ subtitleMode });
+              }}
+              className="w-48"
+            />
+          }
+        />
+
+        <SettingRow
+          id="subtitle-format"
+          label="Subtitle files"
+          description="SRT plays in most players. WebVTT keeps the format the site serves."
+          group
+          control={
+            <Segmented
+              id="subtitle-format"
+              name="subtitle-format"
+              value={settings.subtitleFormat}
+              options={SUBTITLE_FORMAT_OPTIONS}
+              labelledBy="subtitle-format-label"
+              describedBy="subtitle-format-desc"
+              onChange={(subtitleFormat) => {
+                update({ subtitleFormat });
+              }}
+              className="w-48"
             />
           }
         />

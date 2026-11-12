@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { Fragment, useRef, useState } from 'react';
 import type { DownloadTask } from '@/core/models/download-task';
 import { sendToBackground } from '@/shared/messaging/client';
 import { errorMessage } from '@/shared/utils/errors';
@@ -10,13 +10,14 @@ import { EmptyState } from '../components/EmptyState';
 import { Icon } from '../components/Icon';
 import { Menu } from '../components/Menu';
 import { PosterTile } from '../components/PosterTile';
-import { completedFacts, completedSummary, completedTasks, formatBytes, formatCompletedDate, formatSavedAt, outputFileName } from '../format';
+import { completedFacts, completedSubtitles, completedSummary, completedTasks, formatBytes, formatCompletedDate, formatSavedAt, outputFileName } from '../format';
 import { useSavedFiles } from '../hooks/useSavedFiles';
 import { showSavedFile } from './QueuePage';
 
 function CompletedRow({ task, exists, onRemove }: { task: DownloadTask; exists: boolean | undefined; onRemove: (task: DownloadTask) => void }) {
   const saved = task.output.saved;
   const facts = completedFacts(task);
+  const subtitles = completedSubtitles(task);
   const fileName = outputFileName(task);
   const missing = exists === false;
   const savedAt = saved?.savedAt ?? task.updatedAt;
@@ -41,6 +42,22 @@ function CompletedRow({ task, exists, onRemove }: { task: DownloadTask; exists: 
         {facts.secondary.length > 0 && (
           <p className="truncate text-tech text-muted" title={task.media?.containerReason}>
             {facts.secondary.join(' · ')}
+          </p>
+        )}
+        {subtitles.length > 0 && (
+          <p
+            className="truncate text-tech text-muted"
+            title={subtitles.map((subtitle) => `${subtitle.name}: ${subtitle.where}${subtitle.error ? ` (${subtitle.error})` : ''}`).join('\n')}
+          >
+            Subtitles:{' '}
+            {subtitles.map((subtitle, index) => (
+              <Fragment key={`${subtitle.name}-${index}`}>
+                {index > 0 && ', '}
+                <span className={subtitle.error ? 'text-warning' : undefined}>
+                  {subtitle.name} ({subtitle.where})
+                </span>
+              </Fragment>
+            ))}
           </p>
         )}
         <div className="mt-1 flex items-center gap-2">

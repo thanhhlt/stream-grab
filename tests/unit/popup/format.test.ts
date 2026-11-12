@@ -7,6 +7,7 @@ import {
   formatDuration,
   formatSpeed,
   mediaFacts,
+  completedSubtitles,
   completedTasks,
   mediaSummary,
   outputExtension,
@@ -18,6 +19,7 @@ import {
   storageLine,
   streamLabel,
   streamTags,
+  subtitleDestination,
   taskProgressLine,
   variantLabel,
 } from '@/popup/format';
@@ -283,5 +285,60 @@ describe('popup formatting', () => {
         makeTask(id, { status: 'completed', output: { baseName: id, format: 'auto', saved: { path: `/${id}.mp4`, bytes: 1, savedAt } } });
       expect(completedTasks([saved('old', 1), makeTask('running', { status: 'downloading' }), saved('new', 9)]).map((task) => task.id)).toEqual(['new', 'old']);
     });
+  });
+});
+
+describe('subtitles (0.7.0)', () => {
+  it('says where the chosen subtitles go', () => {
+    expect(subtitleDestination('hls', 'file', 'srt')).toBe('Saved as SRT files next to the video');
+    expect(subtitleDestination('dash', 'embed', 'srt')).toBe('Added to the video file');
+    expect(subtitleDestination('hls', 'both', 'vtt')).toBe('Added to the video and saved as WebVTT files next to the video');
+    expect(subtitleDestination('progressive', 'embed', 'vtt')).toBe('Saved as WebVTT files next to the video');
+  });
+
+  it('lists the subtitles of a saved video: in the video, as files, or why not', () => {
+    const task = makeTask('s', {
+      status: 'completed',
+      selection: {
+        variantId: 'video-0',
+        variantLabel: '1080p',
+        audioTrackIds: [],
+        audioTrackNames: [],
+        subtitles: [
+          { id: 'en', name: 'English', language: 'en' },
+          { id: 'vi', name: 'Tiếng Việt', language: 'vi' },
+          { id: 'de', name: 'Deutsch', language: 'de', forced: true },
+          { id: 'fr', name: 'Français', language: 'fr' },
+        ],
+      },
+      output: {
+        baseName: 'Movie',
+        format: 'auto',
+        subtitleFormat: 'srt',
+        subtitles: [
+          { trackId: 'en', embedded: true, downloadId: 4, saved: { path: '/d/Movie.en.vtt', bytes: 10, savedAt: 1 } },
+          { trackId: 'vi', embedded: true },
+          { trackId: 'de', error: 'Network error' },
+          { trackId: 'fr', embedded: true, error: 'Disk full' },
+        ],
+      },
+    });
+    expect(completedSubtitles(task)).toEqual([
+      { name: 'English', where: 'in video, .vtt' },
+      { name: 'Tiếng Việt', where: 'in video' },
+      { name: 'Deutsch (forced)', where: 'not saved', error: 'Network error' },
+      { name: 'Français', where: 'in video, file not saved', error: 'Disk full' },
+    ]);
+    expect(completedSubtitles(makeTask('none', { status: 'completed' }))).toEqual([]);
+    // A progressive file's subtitles are saved after the video completes.
+    const progressive = makeTask('p', {
+      status: 'completed',
+      selection: { variantId: 'file', variantLabel: 'File', audioTrackIds: [], audioTrackNames: [], subtitles: [{ id: 'track-0', name: 'English' }, { id: 'track-1', name: 'Tiếng Việt' }] },
+      output: { baseName: 'Clip', format: 'auto', subtitles: [{ trackId: 'track-0' }, { trackId: 'track-1', downloadId: 8 }] },
+    });
+    expect(completedSubtitles(progressive)).toEqual([
+      { name: 'English', where: 'saving…' },
+      { name: 'Tiếng Việt', where: 'saving…' },
+    ]);
   });
 });

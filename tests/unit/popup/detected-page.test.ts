@@ -236,3 +236,69 @@ describe('Detected tab: grab animation (0.5.0)', () => {
     vi.restoreAllMocks();
   });
 });
+
+describe('Detected tab: subtitles (0.7.0)', () => {
+  it('ticks the subtitles of the Settings languages, says where they go, and sends the chosen ones', async () => {
+    const chrome = await installPopupChrome({
+      activeTab: TAB,
+      settings: { subtitleLanguages: 'vi', subtitleMode: 'both' },
+      answers: { 'downloads/start': { created: [], failed: [] } },
+    });
+    const base = stream('subbed');
+    const media = base.media ?? { variants: [], audioTracks: [] };
+    const subbed: DetectedStream = {
+      ...base,
+      media: {
+        ...media,
+        variants: media.variants.map((variant) => ({ ...variant, subtitleTrackIds: ['sub-en', 'sub-vi', 'sub-en-forced'] })),
+        subtitleTracks: [
+          { id: 'sub-en', name: 'English', language: 'en', isDefault: true },
+          { id: 'sub-vi', name: 'Tiếng Việt', language: 'vi', isDefault: false },
+          { id: 'sub-en-forced', name: 'English', language: 'en', isDefault: false, forced: true },
+        ],
+      },
+    };
+    const { media: _media, ...plain } = stream('plain', { title: 'Plain video' });
+    const noAudio = { ...plain, media: { variants: [{ id: 'file', audioOnly: false, audioTrackIds: [], subtitleTrackIds: ['sub-vi'] }], audioTracks: [], subtitleTracks: [{ id: 'sub-vi', name: 'Tiếng Việt', language: 'vi', isDefault: false }] } };
+    await chrome.session.set({ [detectionStorageKey(TAB.id)]: { version: 1, tabId: TAB.id, generation: 1, streams: [subbed, noAudio], updatedAt: 1 } });
+    const view = await render(DetectedPage, { onShowQueue: () => undefined });
+    unmount = () => view.root.unmount();
+    const row = () => view.container.querySelectorAll('li')[0];
+
+    const toggle = [...(row()?.querySelectorAll('button') ?? [])].find((button) => button.getAttribute('aria-controls') !== null);
+    expect(toggle?.textContent).toBe('English · 1 sub');
+    expect(toggle?.getAttribute('title')).toBe('Audio tracks, subtitles and file name');
+    const otherToggle = [...(view.container.querySelectorAll('li')[1]?.querySelectorAll('button') ?? [])].find((button) => button.getAttribute('aria-controls') !== null);
+    expect(otherToggle?.textContent).toBe('Subtitles: Tiếng Việt');
+
+    await act(async () => {
+      toggle?.click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    const boxes = () => [...(row()?.querySelectorAll<HTMLInputElement>('fieldset input[type="checkbox"]') ?? [])];
+    const box = (label: string) => boxes().find((input) => input.parentElement?.textContent === label);
+    expect(box('Tiếng Việt')?.checked).toBe(true);
+    expect(box('English')?.checked).toBe(false);
+    expect(box('English (forced)')?.checked).toBe(false);
+    expect(row()?.textContent).toContain('Added to the video and saved as SRT files next to the video');
+    await check(box('English'));
+    expect(toggle?.textContent).toBe('English · 2 subs');
+
+    await click(view.container, 'Download Movie Title');
+    expect(chrome.sent.at(-1)).toEqual({
+      type: 'downloads/start',
+      payload: {
+        requests: [
+          {
+            tabId: TAB.id,
+            streamId: 'subbed',
+            variantId: 'video-0',
+            audioTrackIds: ['audio-0'],
+            subtitleTrackIds: ['sub-vi', 'sub-en'],
+            fileName: 'Movie_Title_1080p',
+          },
+        ],
+      },
+    });
+  });
+});

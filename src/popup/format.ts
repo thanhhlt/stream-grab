@@ -3,10 +3,11 @@ import { extensionFor } from '@/core/download/file-name';
 import { formatBitrate, variantLabel } from '@/core/download/labels';
 import { freeBytesOf, type StorageEstimateLike } from '@/core/download/storage-space';
 import { codecLabel, containerExtension } from '@/core/media/containers';
-import type { DetectedStream, EncryptionKind, VariantSummary } from '@/core/models/detected-stream';
+import type { DetectedStream, EncryptionKind, MediaProtocol, VariantSummary } from '@/core/models/detected-stream';
 import type { DownloadTask, MediaProgress, TaskProgress, TaskStatus } from '@/core/models/download-task';
 import type { MediaAnalysis, MediaStreamInfo } from '@/core/models/media-info';
 import { codecDisplayName } from '@/core/protocols/codecs';
+import type { SubtitleFormat, SubtitleMode } from '@/shared/settings/settings';
 import { formatBytes } from '@/shared/utils/bytes';
 import { fileNameOf, hostnameOf } from '@/shared/utils/url';
 
@@ -479,6 +480,42 @@ export function completedFacts(task: DownloadTask): CompletedFacts {
   const fileName = outputFileName(task);
   if (fileNameAddsInfo(task.source.title, fileName)) facts.fileName = fileName;
   return facts;
+}
+
+/** Where a stream's chosen subtitles go, from Settings (0.7.0). A progressive file is never merged: always files. */
+export function subtitleDestination(protocol: MediaProtocol, mode: SubtitleMode, format: SubtitleFormat): string {
+  const files = `${format === 'srt' ? 'SRT' : 'WebVTT'} files next to the video`;
+  if (protocol === 'progressive' || mode === 'file') return `Saved as ${files}`;
+  if (mode === 'embed') return 'Added to the video file';
+  return `Added to the video and saved as ${files}`;
+}
+
+/** A subtitle track of a saved video, for the Completed tab (0.7.0). */
+export interface CompletedSubtitle {
+  name: string;
+  /** "in video", ".srt", "in video, .srt", "saving…" or "not saved". */
+  where: string;
+  /** Why its file was not saved. */
+  error?: string;
+}
+
+/** The subtitles of a saved video: in the video file, saved next to it, or why not. */
+export function completedSubtitles(task: DownloadTask): CompletedSubtitle[] {
+  const chosen = task.selection.subtitles ?? [];
+  return (task.output.subtitles ?? []).flatMap((entry) => {
+    const track = chosen.find((candidate) => candidate.id === entry.trackId);
+    let name = track?.name ?? entry.trackId;
+    if (track?.forced === true && !/forced/i.test(name)) name += ' (forced)';
+    const extension = entry.saved ? /\.(\w+)$/.exec(entry.saved.path)?.[1] : undefined;
+    const places = [entry.embedded ? 'in video' : '', entry.saved ? `.${extension ?? task.output.subtitleFormat ?? 'srt'}` : ''].filter(Boolean);
+    if (entry.error !== undefined) {
+      places.push(places.length > 0 ? 'file not saved' : 'not saved');
+      return [{ name, where: places.join(', '), error: entry.error }];
+    }
+    // A file still to come: a progressive file's subtitles are saved after the task completes.
+    if (!entry.saved && (!entry.embedded || entry.url !== undefined || entry.downloadId !== undefined)) places.push('saving…');
+    return places.length > 0 ? [{ name, where: places.join(', ') }] : [];
+  });
 }
 
 export interface CompletedSummary {

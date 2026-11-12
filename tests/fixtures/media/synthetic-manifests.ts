@@ -56,17 +56,30 @@ export interface HlsAudioEntry {
   rendition: Rendition;
 }
 
-/** Multivariant playlist: video variants, optionally sharing one alternative audio rendition. */
-export function hlsMasterPlaylist(variants: readonly HlsVariantEntry[], audio?: HlsAudioEntry): string {
+/** A WebVTT subtitle rendition (0.7.0). */
+export interface HlsSubtitleEntry {
+  uri: string;
+  name: string;
+  language: string;
+}
+
+/**
+ * Multivariant playlist: video variants, optionally sharing one alternative audio rendition and
+ * one group of subtitle renditions.
+ */
+export function hlsMasterPlaylist(variants: readonly HlsVariantEntry[], audio?: HlsAudioEntry, subtitles: readonly HlsSubtitleEntry[] = []): string {
   const lines = ['#EXTM3U', '#EXT-X-INDEPENDENT-SEGMENTS'];
   if (audio) {
     lines.push(`#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="aud",NAME="${audio.name}",LANGUAGE="${audio.language}",DEFAULT=YES,AUTOSELECT=YES,URI="${audio.uri}"`);
+  }
+  for (const subtitle of subtitles) {
+    lines.push(`#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",NAME="${subtitle.name}",LANGUAGE="${subtitle.language}",AUTOSELECT=YES,URI="${subtitle.uri}"`);
   }
   for (const variant of variants) {
     const bandwidth = bandwidthOf(variant.rendition) + (audio ? bandwidthOf(audio.rendition) : 0);
     const codecs = audio || variant.rendition.init === undefined ? `${H264_CODEC},${AAC_CODEC}` : H264_CODEC;
     lines.push(
-      `#EXT-X-STREAM-INF:BANDWIDTH=${bandwidth},RESOLUTION=${variant.width}x${variant.height},CODECS="${codecs}"${audio ? ',AUDIO="aud"' : ''}`,
+      `#EXT-X-STREAM-INF:BANDWIDTH=${bandwidth},RESOLUTION=${variant.width}x${variant.height},CODECS="${codecs}"${audio ? ',AUDIO="aud"' : ''}${subtitles.length > 0 ? ',SUBTITLES="subs"' : ''}`,
       variant.uri,
     );
   }

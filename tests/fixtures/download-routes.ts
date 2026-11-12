@@ -8,7 +8,7 @@
  * Shared by scripts/fixture-server.ts and tests/integration/download-fixtures.test.ts.
  */
 import type { FixtureResponse } from './fixture-routes.ts';
-import { dashManifest, hlsMasterPlaylist, hlsMediaPlaylist } from './media/synthetic-manifests.ts';
+import { dashManifest, hlsMasterPlaylist, hlsMediaPlaylist, type HlsSubtitleEntry } from './media/synthetic-manifests.ts';
 import type { Rendition, SyntheticMedia, SyntheticOptions } from './media/synthetic-media.ts';
 
 /** Media the demo serves: 8 minutes of 4-second segments in two qualities. */
@@ -64,6 +64,11 @@ export const DOWNLOAD_STREAMS: readonly DemoStream[] = [
     tryThis: 'Completes only if the extension replays the page’s Referer (DNR rule) on every segment.',
   },
   {
+    path: '/download/subtitled/subtitled.m3u8',
+    title: 'HLS · English and Vietnamese subtitles (WebVTT)',
+    tryThis: 'Tick subtitles under Options (Settings → Subtitle languages ticks them for you), download, and find .srt files next to the video or the tracks inside it.',
+  },
+  {
     path: '/download/expiring/expiring.m3u8',
     title: 'HLS · link "expires" a third of the way in (HTTP 403)',
     tryThis: 'Fails with the expired-link message after two manifest refreshes.',
@@ -71,8 +76,40 @@ export const DOWNLOAD_STREAMS: readonly DemoStream[] = [
 ];
 
 const HLS = 'application/vnd.apple.mpegurl';
-const KINDS = new Set(['plain', 'flaky', 'protected', 'expiring']);
+const KINDS = new Set(['plain', 'flaky', 'protected', 'expiring', 'subtitled']);
 const AUDIO_ID = 'audio-en';
+
+/** Subtitles of the `subtitled` stream (0.7.0): one WebVTT file per 2 minutes, a cue every 20 seconds. */
+export const DEMO_SUBTITLES = [
+  { code: 'en', name: 'English', language: 'en', line: (index: number) => `English line ${index}` },
+  { code: 'vi', name: 'Tiếng Việt', language: 'vi', line: (index: number) => `Dòng tiếng Việt số ${index}` },
+] as const;
+const SUBTITLE_SEGMENT_SECONDS = 120;
+const CUE_EVERY_SECONDS = 20;
+
+const vttTime = (seconds: number) => {
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${(seconds % 60).toFixed(3).padStart(6, '0')}`;
+};
+
+/** WebVTT segment `index` of a subtitle track: cues 5–7 s into each 20-second slot. */
+function subtitleSegment(line: (index: number) => string, index: number): string {
+  const cues: string[] = [];
+  for (let start = index * SUBTITLE_SEGMENT_SECONDS; start < (index + 1) * SUBTITLE_SEGMENT_SECONDS; start += CUE_EVERY_SECONDS) {
+    cues.push(`${vttTime(start + 5)} --> ${vttTime(start + 7)}\n${line(start / CUE_EVERY_SECONDS + 1)}`);
+  }
+  return `WEBVTT\n\n${cues.join('\n\n')}\n`;
+}
+
+function subtitlePlaylist(totalSeconds: number): string {
+  const lines = ['#EXTM3U', '#EXT-X-VERSION:3', `#EXT-X-TARGETDURATION:${SUBTITLE_SEGMENT_SECONDS}`, '#EXT-X-MEDIA-SEQUENCE:0', '#EXT-X-PLAYLIST-TYPE:VOD'];
+  for (let start = 0, index = 0; start < totalSeconds; start += SUBTITLE_SEGMENT_SECONDS, index += 1) {
+    lines.push(`#EXTINF:${Math.min(SUBTITLE_SEGMENT_SECONDS, totalSeconds - start).toFixed(3)},`, `seg-${index}.vtt`);
+  }
+  lines.push('#EXT-X-ENDLIST');
+  return lines.join('\n');
+}
 
 /** True when the request comes from (or replays the Referer of) the download page. */
 function fromDownloadPage(referer: string | undefined): boolean {
@@ -100,10 +137,12 @@ export function createDownloadRouter(
   const ok = (contentType: string, body: string | Uint8Array<ArrayBuffer>, delayMs = 0): FixtureResponse => ({ status: 200, contentType, body, delayMs });
   const error = (status: number, delayMs = latencyMs): FixtureResponse => ({ status, contentType: 'text/plain', body: `HTTP ${status}`, delayMs });
 
-  const master = hlsMasterPlaylist(
-    videos.map((video) => ({ uri: `${video.name}/index.m3u8`, width: video.width, height: video.height, rendition: media.ts.video[video.name] as Rendition })),
-    { uri: 'audio/index.m3u8', name: 'English', language: 'en', rendition: media.ts.audio },
-  );
+  const hlsVariants = videos.map((video) => ({ uri: `${video.name}/index.m3u8`, width: video.width, height: video.height, rendition: media.ts.video[video.name] as Rendition }));
+  const hlsAudio = { uri: 'audio/index.m3u8', name: 'English', language: 'en', rendition: media.ts.audio };
+  const master = hlsMasterPlaylist(hlsVariants, hlsAudio);
+  const subtitleEntries: HlsSubtitleEntry[] = DEMO_SUBTITLES.map((track) => ({ uri: `subs/${track.code}/index.m3u8`, name: track.name, language: track.language }));
+  const subtitledMaster = hlsMasterPlaylist(hlsVariants, hlsAudio, subtitleEntries);
+  const totalSeconds = segments * media.options.segmentSeconds;
   const mpd = dashManifest(
     videos.map((video) => ({ id: video.name, width: video.width, height: video.height, rendition: media.fmp4.video[video.name] as Rendition })),
     { id: AUDIO_ID, language: 'en', rendition: media.fmp4.audio },
@@ -122,11 +161,20 @@ export function createDownloadRouter(
       return body ? ok('video/mp4', body, latencyMs) : undefined;
     }
 
+    const subtitle = /^\/download\/subtitled\/subs\/(\w+)\/(?:(index\.m3u8)|seg-(\d+)\.vtt)$/.exec(pathname);
+    if (subtitle) {
+      const track = DEMO_SUBTITLES.find((candidate) => candidate.code === subtitle[1]);
+      if (!track) return undefined;
+      if (subtitle[2] !== undefined) return ok(HLS, subtitlePlaylist(totalSeconds));
+      const index = Number(subtitle[3]);
+      return index * SUBTITLE_SEGMENT_SECONDS < totalSeconds ? ok('text/vtt', subtitleSegment(track.line, index), latencyMs) : undefined;
+    }
+
     const hls = /^\/download\/(\w+)\/(?:(\w+)\.m3u8|(\w+)\/(?:(index\.m3u8)|seg-(\d+)\.ts))$/.exec(pathname);
     const kind = hls?.[1];
     if (!hls || kind === undefined || !KINDS.has(kind)) return undefined;
     if (kind === 'protected' && !fromDownloadPage(request.referer)) return error(403, 0);
-    if (hls[2] !== undefined) return hls[2] === kind ? ok(HLS, master) : undefined;
+    if (hls[2] !== undefined) return hls[2] === kind ? ok(HLS, kind === 'subtitled' ? subtitledMaster : master) : undefined;
     const rendition = tsRendition(hls[3] ?? '');
     if (!rendition) return undefined;
     if (hls[4] !== undefined) return ok(HLS, hlsMediaPlaylist(rendition));

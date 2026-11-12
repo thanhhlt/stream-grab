@@ -158,7 +158,7 @@ describe('theme switch: header button and Settings row (0.5.0)', () => {
     // System, light: the button offers dark.
     expect(root().dataset['theme']).toBe('light');
     expect(checked(container)).toBe('System');
-    expect(container.querySelector('[role="radiogroup"]')?.getAttribute('aria-labelledby')).toBe('theme-label');
+    expect(container.querySelector('#theme[role="radiogroup"]')?.getAttribute('aria-labelledby')).toBe('theme-label');
     expect(document.getElementById('theme-label')?.textContent).toBe('Theme');
     const button = container.querySelector('header button');
     expect(button?.getAttribute('aria-label')).toBe('Switch to dark theme');
