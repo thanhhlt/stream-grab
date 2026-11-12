@@ -30,6 +30,36 @@ setting does it), an Open file button (needs `downloads.open`), an FFmpeg upgrad
    the first segments of every track are fetched early so the size estimate includes audio sooner.
 4. Regression tests, docs, release (done 2026-11-11).
 
+## v0.7.0: subtitles
+
+Scope agreed on 2026-11-12. Today every subtitle is dropped: HLS `TYPE=SUBTITLES` renditions and
+DASH text adaptation sets are ignored, and the merge maps only video and audio.
+
+- **Sources:** WebVTT text subtitles from HLS `TYPE=SUBTITLES` renditions (segmented `.vtt`),
+  DASH text adaptation sets with `mimeType="text/vtt"` (one file or segments), and
+  `<track src>` elements on a page's `<video>` for progressive MP4/WebM.
+- **Joining:** segmented WebVTT is joined into one file (repeated headers removed) and its cue
+  times are aligned with the video through `X-TIMESTAMP-MAP`.
+- **Output:** by default each chosen subtitle is saved as a **separate file** next to the video
+  (`.vtt`, or `.srt`). A setting switches to embedding it in the merged file instead (MKV keeps
+  WebVTT; MP4 needs `mov_text`) or doing both. Progressive files are never merged, so they always
+  get separate files. Each track keeps its language and name, as audio tracks do.
+- **UI:** subtitles are picked by language in the Detected tab, like audio tracks; Settings has
+  default subtitle languages and the output mode.
+- **Not planned:** subtitles inside fMP4 (`wvtt`, `stpp`/TTML; FFmpeg 5.1 handles them poorly),
+  CEA-608/708 captions inside the video stream, image subtitles, burned-in subtitles.
+
+Phases:
+
+1. Analysis and Chrome spikes: does the bundled FFmpeg.wasm core have the WebVTT demuxer, the
+   `mov_text` encoder and the SRT muxer; `X-TIMESTAMP-MAP` against the current `-itsoffset`
+   alignment (also across discontinuities); one extra `chrome.downloads` file per subtitle with
+   the current naming and Completed list.
+2. Parse HLS/DASH subtitle renditions and `<track>`, download and join WebVTT, save separate
+   `.vtt`/`.srt` files; unit tests.
+3. Embed in MKV/MP4 (when the setting asks for it), subtitle picker in the popup, Settings; e2e.
+4. Regression tests, docs, release.
+
 ## v0.8.0: Chrome Web Store preparation
 
 - **Block YouTube** (`youtube.com`, `googlevideo.com`): the Chrome Web Store policy does not allow
