@@ -87,7 +87,9 @@ Phases:
      Settings rows for the languages, where subtitles go (Files / In video / Both) and the file
      format (SRT / WebVTT), and a Subtitles line in the Completed tab; e2e on a subtitled HLS
      demo stream through the real popup.
-4. Regression tests, docs, release.
+4. Regression tests, docs, release (docs and checks done 2026-11-12). fMP4 subtitles (`wvtt`) stay
+   out: a real DASH stream with only `wvtt` text (Shaka's Angel One demo) shows none. A parser of
+   its own (about 600 lines) is a candidate for a later version.
 
 ## v0.8.0: Chrome Web Store preparation
 

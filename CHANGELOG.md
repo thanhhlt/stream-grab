@@ -7,6 +7,28 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-11-12
+
+### Added
+
+- **Subtitles.** WebVTT subtitles from HLS `TYPE=SUBTITLES` renditions, DASH text tracks
+  (`text/vtt`) and the `<track>` elements of a page's `<video>` are listed under *Options* of a
+  video in the Detected tab and picked like audio tracks. Segmented subtitles are joined into one
+  file and timed to match the merged video.
+- **Where subtitles go** (Settings): *Files* (default, saved next to the video as
+  `<video name>.<language>.srt`), *In video* (embedded in the MKV, or as `mov_text` in the MP4) or
+  *Both*. A merge that fails with subtitles is run again without them, and they are saved as files.
+  Progressive files always get separate files.
+- **Subtitle files** (Settings): SRT (default) or WebVTT. **Subtitle languages** (Settings): the
+  languages ticked by default, for example `en, pt-BR`; empty means none.
+- The Completed tab shows a *Subtitles* line for each video (in video, file saved, or the error).
+
+### Known limits
+
+- Subtitles inside fMP4 (`wvtt`, `stpp`/TTML), CEA-608/708 captions inside the video, image
+  subtitles and burned-in subtitles are not supported. A subtitle that cannot be downloaded never
+  fails the video.
+
 ## [0.6.0] - 2026-11-11
 
 ### Added

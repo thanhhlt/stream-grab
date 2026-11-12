@@ -4,7 +4,7 @@ Browser extension (Chrome, Manifest V3) that detects, downloads and merges onlin
 entirely in the browser. No server, no native helper. It is built to support several streaming
 formats and protocols; see [Supported formats](#supported-formats) for what works today.
 
-Current version: **0.6.0** — see [CHANGELOG.md](CHANGELOG.md) and the
+Current version: **0.7.0** — see [CHANGELOG.md](CHANGELOG.md) and the
 [releases](https://github.com/thanhhlt/stream-grab/releases).
 
 Status: **all 10 phases done** (Phase 10: error handling, performance, testing). Streams are
@@ -41,6 +41,7 @@ FFmpeg.wasm (`@ffmpeg/core`) is licensed GPL-2.0-or-later and adds 32 MB to the 
 | HLS (`.m3u8`): MPEG-TS and fMP4 segments, AES-128 encryption     | 0.1.0 |
 | MPEG-DASH (`.mpd`): SegmentTemplate, SegmentList, SegmentBase    | 0.1.0 |
 | Progressive MP4 and WebM files played by `<video>` (saved as is) | 0.3.0 |
+| WebVTT subtitles (HLS, DASH, `<track>`): files or embedded       | 0.7.0 |
 
 DRM-protected streams are detected and flagged but never downloaded. Live streams are not
 listed (0.4.0): they cannot be downloaded yet, and a live player's playlist reloads would flood

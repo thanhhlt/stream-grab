@@ -750,7 +750,7 @@ chrome.downloads.onChanged (complete | interrupted) ──▶ #settleSave
   discontinuity (ad breaks, re-encodes) do not fold the video back on itself. Each run is a Blob
   of the stored Blobs (`trackData` returns them with their segment positions): nothing is copied.
 - **Command** (`buildMergeJob`). Main track first (video, and muxed audio if any), then each
-  alternative audio track; `-map 0:V? -map 0:a? -map N:a` (no cover art, no data or subtitle
+  alternative audio track; `-map 0:V? -map 0:a? -map N:a` (no cover art, no data or in-stream subtitle
   streams), `-c copy`, no re-encoding. FFmpeg starts every input at 0, which would lose the
   offset between separately delivered audio and video, so each input gets `-itsoffset` = its
   start (probed: `startSec`) minus the earliest track's. Metadata: `-map_metadata -1` (no
@@ -1246,8 +1246,52 @@ downloading again. The MP4 setting itself stays a hard choice.
 `samplesFirst` (`estimate.ts`) reorders the pending positions so the first three segments of
 every track download first, so the size estimate includes audio early; the plan is unchanged.
 
+## Version 0.7.0
+
+### Subtitles
+
+**Detection.** `TrackType` has `'subtitle'` and `ContainerFormat` `'webvtt'`. HLS `TYPE=SUBTITLES`
+renditions become `subtitleTracks` of the manifest (their playlists are in `childUrls`; each
+variant lists `subtitleTrackIds` through its `SUBTITLES` group); DASH text adaptation sets with
+`text/vtt` are read from `mediaGroups.SUBTITLES` (fMP4 text, `codecs="wvtt"`/`stpp`, is skipped by
+`isPlainWebVtt`). For progressive files the content script reports the `<video>`'s `<track src>`
+elements (`findTrackSubtitles`, ids `track-N`); the detection manager keeps them per tab and
+stores them with the stream (`domSubtitles`), so they survive a service-worker restart.
+
+**Download.** `getSegments({subtitleTrackIds})` adds `subtitle` segments; the engine stores them
+like other tracks (`buildLayout` takes subtitle tracks for name and language). A subtitle playlist
+or segment that fails is stored empty and never fails the video.
+
+**Timing and joining** (`core/subtitles/webvtt.ts`, `core/media/subtitle-files.ts`). FFmpeg does not
+move a subtitle input to 0 and `-itsoffset` adds, so cues are written on the merged file's
+timeline: HLS `out = runStart + MPEGTS/90000 − LOCAL − runFirstPts + cue` from `X-TIMESTAMP-MAP`,
+DASH `out = runStart + cue` (period-relative); a run starts at the sum of the earlier runs'
+durations. Repeated cues are removed, split cues joined, cues cut at the video's end (a later cue
+lengthens the file). Joined files have no `STYLE` block (FFmpeg's WebVTT demuxer then drops every
+cue). Multi-run files are probed run by run only when useful (≤ 100 runs).
+
+**Output.** `subtitleMode` (`file` default, `embed`, `both`) and `subtitleFormat` (`srt` default,
+`vtt`) are Settings. Embedding (`media-merge`/`merge-plan`): `-f webvtt -i` after the tracks, MKV
+keeps WebVTT, MP4 `-c:s mov_text`, language and title (MKV) or `handler_name` (MP4), no default
+disposition (FFmpeg's MP4 muxer still enables the first subtitle). A merge that fails with
+subtitles is repeated without them (`MediaFailure` with `withSubtitles`), which then become files.
+Files are saved by the service worker (`subtitle-saves.ts`) after the video has completed, named
+`<final video name>.<lang>[.forced][.<name>].<ext>`, as `text/vtt` or `application/x-subrip`
+(an untyped blob becomes `.txt`), from a blob: URL (merged tasks) or a data: URL (progressive
+`<track>` files, ≤ 1.5 MB, fetched by the service worker with the request context). The task stays
+*processing* until its subtitle saves settle; `output.subtitles` records each one.
+
+**Popup.** `StreamChoice.subtitleTrackIds`; the default is one track per Settings language, in
+order, never a forced one (`languageKey` maps ISO 639-2/B codes to /T, `pt-BR` takes `pt-BR` or
+`pt`). A changed quality keeps the picks the new variant also offers.
+
 ## Known limitations
 
+- **Subtitles.** fMP4 text (`wvtt`, `stpp`/TTML), CEA-608/708 captions inside the video, image and
+  burned-in subtitles are not supported. A single MPEG-TS input whose PTS jumps without a
+  discontinuity (FFmpeg corrects it itself) is timed by its first run. Progressive `<track>` files
+  larger than 1.5 MB are not saved. `subtitleLanguages` is empty by default: nothing is ticked
+  until the user ticks it or sets a language.
 - **Progressive files.** Chrome's own downloads carry no Referer/Origin; the engine fallback
   needs the task's request context (lost after a browser restart until the video is played
   again), resumes with Range after a failure only when the server sends a strong ETag or Last-Modified (otherwise it starts over) and needs room for the file twice while
@@ -1344,13 +1388,13 @@ every track download first, so the size estimate includes audio early; the plan 
   match (a Period with new ids yields separate variants); per-Period changes of available
   representations, `Location` redirects of dynamic MPDs, XLink-resolved remote Periods, content
   steering and DVB fonts/events are ignored; SegmentBase files are split into fixed 16 MiB
-  ranges rather than along their `sidx`; subtitle adaptation sets are ignored; for each audio
+  ranges rather than along their `sidx`; fMP4 subtitle adaptation sets are ignored (see Subtitles); for each audio
   adaptation set only its best bitrate is offered.
 - The service-worker module graph is ~175 KB, mostly the manifest parsers and the XML parser
   `@xmldom/xmldom` needed by mpd-parser (no DOMParser exists in service workers). Rollup names
   that shared chunk after one of its modules (`chunks/engine-messages.js`).
 - HLS details not handled yet: an `EXT-X-MAP` encrypted with AES-128 is not decrypted (rare;
-  CMAF content uses SAMPLE-AES/cbcs); subtitle renditions (`TYPE=SUBTITLES`) and alternative
+  CMAF content uses SAMPLE-AES/cbcs); alternative
   video renditions (`TYPE=VIDEO`, multi-angle) are ignored; Low-Latency HLS partial segments are
   ignored in favour of full segments; the duration shown for a multivariant playlist comes from
   its first variant.
