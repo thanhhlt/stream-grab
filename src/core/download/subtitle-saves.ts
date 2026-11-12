@@ -19,8 +19,12 @@ export const MAX_TRACK_FILE_BYTES = 16 * 1024 * 1024;
 /** Chrome refuses URLs over 2 MiB (kMaxURLChars): the base64 of a data: URL must stay below that. */
 export const MAX_DATA_URL_TEXT_BYTES = 1_500_000;
 
-/** An entry that has not been handed to Chrome yet and has not failed. */
-export const awaitsSave = (file: SubtitleOutput): boolean => file.downloadId === undefined && !file.saved && file.error === undefined;
+/**
+ * An entry that has not been handed to Chrome yet and has not failed. An
+ * embedded track without a file URL has nothing to save (embedded only).
+ */
+export const awaitsSave = (file: SubtitleOutput): boolean =>
+  file.downloadId === undefined && !file.saved && file.error === undefined && !(file.embedded === true && file.url === undefined);
 
 /** An entry Chrome is saving, as far as the task knows. */
 export const isSaving = (file: SubtitleOutput): boolean => file.downloadId !== undefined && !file.saved && file.error === undefined;

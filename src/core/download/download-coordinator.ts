@@ -258,9 +258,12 @@ function withoutRunData(task: DownloadTask): DownloadTask {
   return { ...rest, output };
 }
 
-/** Done subtitle entries need no blob: URL any more; unfinished ones end with `error`. */
+/** Done subtitle entries need no blob: URL any more; unfinished ones end with `error` (an embedded-only one is done). */
 function settledSubtitles(files: readonly SubtitleOutput[], error: string): SubtitleOutput[] {
-  return files.map(({ url: _url, ...file }) => (file.saved || file.error !== undefined ? file : { ...file, error }));
+  return files.map((entry) => {
+    const { url: _url, ...file } = entry;
+    return file.saved || file.error !== undefined || !(awaitsSave(entry) || isSaving(entry)) ? file : { ...file, error };
+  });
 }
 
 const awaitsProcessing = (task: DownloadTask): boolean => task.status === 'downloaded';
@@ -411,7 +414,7 @@ export class DownloadCoordinator {
         const spec: MediaTaskSpec = { taskId: task.id, job: 'process', format: task.output.format, title: task.source.title };
         const protocol = task.source.protocol;
         if ((task.selection.subtitles?.length ?? 0) > 0 && (protocol === 'hls' || protocol === 'dash')) {
-          spec.subtitles = { protocol, format: task.output.subtitleFormat ?? 'srt' };
+          spec.subtitles = { protocol, format: task.output.subtitleFormat ?? 'srt', mode: task.output.subtitleMode ?? 'file' };
         }
         return spec;
       });
@@ -540,7 +543,9 @@ export class DownloadCoordinator {
     const chosen = file ? [] : (task.selection.subtitles ?? []);
     const subtitles = chosen.map((subtitle): SubtitleOutput => {
       const made = request.subtitles?.find((candidate) => candidate.trackId === subtitle.id);
-      if (made?.url !== undefined) return { trackId: subtitle.id, url: made.url };
+      const embedded = made?.embedded === true ? { embedded: true as const } : {};
+      if (made?.url !== undefined) return { trackId: subtitle.id, ...embedded, url: made.url };
+      if (made?.embedded === true) return { trackId: subtitle.id, embedded: true };
       return { trackId: subtitle.id, error: made?.error ?? SUBTITLE_MISSING_MESSAGE };
     });
     const saving = await this.#deps.store.update(task.id, (current) => {

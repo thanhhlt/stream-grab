@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { ACTIVE_TASKS, SEGMENT_CONCURRENCY } from '@/shared/constants';
-import { DEFAULT_SETTINGS, normalizeSettings, settingsEqual } from '@/shared/settings/settings';
+import { DEFAULT_SETTINGS, normalizeSettings, parseSubtitleLanguages, settingsEqual } from '@/shared/settings/settings';
 
 describe('normalizeSettings', () => {
   it('returns defaults for missing or non-object input', () => {
@@ -68,6 +68,15 @@ describe('normalizeSettings', () => {
     }
     const current = { ...DEFAULT_SETTINGS, theme: 'dark' as const };
     expect(normalizeSettings({ ...current, theme: 'sepia' }, current).theme).toBe('dark');
+  });
+
+  it('subtitles: SRT files by default, a mode of file, embed or both, and language tags in order (0.7.0)', () => {
+    expect(DEFAULT_SETTINGS).toMatchObject({ subtitleFormat: 'srt', subtitleMode: 'file', subtitleLanguages: '' });
+    expect(normalizeSettings({ subtitleMode: 'embed' }).subtitleMode).toBe('embed');
+    expect(normalizeSettings({ subtitleMode: 'burn' }).subtitleMode).toBe('file');
+    expect(normalizeSettings({ subtitleLanguages: 'EN; pt-br,  vi en zh-hant-tw x 12 é' }).subtitleLanguages).toBe('en, pt-BR, vi, zh-Hant-TW');
+    expect(normalizeSettings({ subtitleLanguages: 3 }).subtitleLanguages).toBe('');
+    expect(parseSubtitleLanguages('a b c de fr it es pt ru ja ko zh vi')).toHaveLength(8);
   });
 
   it('drops unknown keys', () => {

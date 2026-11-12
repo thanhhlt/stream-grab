@@ -100,8 +100,8 @@ describe('subtitles in download requests and tasks (0.7.0)', () => {
     ).toEqual([{ ...base, subtitleTrackIds: ['subtitle-1', 'subtitle-0'] }, base, base]);
   });
 
-  it('records the chosen manifest subtitles and the subtitle format on the task', async () => {
-    const { service, store } = await setup({ subtitleFormat: 'vtt' });
+  it('records the chosen manifest subtitles, the subtitle format and where they go on the task', async () => {
+    const { service, store } = await setup({ subtitleFormat: 'vtt', subtitleMode: 'both' });
     const result = await service.start([request('hls', { subtitleTrackIds: ['subtitle-1', 'subtitle-2'] })]);
     expect(result.failed).toEqual([]);
     const [task] = await store.list();
@@ -110,6 +110,7 @@ describe('subtitles in download requests and tasks (0.7.0)', () => {
       { id: 'subtitle-2', name: 'English (forced)', language: 'en', forced: true },
     ]);
     expect(task?.output.subtitleFormat).toBe('vtt');
+    expect(task?.output.subtitleMode).toBe('both');
   });
 
   it('leaves tasks without subtitles unchanged', async () => {
@@ -118,6 +119,7 @@ describe('subtitles in download requests and tasks (0.7.0)', () => {
     const [task] = await store.list();
     expect(task?.selection.subtitles).toBeUndefined();
     expect(task?.output.subtitleFormat).toBeUndefined();
+    expect(task?.output.subtitleMode).toBeUndefined();
   });
 
   it('refuses subtitles the chosen quality does not offer', async () => {
@@ -133,18 +135,20 @@ describe('subtitles in download requests and tasks (0.7.0)', () => {
     ]);
   });
 
-  it('records a progressive file’s <track> subtitles with their URL (SRT by default)', async () => {
-    const { service, store } = await setup();
+  it('records a progressive file’s <track> subtitles with their URL (SRT by default; always files)', async () => {
+    const { service, store } = await setup({ subtitleMode: 'embed' });
     await service.start([request('file', { variantId: PROGRESSIVE_VARIANT_ID, subtitleTrackIds: ['track-0'] })]);
     const [task] = await store.list();
     expect(task?.selection.subtitles).toEqual([{ id: 'track-0', name: 'English', language: 'en', url: 'https://media.example.net/v/en.vtt' }]);
     expect(task?.output.subtitleFormat).toBe('srt');
+    expect(task?.output.subtitleMode).toBeUndefined();
   });
 
   it('reads stored subtitles back, dropping damaged entries', async () => {
-    const { service, store } = await setup({ subtitleFormat: 'vtt' });
+    const { service, store } = await setup({ subtitleFormat: 'vtt', subtitleMode: 'embed' });
     await service.start([request('hls', { subtitleTrackIds: ['subtitle-0'] })]);
     const [task] = await store.list();
+    expect(task?.output.subtitleMode).toBe('embed');
     expect(parseTask(JSON.parse(JSON.stringify(task)))).toEqual(task);
     expect(
       parseTaskSubtitles([{ id: 'a', name: 'A', url: 'ftp://x/y.vtt' }, { id: '', name: 'B' }, { id: 'c', name: 'C', language: 'en', forced: 'yes' }, 7]),

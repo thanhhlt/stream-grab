@@ -1,4 +1,4 @@
-import type { OutputFormat, SubtitleFormat } from '@/shared/settings/settings';
+import type { OutputFormat, SubtitleFormat, SubtitleMode } from '@/shared/settings/settings';
 import type { MediaProtocol, ProgressiveContainer, RequestContext } from './detected-stream';
 import type { MediaAnalysis, OutputContainer } from './media-info';
 
@@ -165,6 +165,8 @@ export interface DownloadTask {
     format: OutputFormat;
     /** Format of the subtitle files (0.7.0), from Settings when the task was created; set only with subtitles. */
     subtitleFormat?: SubtitleFormat;
+    /** Where the subtitles go (0.7.0), from Settings when the task was created; HLS/DASH with subtitles only (progressive: files). */
+    subtitleMode?: SubtitleMode;
     /** chrome.downloads ID of the merged file, from the moment Chrome starts saving it. */
     downloadId?: number;
     /** The saved file, once completed: full path as Chrome reports it, and size. */
@@ -194,9 +196,12 @@ export interface SavedFile {
  * the video's final name: `url` waits for that (a blob: URL the engine holds,
  * merged videos only), `downloadId` follows Chrome's save, then `saved` or
  * `error` tell how it ended. A track that could not be made has only `error`.
+ * `embedded`: the track is in the merged video; such an entry without `url`
+ * has no file to save (Settings → subtitles in the video only).
  */
 export interface SubtitleOutput {
   trackId: string;
+  embedded?: true;
   url?: string;
   downloadId?: number;
   saved?: SavedFile;
@@ -271,7 +276,7 @@ export interface MediaTaskSpec {
   /** Written into the file's metadata. */
   title: string;
   /** Subtitle tracks were downloaded with the segments (0.7.0): how to time them, and the file format to write. */
-  subtitles?: { protocol: 'hls' | 'dash'; format: SubtitleFormat };
+  subtitles?: { protocol: 'hls' | 'dash'; format: SubtitleFormat; mode: SubtitleMode };
 }
 
 /**
@@ -308,8 +313,14 @@ export interface SaveRequest {
   subtitles?: SubtitleFileRequest[];
 }
 
+/**
+ * One chosen subtitle track of a merged video: `embedded` when it is in the
+ * merged file, `url` (and `size`) for its separate file, or `error` when it is
+ * neither.
+ */
 export interface SubtitleFileRequest {
   trackId: string;
+  embedded?: true;
   url?: string;
   size?: number;
   error?: string;

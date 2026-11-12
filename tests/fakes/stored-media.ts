@@ -1,7 +1,7 @@
 import type { SegmentStorage } from '@/core/download/download-storage';
 import { buildLayout } from '@/core/download/track-layout';
 import type { ContainerFormat, MediaSegment, TrackType } from '@/core/models/media-segment';
-import type { AudioTrack } from '@/core/models/streaming-manifest';
+import type { AudioTrack, SubtitleTrack } from '@/core/models/streaming-manifest';
 import type { Rendition } from '@tests/fixtures/media/synthetic-media';
 
 export interface StoredTrack {
@@ -28,12 +28,23 @@ export interface StoredSegmentSpec {
 export async function storeSegments(
   storage: SegmentStorage,
   taskId: string,
-  tracks: readonly { trackId: string; trackType: TrackType; container: ContainerFormat; segments: readonly StoredSegmentSpec[]; name?: string }[],
+  tracks: readonly {
+    trackId: string;
+    trackType: TrackType;
+    container: ContainerFormat;
+    segments: readonly StoredSegmentSpec[];
+    name?: string;
+    /** Subtitle tracks: the manifest's language (with `name`). */
+    language?: string;
+  }[],
 ): Promise<void> {
   const segments: MediaSegment[] = [];
   const audioTracks: AudioTrack[] = [];
+  const subtitleTracks: SubtitleTrack[] = [];
   for (const track of tracks) {
-    if (track.name !== undefined) audioTracks.push({ id: track.trackId, name: track.name, language: 'en', isDefault: true });
+    if (track.name !== undefined && track.trackType === 'subtitle') {
+      subtitleTracks.push({ id: track.trackId, name: track.name, ...(track.language !== undefined ? { language: track.language } : {}), isDefault: false, forced: false });
+    } else if (track.name !== undefined) audioTracks.push({ id: track.trackId, name: track.name, language: 'en', isDefault: true });
     for (const [index, spec] of track.segments.entries()) {
       segments.push({
         id: `${track.trackId}:${index}`,
@@ -50,7 +61,7 @@ export async function storeSegments(
       await storage.completeSegment({ taskId, trackId: track.trackId, index, bytes: spec.body.length, parts: 1 });
     }
   }
-  await storage.savePlan({ taskId, signature: `test-${segments.length}`, segmentsTotal: segments.length, updatedAt: 1, layout: buildLayout(segments, audioTracks) });
+  await storage.savePlan({ taskId, signature: `test-${segments.length}`, segmentsTotal: segments.length, updatedAt: 1, layout: buildLayout(segments, audioTracks, subtitleTracks) });
 }
 
 /**

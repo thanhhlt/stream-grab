@@ -8,9 +8,9 @@ import { errorMessage } from '@/shared/utils/errors';
 import type { Logger } from '@/shared/utils/logger';
 import { FfmpegError, type FfmpegRunner } from './ffmpeg-job';
 import { analyseTask, MediaFailure } from './media-analysis';
-import { mergeTask } from './media-merge';
+import { mergeTask, type EmbeddedSubtitle, type MergedFile } from './media-merge';
 import { mergeFileName, type OutputFileStore } from './output-files';
-import { buildSubtitleFiles } from './subtitle-files';
+import { buildSubtitleCues, subtitleFileData } from './subtitle-files';
 
 export interface MediaManagerDeps {
   storage: SegmentStorage;
@@ -112,8 +112,10 @@ function percentAt(stage: MediaStage, fraction = 0): number {
  * saving; the service worker follows the save and drops the task from its
  * work list when it is over, which releases the URL and deletes the file (not
  * sooner: a download Chrome has not started yet fails when its file is gone).
- * A task with subtitle tracks (0.7.0) also gets their files, timed on the
- * merged file (subtitle-files.ts), as blob: URLs held the same way: the
+ * A task with subtitle tracks (0.7.0) has their cues timed on the merged
+ * file (subtitle-files.ts) before the merge: as Settings asks, they go into
+ * the file (when that fails, the video is merged again without them and they
+ * become files) and/or become files, as blob: URLs held the same way: the
  * service worker saves them after the video, named after it.
  * Stored segments are the service worker's to delete after a save; the engine
  * deletes them only on cancel, or when they turned out to be unusable.
@@ -121,6 +123,17 @@ function percentAt(stage: MediaStage, fraction = 0): number {
  * FFmpeg commands run through one FfmpegRunner, which serialises them; the
  * service worker hands over one task at a time anyway (FFmpeg's heap is large).
  */
+/**
+ * Whether a merge with embedded subtitles may have failed because of them:
+ * FFmpeg refused the command or the result missed a stream, or FFmpeg itself
+ * failed (crashed, ran out of memory, stalled). Not a full disk or FFmpeg
+ * that cannot load: those fail the same way without subtitles.
+ */
+function subtitlesMayHaveFailed(error: unknown): boolean {
+  if (error instanceof MediaFailure) return error.withSubtitles;
+  return error instanceof FfmpegError && error.kind !== 'disk' && error.kind !== 'load';
+}
+
 export class MediaManager {
   readonly #deps: MediaManagerDeps;
   readonly #now: () => number;
@@ -295,49 +308,84 @@ export class MediaManager {
         },
       });
       await this.#checkSpace(media);
-      file = this.#fileFor(spec.taskId, media);
-      const merged = await mergeTask(spec.taskId, {
-        storage,
-        ffmpeg,
-        signal,
-        media,
-        layout,
-        ...(spec.title !== '' ? { title: spec.title } : {}),
-        ...(this.#deps.stallTimeoutMs !== undefined ? { stallTimeoutMs: this.#deps.stallTimeoutMs } : {}),
-        ...(file !== undefined ? { outputFile: file } : {}),
-        progress: (update) => {
-          if (update.stage === 'merging') this.#update(job, 'merging', update.fraction);
-          else this.#update(job, 'verifying', 1);
-        },
-      });
-      if (merged.fileError !== undefined) {
-        this.#deps.logger?.warn('The merged file could not be written to disk, so it was kept in memory', { error: merged.fileError });
-      }
-      signal.throwIfAborted();
-      // Subtitle files (0.7.0) on the merged file's timeline; one that cannot be made does not stop the video.
-      const subtitles: SubtitleFileRequest[] = [];
-      if (spec.subtitles) {
-        const made = await buildSubtitleFiles(spec.taskId, {
+      // Subtitles (0.7.0) on the merged file's timeline, read before the merge so they can go into it.
+      const timed = spec.subtitles
+        ? await buildSubtitleCues(spec.taskId, {
+            storage,
+            ffmpeg,
+            signal,
+            media,
+            layout,
+            protocol: spec.subtitles.protocol,
+            ...(this.#deps.commandTimeoutMs !== undefined ? { timeoutMs: this.#deps.commandTimeoutMs } : {}),
+          })
+        : [];
+      const toEmbed =
+        spec.subtitles && spec.subtitles.mode !== 'file'
+          ? timed.flatMap((track): EmbeddedSubtitle[] => {
+              if ('error' in track) return [];
+              const info = layout.find((candidate) => candidate.trackId === track.trackId);
+              return [{ trackId: track.trackId, cues: track.cues, ...(info?.language !== undefined ? { language: info.language } : {}), ...(info?.name !== undefined ? { name: info.name } : {}) }];
+            })
+          : [];
+      const merge = (subtitles: readonly EmbeddedSubtitle[]) =>
+        mergeTask(spec.taskId, {
           storage,
           ffmpeg,
           signal,
           media,
           layout,
-          protocol: spec.subtitles.protocol,
-          format: spec.subtitles.format,
-          ...(merged.durationSec !== undefined ? { durationSec: merged.durationSec } : {}),
-          ...(this.#deps.commandTimeoutMs !== undefined ? { timeoutMs: this.#deps.commandTimeoutMs } : {}),
+          ...(spec.title !== '' ? { title: spec.title } : {}),
+          ...(this.#deps.stallTimeoutMs !== undefined ? { stallTimeoutMs: this.#deps.stallTimeoutMs } : {}),
+          ...(file !== undefined ? { outputFile: file } : {}),
+          ...(subtitles.length > 0 ? { subtitles } : {}),
+          progress: (update) => {
+            if (update.stage === 'merging') this.#update(job, 'merging', update.fraction);
+            else this.#update(job, 'verifying', 1);
+          },
         });
-        for (const subtitle of made) {
-          if ('error' in subtitle) {
-            this.#deps.logger?.warn('A subtitle file could not be made', { trackId: subtitle.trackId, error: subtitle.error });
-            subtitles.push(subtitle);
-            continue;
-          }
-          const subtitleUrl = this.#createUrl(subtitle.data);
-          urls.push(subtitleUrl);
-          subtitles.push({ trackId: subtitle.trackId, url: subtitleUrl, size: subtitle.data.size });
+      file = this.#fileFor(spec.taskId, media);
+      let merged: MergedFile;
+      try {
+        merged = await merge(toEmbed);
+      } catch (error) {
+        if (toEmbed.length === 0 || signal.aborted || isAbortError(error) || !subtitlesMayHaveFailed(error)) throw error;
+        // Subtitles never cost the video: merge without them, and save them as files instead.
+        this.#deps.logger?.warn('The video could not be merged with its subtitles, so they are saved as files', { error: errorMessage(error) });
+        await this.#removeFile(file);
+        // A file that could not be deleted yet still takes its space.
+        await this.#checkSpace(media);
+        file = this.#fileFor(spec.taskId, media);
+        merged = await merge([]);
+      }
+      if (merged.fileError !== undefined) {
+        this.#deps.logger?.warn('The merged file could not be written to disk, so it was kept in memory', { error: merged.fileError });
+      }
+      signal.throwIfAborted();
+      // Subtitle files next to the video, cut at its real end; one that cannot be made does not stop the video.
+      const subtitles: SubtitleFileRequest[] = [];
+      for (const track of timed) {
+        const embedded = merged.embeddedSubtitles.includes(track.trackId);
+        if ('error' in track) {
+          this.#deps.logger?.warn('A subtitle track could not be read', { trackId: track.trackId, error: track.error });
+          subtitles.push(track);
+          continue;
         }
+        // Embedded only, as Settings asks; a track that could not be embedded gets its file instead.
+        if (embedded && spec.subtitles?.mode === 'embed') {
+          subtitles.push({ trackId: track.trackId, embedded: true });
+          continue;
+        }
+        let data: Blob;
+        try {
+          data = subtitleFileData(track.cues, spec.subtitles?.format ?? 'srt', merged.durationSec);
+        } catch (error) {
+          subtitles.push(embedded ? { trackId: track.trackId, embedded: true } : { trackId: track.trackId, error: errorMessage(error) });
+          continue;
+        }
+        const subtitleUrl = this.#createUrl(data);
+        urls.push(subtitleUrl);
+        subtitles.push({ trackId: track.trackId, ...(embedded ? { embedded: true as const } : {}), url: subtitleUrl, size: data.size });
       }
       const url = this.#createUrl(merged.data);
       urls.unshift(url);

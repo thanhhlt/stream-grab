@@ -10,21 +10,18 @@ import { trackRuns } from './merge-plan';
 import { parseProbeOutput, probeJob } from './probe';
 import { prepareTrack } from './track-data';
 
-/** A subtitle track's file, or why it could not be made (the video is saved either way). */
-export type SubtitleFile = { trackId: string; data: Blob } | { trackId: string; error: string };
+/** A subtitle track's cues on the merged file's timeline (not cut at its end yet), or why it could not be read. */
+export type TimedSubtitle = { trackId: string; cues: VttCue[] } | { trackId: string; error: string };
 
-export interface SubtitleFilesOptions {
+export interface SubtitleCuesOptions {
   storage: SegmentStorage;
   ffmpeg: FfmpegRunner;
   signal: AbortSignal;
-  /** The analysis and stored layout the video was merged from (analyseTask). */
+  /** The analysis and stored layout the video is merged from (analyseTask). */
   media: MediaAnalysis;
   layout: readonly TrackLayout[];
   /** HLS cues are timed by X-TIMESTAMP-MAP, DASH cues from the start of their period. */
   protocol: 'hls' | 'dash';
-  format: SubtitleFormat;
-  /** The merged file's duration: later cues are cut. */
-  durationSec?: number;
   /** Per ffprobe command. */
   timeoutMs?: number;
 }
@@ -44,11 +41,28 @@ const MAX_TRACK_BYTES = 32 * 1024 * 1024;
 
 const EXTENSIONS: Record<string, string> = { 'mpeg-ts': '.ts', fmp4: '.mp4', webm: '.webm', 'packed-audio': '.aac' };
 
+const NOTHING_WITHIN = 'The subtitle track has no subtitles within the video.';
+
+/** Cues cut at the video's end (undefined: not cut); throws when none is left. */
+export function cuesWithin(cues: readonly VttCue[], durationSec: number | undefined): VttCue[] {
+  const within = durationSec === undefined ? [...cues] : joinCues([{ cues, offsetSec: 0 }], durationSec);
+  if (within.length === 0) throw new Error(NOTHING_WITHIN);
+  return within;
+}
+
+/** A subtitle file of timed cues, cut at the video's end, as SubRip or WebVTT. */
+export function subtitleFileData(cues: readonly VttCue[], format: SubtitleFormat, durationSec?: number): Blob {
+  const within = cuesWithin(cues, durationSec);
+  const text = format === 'srt' ? formatSrt(within) : formatWebVtt(within);
+  return new Blob([text], { type: SUBTITLE_MIME_TYPES[format] });
+}
+
 /**
- * The subtitle files of a merged task: each subtitle track's stored WebVTT
- * segments are parsed one by one (each is a whole WebVTT file), their cues
- * moved onto the merged file's timeline, joined (repeats dropped, split cues
- * joined, cut to the video) and written as SubRip or WebVTT.
+ * The cues of each subtitle track of a merged task: each track's stored
+ * WebVTT segments are parsed one by one (each is a whole WebVTT file), their
+ * cues moved onto the merged file's timeline and joined (repeats dropped,
+ * split cues joined). They are cut at the video's end when written
+ * (subtitleFileData) or embedded (mergeTask).
  *
  * Timeline (as buildMergeJob places the video): the main track starts at
  * its offset from the earliest track; joined runs follow each other, each
@@ -60,7 +74,7 @@ const EXTENSIONS: Record<string, string> = { 'mpeg-ts': '.ts', fmp4: '.mp4', web
  * Where the video's timestamps go back inside one run, an HLS segment goes to
  * the part its timestamps fit, nearest to where it falls in time.
  */
-export async function buildSubtitleFiles(taskId: string, options: SubtitleFilesOptions): Promise<SubtitleFile[]> {
+export async function buildSubtitleCues(taskId: string, options: SubtitleCuesOptions): Promise<TimedSubtitle[]> {
   const subtitles = options.layout.filter((track) => track.trackType === 'subtitle');
   if (subtitles.length === 0) return [];
   let timings: RunTiming[][];
@@ -68,22 +82,22 @@ export async function buildSubtitleFiles(taskId: string, options: SubtitleFilesO
     timings = await videoTimeline(taskId, options, subtitles.map((track) => trackRuns(track).length));
   } catch (error) {
     if (options.signal.aborted || isAbortError(error)) throw error;
-    // The video is merged already: subtitles timed by its first run beat none.
+    // Subtitles timed by the video's first run beat none.
     timings = [[firstTiming(options)]];
   }
-  const files: SubtitleFile[] = [];
+  const timed: TimedSubtitle[] = [];
   for (const track of subtitles) {
     try {
-      files.push({ trackId: track.trackId, data: await subtitleFile(taskId, track, timings, options) });
+      timed.push({ trackId: track.trackId, cues: await trackCues(taskId, track, timings, options) });
     } catch (error) {
       if (options.signal.aborted || isAbortError(error)) throw error;
-      files.push({ trackId: track.trackId, error: errorMessage(error) });
+      timed.push({ trackId: track.trackId, error: errorMessage(error) });
     }
   }
-  return files;
+  return timed;
 }
 
-async function subtitleFile(taskId: string, track: TrackLayout, timings: RunTiming[][], options: SubtitleFilesOptions): Promise<Blob> {
+async function trackCues(taskId: string, track: TrackLayout, timings: RunTiming[][], options: SubtitleCuesOptions): Promise<VttCue[]> {
   const parts = await options.storage.trackData(taskId, track.trackId);
   options.signal.throwIfAborted();
   const bytes = parts.reduce((sum, part) => sum + part.data.size, 0);
@@ -112,10 +126,9 @@ async function subtitleFile(taskId: string, track: TrackLayout, timings: RunTimi
     }
   }
   if (lists.length === 0 && unreadable > 0) throw new Error('The subtitle track is not WebVTT.');
-  const cues = joinCues(lists, options.durationSec);
-  if (cues.length === 0) throw new Error('The subtitle track has no subtitles within the video.');
-  const text = options.format === 'srt' ? formatSrt(cues) : formatWebVtt(cues);
-  return new Blob([text], { type: SUBTITLE_MIME_TYPES[options.format] });
+  const cues = joinCues(lists);
+  if (cues.length === 0) throw new Error(NOTHING_WITHIN);
+  return cues;
 }
 
 /** The video's merged runs for subtitle run `group` of `groups`: the video run in the same place, else the first one. */
@@ -146,7 +159,7 @@ function pickRun(runs: readonly RunTiming[], parsed: ParsedVtt, estimateSec: num
 }
 
 /** The main track's place in the merge (its -itsoffset, as buildMergeJob) and first timestamp. */
-function firstTiming({ media, layout }: Pick<SubtitleFilesOptions, 'media' | 'layout'>): RunTiming {
+function firstTiming({ media, layout }: Pick<SubtitleCuesOptions, 'media' | 'layout'>): RunTiming {
   const main = mainTrack(layout);
   const starts = media.tracks.map((track) => track.startSec).filter((start) => start !== undefined);
   const earliest = starts.length > 0 ? Math.min(...starts) : 0;
@@ -170,7 +183,7 @@ const mainTrack = (layout: readonly TrackLayout[]) =>
  */
 export async function videoTimeline(
   taskId: string,
-  options: Pick<SubtitleFilesOptions, 'storage' | 'ffmpeg' | 'signal' | 'media' | 'layout' | 'timeoutMs'>,
+  options: Pick<SubtitleCuesOptions, 'storage' | 'ffmpeg' | 'signal' | 'media' | 'layout' | 'timeoutMs'>,
   subtitleRuns: readonly number[],
 ): Promise<RunTiming[][]> {
   const { signal } = options;

@@ -116,7 +116,7 @@ describe('buildMergeJob', () => {
     ]);
     expect(plan.job.inputs.map((input) => input.name)).toEqual(['t1.ts', 't2.ts']);
     expect(plan.job.outputs).toEqual(['output.mp4']);
-    expect(plan.expectedStreams).toEqual({ video: 1, audio: 1 });
+    expect(plan.expectedStreams).toEqual({ video: 1, audio: 1, subtitle: 0 });
     expect(plan.expectedSeconds).toBeCloseTo(16.04, 2);
   });
 
@@ -151,7 +151,21 @@ describe('buildMergeJob', () => {
     expect(args).toContain('-metadata:s:a:0 language=fre -disposition:a:0 default');
     expect(args).toContain('-metadata:s:a:1 language=eng -metadata:s:a:1 title=English -metadata:s:a:1 handler_name=English -disposition:a:1 0');
     expect(args).toContain('-tag:v hvc1');
-    expect(plan.expectedStreams).toEqual({ video: 1, audio: 2 });
+    expect(plan.expectedStreams).toEqual({ video: 1, audio: 2, subtitle: 0 });
+  });
+
+  it('adds subtitles as WebVTT inputs without offset, after the audio, with language and name (0.7.0)', () => {
+    const subtitle = new Blob(['WEBVTT\n'], { type: 'text/vtt' });
+    const subtitles = [{ data: subtitle, language: 'vi', name: 'Tiếng Việt' }, { data: subtitle, language: 'en', name: 'en' }];
+    const mkv = buildMergeJob(tracks(), { container: 'mkv', subtitles });
+    const args = mkv.job.args.join(' ');
+    expect(mkv.job.inputs.map((input) => input.name)).toEqual(['t1.ts', 't2.ts', 's1.vtt', 's2.vtt']);
+    expect(args).toContain('-i /in/t2.ts -f webvtt -i /in/s1.vtt -f webvtt -i /in/s2.vtt -map 0:V? -map 0:a? -map 1:a -map 2:s -map 3:s -c copy -map_metadata');
+    expect(args).toContain('-metadata:s:s:0 language=vie -metadata:s:s:0 title=Tiếng Việt -disposition:s:0 0 -metadata:s:s:1 language=eng -disposition:s:1 0');
+    expect(mkv.expectedStreams).toEqual({ video: 1, audio: 1, subtitle: 2 });
+    const mp4 = buildMergeJob(tracks(), { container: 'mp4', subtitles: subtitles.slice(0, 1) }).job.args.join(' ');
+    expect(mp4).toContain('-c copy -c:s mov_text');
+    expect(mp4).toContain('-metadata:s:s:0 handler_name=Tiếng Việt');
   });
 
   it('does not name a track after its language code', () => {

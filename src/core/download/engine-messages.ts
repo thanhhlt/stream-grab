@@ -25,7 +25,7 @@ import {
 } from '@/core/models/media-info';
 import { TRACK_TYPES } from '@/core/models/media-segment';
 import { SEGMENT_CONCURRENCY } from '@/shared/constants';
-import { clampInt, OUTPUT_FORMATS, SUBTITLE_FORMATS } from '@/shared/settings/settings';
+import { clampInt, OUTPUT_FORMATS, SUBTITLE_FORMATS, SUBTITLE_MODES } from '@/shared/settings/settings';
 import { isOneOf, isRecord } from '@/shared/utils/guards';
 
 /**
@@ -113,7 +113,8 @@ export function parseMediaTaskSpec(raw: unknown): MediaTaskSpec | null {
   const spec: MediaTaskSpec = { taskId, job: 'process', format: raw['format'], title: typeof raw['title'] === 'string' ? raw['title'].slice(0, 500) : '' };
   const subtitles = raw['subtitles'];
   if (isRecord(subtitles) && (subtitles['protocol'] === 'hls' || subtitles['protocol'] === 'dash') && isOneOf(subtitles['format'], SUBTITLE_FORMATS)) {
-    spec.subtitles = { protocol: subtitles['protocol'], format: subtitles['format'] };
+    // A spec from before the mode existed saves files, as it did.
+    spec.subtitles = { protocol: subtitles['protocol'], format: subtitles['format'], mode: isOneOf(subtitles['mode'], SUBTITLE_MODES) ? subtitles['mode'] : 'file' };
   }
   return spec;
 }
@@ -323,10 +324,13 @@ function parseSubtitleFileRequest(raw: unknown, extensionOrigin: string): Subtit
   if (!isRecord(raw)) return null;
   const trackId = str(raw['trackId'], 64);
   if (trackId === undefined) return null;
+  const embedded = raw['embedded'] === true;
   const error = str(raw['error'], 500);
-  if (error !== undefined) return { trackId, error };
+  if (error !== undefined && !embedded) return { trackId, error };
   const url = str(raw['url'], 200);
   const size = nonNegative(raw['size']);
-  if (url === undefined || size === undefined || !url.startsWith(`blob:${extensionOrigin.replace(/\/$/, '')}/`)) return null;
-  return { trackId, url, size };
+  if (url === undefined || size === undefined || !url.startsWith(`blob:${extensionOrigin.replace(/\/$/, '')}/`)) {
+    return embedded ? { trackId, embedded: true } : null;
+  }
+  return { trackId, ...(embedded ? { embedded: true as const } : {}), url, size };
 }

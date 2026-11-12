@@ -15,12 +15,15 @@ export class MediaFailure extends Error {
   readonly discardData: boolean;
   /** Set when the user has a one-click fix for it (the Queue offers it). */
   readonly reason: MediaFailureReason | undefined;
+  /** A merge with embedded subtitles failed in a way they may have caused (0.7.0): merging without them may work. */
+  readonly withSubtitles: boolean;
 
-  constructor(message: string, options: ErrorOptions & { discardData?: boolean; reason?: MediaFailureReason } = {}) {
+  constructor(message: string, options: ErrorOptions & { discardData?: boolean; reason?: MediaFailureReason; withSubtitles?: boolean } = {}) {
     super(message, options);
     this.name = 'MediaFailure';
     this.discardData = options.discardData ?? false;
     this.reason = options.reason;
+    this.withSubtitles = options.withSubtitles ?? false;
   }
 }
 

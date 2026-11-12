@@ -46,10 +46,19 @@ export interface MergeTrack {
   runs: Blob[];
 }
 
+/** A subtitle track to embed (0.7.0): WebVTT on the merged file's timeline, cut at its end (subtitle-files.ts). */
+export interface MergeSubtitle {
+  data: Blob;
+  language?: string;
+  name?: string;
+}
+
 export interface MergeOptions {
   container: OutputContainer;
   /** Written as the file's title. */
   title?: string;
+  /** Embedded after the audio, in order. */
+  subtitles?: readonly MergeSubtitle[];
 }
 
 export interface MergePlan {
@@ -58,7 +67,26 @@ export interface MergePlan {
   /** Longest track, offsets included; undefined when no track knows its duration. */
   expectedSeconds: number | undefined;
   /** Streams the merged file must contain. */
-  expectedStreams: { video: number; audio: number };
+  expectedStreams: { video: number; audio: number; subtitle: number };
+}
+
+/** Where each track starts in the merged file (its -itsoffset): after the earliest track's start. */
+function trackOffsets(tracks: readonly MergeTrack[]): number[] {
+  const starts = tracks.map((track) => track.analysis.startSec).filter((start) => start !== undefined);
+  const earliest = starts.length > 0 ? Math.min(...starts) : 0;
+  return tracks.map((track) => (track.analysis.startSec ?? earliest) - earliest);
+}
+
+/** Longest track, offsets included (the merged file's expected length); undefined when no track knows its duration. */
+export function mergedSeconds(tracks: readonly MergeTrack[]): number | undefined {
+  const offsets = trackOffsets(tracks);
+  let expected: number | undefined;
+  tracks.forEach((track, index) => {
+    // Joined runs: the manifest's sum is the better figure (the probe saw the first run's timing only).
+    const duration = track.runs.length > 1 && track.layout.durationSec > 0 ? track.layout.durationSec : (track.analysis.durationSec ?? track.layout.durationSec);
+    if (duration > 0) expected = Math.max(expected ?? 0, (offsets[index] ?? 0) + duration);
+  });
+  return expected;
 }
 
 const EXTENSIONS: Record<ContainerFormat, string> = {
@@ -87,7 +115,10 @@ const metadataText = (value: string): string =>
  *   much later than the earliest track it started (`-itsoffset`), keeping
  *   separately delivered audio in sync with the video;
  * - streams: video (not cover art) and audio only; data streams (timed ID3,
- *   SCTE-35) and subtitles of the segments are dropped;
+ *   SCTE-35) and subtitles of the segments are dropped; chosen WebVTT
+ *   subtitles (0.7.0) are added as inputs of their own, copied into MKV,
+ *   converted to mov_text in MP4, with language and name, none default
+ *   (MP4: FFmpeg enables the first one);
  * - metadata: the title, each audio track's language (ISO 639-2) and name
  *   (in MP4 as the handler name, which players show as the track's name),
  *   the first audio track as default; the inputs' own tags are not copied;
@@ -97,14 +128,13 @@ const metadataText = (value: string): string =>
 export function buildMergeJob(tracks: readonly MergeTrack[], options: MergeOptions): MergePlan {
   const inputs: FfmpegInput[] = [];
   const args = ['-hide_banner', '-stats'];
-  const starts = tracks.map((track) => track.analysis.startSec).filter((start) => start !== undefined);
-  const earliest = starts.length > 0 ? Math.min(...starts) : 0;
-  let expectedSeconds: number | undefined;
+  const offsets = trackOffsets(tracks);
+  const subtitles = options.subtitles ?? [];
 
   tracks.forEach((track, index) => {
     const prefix = `t${index + 1}`;
     const ext = EXTENSIONS[track.layout.container];
-    const offset = (track.analysis.startSec ?? earliest) - earliest;
+    const offset = offsets[index] ?? 0;
     if (offset > 0.0005) args.push('-itsoffset', offset.toFixed(3));
     if (track.runs.length === 1 && track.runs[0]) {
       const name = `${prefix}${ext}`;
@@ -118,15 +148,22 @@ export function buildMergeJob(tracks: readonly MergeTrack[], options: MergeOptio
       inputs.push({ name: listName, data: new Blob([`${list}\n`]) });
       args.push('-f', 'concat', '-safe', '0', '-i', inputPath(listName));
     }
-    // Joined runs: the manifest's sum is the better figure (the probe saw the first run's timing only).
-    const duration = track.runs.length > 1 && track.layout.durationSec > 0 ? track.layout.durationSec : (track.analysis.durationSec ?? track.layout.durationSec);
-    if (duration > 0) expectedSeconds = Math.max(expectedSeconds ?? 0, offset + duration);
+  });
+  // Subtitles are written on the merged file's timeline already: no -itsoffset (FFmpeg does not move them to 0).
+  subtitles.forEach((subtitle, index) => {
+    const name = `s${index + 1}.vtt`;
+    inputs.push({ name, data: subtitle.data });
+    args.push('-f', 'webvtt', '-i', inputPath(name));
   });
 
-  // Streams: the main track's video and muxed audio, then each audio track.
+  // Streams: the main track's video and muxed audio, then each audio track, then the subtitles.
   args.push('-map', '0:V?', '-map', '0:a?');
   for (let index = 1; index < tracks.length; index++) args.push('-map', `${index}:a`);
-  args.push('-c', 'copy', '-map_metadata', '-1', '-max_muxing_queue_size', '4096');
+  subtitles.forEach((_, index) => args.push('-map', `${tracks.length + index}:s`));
+  args.push('-c', 'copy');
+  // Matroska keeps WebVTT as it is; MP4 stores text subtitles as mov_text (3GPP timed text).
+  if (subtitles.length > 0 && options.container === 'mp4') args.push('-c:s', 'mov_text');
+  args.push('-map_metadata', '-1', '-max_muxing_queue_size', '4096');
   const title = options.title ? metadataText(options.title) : '';
   if (title !== '') args.push('-metadata', `title=${title}`);
 
@@ -149,6 +186,14 @@ export function buildMergeJob(tracks: readonly MergeTrack[], options: MergeOptio
       audio += 1;
     }
   });
+  subtitles.forEach((subtitle, index) => {
+    const language = iso6392(subtitle.language);
+    if (language !== undefined) args.push(`-metadata:s:s:${index}`, `language=${language}`);
+    const name = subtitle.name !== undefined && subtitle.name.toLowerCase() !== (subtitle.language ?? '').toLowerCase() ? metadataText(subtitle.name) : '';
+    if (name !== '') args.push(`-metadata:s:s:${index}`, options.container === 'mp4' ? `handler_name=${name}` : `title=${name}`);
+    // None is default in MKV. FFmpeg's MP4 muxer enables the first track of each kind whatever is asked.
+    args.push(`-disposition:s:${index}`, '0');
+  });
   const main = tracks[0]?.analysis.streams ?? [];
   const video = main.filter((stream) => stream.kind === 'video').length;
   if (options.container === 'mp4' && main.some((stream) => stream.kind === 'video' && stream.codec === 'hevc')) args.push('-tag:v', 'hvc1');
@@ -158,7 +203,7 @@ export function buildMergeJob(tracks: readonly MergeTrack[], options: MergeOptio
   return {
     job: { tool: 'ffmpeg', args, inputs, outputs: [outputName] },
     outputName,
-    expectedSeconds,
-    expectedStreams: { video, audio },
+    expectedSeconds: mergedSeconds(tracks),
+    expectedStreams: { video, audio, subtitle: subtitles.length },
   };
 }

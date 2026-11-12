@@ -146,7 +146,7 @@ describe('DownloadCoordinator: subtitle files of merged videos (0.7.0)', () => {
     const dash = makeTask('d', { status: 'downloaded', source: { ...makeTask('d').source, protocol: 'dash' }, selection: processing('d').selection });
     const { coordinator, engine } = await setup([{ task: dash }]);
     await coordinator.pump();
-    expect(engine.media.at(-1)).toEqual([{ taskId: 'd', job: 'process', format: 'auto', title: 'Movie', subtitles: { protocol: 'dash', format: 'srt' } }]);
+    expect(engine.media.at(-1)).toEqual([{ taskId: 'd', job: 'process', format: 'auto', title: 'Movie', subtitles: { protocol: 'dash', format: 'srt', mode: 'file' } }]);
   });
 
   it('saves the subtitle files after the video, named after its final name, and completes the task once they are saved', async () => {
@@ -200,6 +200,27 @@ describe('DownloadCoordinator: subtitle files of merged videos (0.7.0)', () => {
       status: 'completed',
       output: { subtitles: [{ trackId: ENGLISH.id, downloadId: 2, error: subtitleSaveFailure('FILE_NO_SPACE') }] },
     });
+  });
+
+  it('asks for the task’s subtitle mode; a task whose tracks are embedded only completes with the video', async () => {
+    const task = processing('e');
+    const both = makeTask('b', { ...task, id: 'b', status: 'downloaded', output: { ...task.output, subtitleMode: 'both' } });
+    const queued = await setup([{ task: both }]);
+    await queued.coordinator.pump();
+    expect(queued.engine.media.at(-1)?.map((spec) => spec.subtitles)).toEqual([{ protocol: 'hls', format: 'srt', mode: 'both' }]);
+
+    const { coordinator, files, taskOf } = await setup([{ task }]);
+
+    files.manual = true;
+    // Embedded only: the task completes with the video.
+    await coordinator.startSave(request('e', [{ trackId: ENGLISH.id, embedded: true }, { trackId: FRENCH.id, error: 'The subtitle track is not WebVTT.' }]));
+    files.finish(1);
+    await coordinator.handleFileChange(1);
+    const done = await taskOf('e');
+    expect(done).toMatchObject({ status: 'completed' });
+    expect(done?.output.subtitles).toEqual([{ trackId: ENGLISH.id, embedded: true }, { trackId: FRENCH.id, error: 'The subtitle track is not WebVTT.' }]);
+    expect(files.entries.size).toBe(1);
+    expect(parseTask(JSON.parse(JSON.stringify(done)))?.output.subtitles).toEqual(done?.output.subtitles);
   });
 
   it('records a chosen track the engine sent no file for', async () => {

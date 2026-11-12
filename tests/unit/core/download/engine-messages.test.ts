@@ -180,7 +180,10 @@ describe('engine messages', () => {
 
   it('carries subtitle settings of media jobs and subtitle files of merged saves, blob: URLs of this extension only (0.7.0)', () => {
     const job = { taskId: 't', job: 'process', format: 'mkv', title: 'Movie' };
-    expect(parseMediaTaskSpec({ ...job, subtitles: { protocol: 'hls', format: 'srt' } })).toEqual({ ...job, subtitles: { protocol: 'hls', format: 'srt' } });
+    // A spec without a mode (before it existed) saves files.
+    expect(parseMediaTaskSpec({ ...job, subtitles: { protocol: 'hls', format: 'srt' } })).toEqual({ ...job, subtitles: { protocol: 'hls', format: 'srt', mode: 'file' } });
+    expect(parseMediaTaskSpec({ ...job, subtitles: { protocol: 'hls', format: 'vtt', mode: 'both' } })?.subtitles).toEqual({ protocol: 'hls', format: 'vtt', mode: 'both' });
+    expect(parseMediaTaskSpec({ ...job, subtitles: { protocol: 'hls', format: 'vtt', mode: 'burn' } })?.subtitles?.mode).toBe('file');
     expect(parseMediaTaskSpec({ ...job, subtitles: { protocol: 'progressive', format: 'srt' } })).toEqual(job);
     expect(parseMediaTaskSpec({ ...job, subtitles: { protocol: 'dash', format: 'ass' } })).toEqual(job);
 
@@ -191,8 +194,18 @@ describe('engine messages', () => {
       { trackId: 'subtitle-1', error: 'The subtitle track is not WebVTT.' },
       { trackId: 'subtitle-2', url: 'https://evil.example/x.srt', size: 1 },
       { trackId: 'subtitle-3', url: 'blob:chrome-extension://abcdef/3' },
+      { trackId: 'subtitle-4', embedded: true },
+      { trackId: 'subtitle-5', embedded: true, url: 'blob:chrome-extension://abcdef/4', size: 9 },
+      // Embedded, but its file could not be made (or its URL is not ours): embedded only.
+      { trackId: 'subtitle-6', embedded: true, url: 'https://evil.example/x.srt', size: 1 },
+      { trackId: 'subtitle-7', embedded: 'yes' },
     ];
-    expect(parseSaveRequest({ ...request, subtitles }, origin)?.subtitles).toEqual(subtitles.slice(0, 2));
+    expect(parseSaveRequest({ ...request, subtitles }, origin)?.subtitles).toEqual([
+      ...subtitles.slice(0, 2),
+      { trackId: 'subtitle-4', embedded: true },
+      { trackId: 'subtitle-5', embedded: true, url: 'blob:chrome-extension://abcdef/4', size: 9 },
+      { trackId: 'subtitle-6', embedded: true },
+    ]);
     // A progressive file's save never carries subtitle files.
     expect(parseSaveRequest({ taskId: 't', url: 'blob:chrome-extension://abcdef/1', size: 10, subtitles }, origin)?.subtitles).toBeUndefined();
   });

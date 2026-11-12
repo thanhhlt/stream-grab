@@ -17,6 +17,18 @@ export type OutputFormat = (typeof OUTPUT_FORMATS)[number];
 export const SUBTITLE_FORMATS = ['srt', 'vtt'] as const;
 export type SubtitleFormat = (typeof SUBTITLE_FORMATS)[number];
 
+/**
+ * Where chosen subtitles of an HLS/DASH video go (0.7.0): `file` saves each as
+ * a file next to the video, `embed` puts them into the merged MKV/MP4 (a track
+ * that cannot be embedded is saved as a file instead), `both` does both.
+ * Progressive files are never merged: their subtitles are always files.
+ */
+export const SUBTITLE_MODES = ['file', 'embed', 'both'] as const;
+export type SubtitleMode = (typeof SUBTITLE_MODES)[number];
+
+/** Most languages kept in Settings → default subtitle languages. */
+export const MAX_SUBTITLE_LANGUAGES = 8;
+
 /** Popup color theme: `system` follows Chrome's appearance setting (prefers-color-scheme). */
 export const THEMES = ['system', 'light', 'dark'] as const;
 export type Theme = (typeof THEMES)[number];
@@ -31,6 +43,13 @@ export interface Settings {
   outputFormat: OutputFormat;
   /** Subtitle files saved next to a video (0.7.0). */
   subtitleFormat: SubtitleFormat;
+  /** Where chosen subtitles go (0.7.0). */
+  subtitleMode: SubtitleMode;
+  /**
+   * Subtitle languages preselected in the Detected tab (0.7.0), as language
+   * tags in order, "en, vi" (normalizeSubtitleLanguages); '' preselects none.
+   */
+  subtitleLanguages: string;
   /** Observe network traffic for supported media streams (every registered protocol). */
   autoDetect: boolean;
   /** Drop finished tasks from the queue view automatically (they stay in Completed). */
@@ -47,6 +66,8 @@ export const DEFAULT_SETTINGS: Readonly<Settings> = Object.freeze({
   preferredResolution: 'highest',
   outputFormat: 'auto',
   subtitleFormat: 'srt',
+  subtitleMode: 'file',
+  subtitleLanguages: '',
   autoDetect: true,
   autoRemoveCompleted: false,
   downloadFolder: '',
@@ -77,11 +98,40 @@ export function normalizeSettings(raw: unknown, fallback: Readonly<Settings> = D
       : fallback.preferredResolution,
     outputFormat: isOneOf(input['outputFormat'], OUTPUT_FORMATS) ? input['outputFormat'] : fallback.outputFormat,
     subtitleFormat: isOneOf(input['subtitleFormat'], SUBTITLE_FORMATS) ? input['subtitleFormat'] : fallback.subtitleFormat,
+    subtitleMode: isOneOf(input['subtitleMode'], SUBTITLE_MODES) ? input['subtitleMode'] : fallback.subtitleMode,
+    subtitleLanguages:
+      typeof input['subtitleLanguages'] === 'string' ? normalizeSubtitleLanguages(input['subtitleLanguages']) : fallback.subtitleLanguages,
     autoDetect: bool('autoDetect'),
     autoRemoveCompleted: bool('autoRemoveCompleted'),
     downloadFolder: folder(input['downloadFolder'], fallback.downloadFolder),
     theme: isOneOf(input['theme'], THEMES) ? input['theme'] : fallback.theme,
   };
+}
+
+/**
+ * Language tags typed by the user ("EN; pt-br, vi") as Settings keeps them:
+ * "en, pt-BR, vi". Separators are commas, semicolons or spaces; what is not a
+ * language tag is dropped, and so are repeats; at most MAX_SUBTITLE_LANGUAGES.
+ */
+export function normalizeSubtitleLanguages(value: string): string {
+  return parseSubtitleLanguages(value).join(', ');
+}
+
+/** The tags of a languages setting, in order (normalizeSubtitleLanguages). */
+export function parseSubtitleLanguages(value: string): string[] {
+  const tags: string[] = [];
+  for (const raw of value.slice(0, 500).split(/[\s,;]+/)) {
+    if (!/^[a-z]{2,3}(-[a-z0-9]{2,8})*$/i.test(raw)) continue;
+    const [primary = '', ...rest] = raw.split('-');
+    // BCP 47 casing: language lowercase, region uppercase, script title case.
+    const tag = [
+      primary.toLowerCase(),
+      ...rest.map((part) => (part.length === 2 ? part.toUpperCase() : part.length === 4 ? (part[0] ?? '').toUpperCase() + part.slice(1).toLowerCase() : part.toLowerCase())),
+    ].join('-');
+    if (!tags.some((known) => known.toLowerCase() === tag.toLowerCase())) tags.push(tag);
+    if (tags.length === MAX_SUBTITLE_LANGUAGES) break;
+  }
+  return tags;
 }
 
 function folder(value: unknown, fallback: string): string {

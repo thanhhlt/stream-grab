@@ -16,7 +16,7 @@ import {
   type TaskSubtitle,
 } from '@/core/models/download-task';
 import { STORAGE_KEYS } from '@/shared/constants';
-import { OUTPUT_FORMATS, SUBTITLE_FORMATS } from '@/shared/settings/settings';
+import { OUTPUT_FORMATS, SUBTITLE_FORMATS, SUBTITLE_MODES } from '@/shared/settings/settings';
 import type { RemovableKeyValueArea } from '@/shared/storage/storage-area';
 import { isOneOf, isRecord } from '@/shared/utils/guards';
 import { parseHttpUrl } from '@/shared/utils/url';
@@ -266,6 +266,7 @@ export function parseTask(raw: unknown): DownloadTask | null {
   if (subtitles.length > 0) {
     task.selection.subtitles = subtitles;
     task.output.subtitleFormat = isOneOf(output['subtitleFormat'], SUBTITLE_FORMATS) ? output['subtitleFormat'] : 'srt';
+    if (isOneOf(output['subtitleMode'], SUBTITLE_MODES)) task.output.subtitleMode = output['subtitleMode'];
   }
   for (const key of ['width', 'height', 'bandwidth', 'durationSec'] as const) {
     const value = num(selection[key]);
@@ -381,6 +382,7 @@ export function parseSubtitleOutputs(raw: unknown, chosen: readonly TaskSubtitle
     const trackId = item['trackId'];
     if (typeof trackId !== 'string' || !chosen.some((subtitle) => subtitle.id === trackId) || files.some((file) => file.trackId === trackId)) continue;
     const file: SubtitleOutput = { trackId };
+    if (item['embedded'] === true) file.embedded = true;
     const url = item['url'];
     if (typeof url === 'string' && url.startsWith('blob:') && url.length <= 200) file.url = url;
     const downloadId = num(item['downloadId']);

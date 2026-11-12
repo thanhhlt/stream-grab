@@ -200,6 +200,7 @@ export class TaskService {
     if (subtitles.length > 0) {
       task.selection.subtitles = subtitles;
       task.output.subtitleFormat = settings.subtitleFormat;
+      task.output.subtitleMode = settings.subtitleMode;
     }
     if (active.some((other) => isSameDownload(other, task))) {
       throw new RequestError('This video is already in the queue with the same quality and audio.');

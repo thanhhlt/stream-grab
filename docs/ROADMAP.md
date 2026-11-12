@@ -75,6 +75,15 @@ Phases:
      and saved as data: URLs (at most 1.5 MB each). Cancel, Retry and a restart cover them.
      Not yet shown in the popup (Phase 3).
 3. Embed in MKV/MP4 (when the setting asks for it), subtitle picker in the popup, Settings; e2e.
+   Split in two:
+   - 3a (done 2026-11-12): Settings `subtitleMode` (file by default, embed, both) and
+     `subtitleLanguages`; the cues are timed before the merge and embedded after the audio
+     (MKV keeps WebVTT, MP4 gets `mov_text`; language, name, none default, though FFmpeg's MP4
+     muxer always enables the first one), cut at the video's expected end and counted when the
+     result is checked. A merge that fails with subtitles is run again without them, and they are
+     saved as files instead.
+   - 3b: subtitle picker in the Detected tab (preselected by the default languages), Settings
+     UI, subtitles in the Completed tab; e2e.
 4. Regression tests, docs, release.
 
 ## v0.8.0: Chrome Web Store preparation
