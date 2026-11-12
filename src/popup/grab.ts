@@ -116,11 +116,19 @@ function moveClaw(claw: Element): void {
   }
 }
 
+let generation = 0;
 let bumping: Animation | undefined;
 
-function bump(tabs: Element): void {
+/**
+ * Số đếm nảy lên. Task đầu tiên: ô số chưa có lúc ô bay hạ cánh, React vẽ nó sau đó vài khung hình,
+ * nên thử lại tối đa `attempts` khung hình cho tới khi ô số xuất hiện.
+ */
+function bump(tabs: Element, attempts = 10): void {
   const count = tabs.querySelector('[data-tab-count="queue"]');
-  if (!count) return;
+  if (!count) {
+    if (attempts > 0) requestAnimationFrame(() => bump(tabs, attempts - 1));
+    return;
+  }
   bumping?.cancel();
   bumping = track(
     count.animate(
@@ -134,7 +142,8 @@ function bump(tabs: Element): void {
   );
 }
 
-function fly(tile: HTMLElement, claw: Element, tabs: Element, delay: number): void {
+/** Resolve `true` khi bản sao đã hạ cánh, `false` nếu bị cắt ngang. */
+function fly(tile: HTMLElement, claw: Element, tabs: Element, delay: number): Promise<boolean> {
   const from = tile.getBoundingClientRect();
   const start = center(from);
   const ghost = tile.cloneNode(true) as HTMLElement;
@@ -168,7 +177,7 @@ function fly(tile: HTMLElement, claw: Element, tabs: Element, delay: number): vo
       { duration: HOLD_END_MS, delay, fill: 'both' },
     ),
   );
-  reach.finished
+  return reach.finished
     .then(() => {
       // Đích được đo lúc thả: số đếm có thể vừa xuất hiện (task đầu tiên) hoặc vừa đổi độ rộng.
       const land = landingPoint(tabs);
@@ -185,10 +194,8 @@ function fly(tile: HTMLElement, claw: Element, tabs: Element, delay: number): vo
       return drop.finished;
     })
     .then(
-      () => {
-        bump(tabs);
-      },
-      () => undefined, // bị cắt ngang bởi lượt gắp mới, hoặc không có tab Queue
+      () => true,
+      () => false, // bị cắt ngang bởi lượt gắp mới, hoặc không có tab Queue
     )
     .finally(() => {
       ghost.remove();
@@ -200,12 +207,21 @@ function fly(tile: HTMLElement, claw: Element, tabs: Element, delay: number): vo
  * Chạy hiệu ứng gắp cho các ô poster của video vừa vào hàng đợi (tối đa 3 ô bay, cách nhau 80 ms).
  * Không làm gì khi người dùng chọn giảm chuyển động.
  */
-export function playGrab(tiles: readonly HTMLElement[], stage: GrabStage): void {
+export function playGrab(tiles: readonly HTMLElement[], stage: GrabStage, onDone?: () => void): void {
   stopGrab();
+  const mine = ++generation;
   const { claw, tabs } = stage;
-  if (tiles.length === 0 || !claw || !tabs || !motionAllowed()) return;
+  if (tiles.length === 0 || !claw || !tabs || !motionAllowed()) {
+    onDone?.();
+    return;
+  }
   moveClaw(claw);
-  tiles.slice(0, MAX_FLIGHTS).forEach((tile, index) => {
-    fly(tile, claw, tabs, index * STAGGER_MS);
+  const flights = tiles.slice(0, MAX_FLIGHTS).map((tile, index) => fly(tile, claw, tabs, index * STAGGER_MS));
+  // Chỉ lượt gắp mới nhất báo xong: lượt cũ bị cắt ngang không được thả số đếm của lượt mới.
+  void Promise.all(flights).then((landed) => {
+    if (mine !== generation) return;
+    // Số đếm đổi (onDone) khi ô đã hạ cánh; nảy sau khi React vẽ số mới (task đầu tiên: ô số mới xuất hiện).
+    onDone?.();
+    if (landed.some(Boolean)) requestAnimationFrame(() => bump(tabs));
   });
 }

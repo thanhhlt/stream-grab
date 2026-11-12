@@ -7,6 +7,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-11-12
+
+### Fixed
+
+- The Queue tab count no longer jumps before the grab animation: it keeps its old value until the
+  poster tile lands on the tab, then updates and bumps.
+
 ## [0.7.0] - 2026-11-12
 
 ### Added

@@ -27,6 +27,10 @@ interface DetectedPageProps {
    * của hiệu ứng gắp. Gọi sau khi React đã vẽ lại để vị trí các ô là vị trí thật.
    */
   onQueued?: (tiles: HTMLElement[]) => void;
+  /** Gọi ngay khi bấm Download, trước khi task xuất hiện: để giữ số đếm Queue lại. */
+  onQueueing?: () => void;
+  /** Gọi khi lượt Download không tạo được task nào (lỗi hoặc tất cả thất bại): thả số đếm. */
+  onQueueAborted?: () => void;
 }
 
 interface Feedback {
@@ -34,7 +38,7 @@ interface Feedback {
   failed: number;
 }
 
-export function DetectedPage({ onShowQueue, onQueued }: DetectedPageProps) {
+export function DetectedPage({ onShowQueue, onQueued, onQueueing, onQueueAborted }: DetectedPageProps) {
   const tab = useActiveTab();
   const tabId = tab.state === 'ready' ? tab.tabId : undefined;
   const detections = useDetections(tabId);
@@ -121,6 +125,7 @@ export function DetectedPage({ onShowQueue, onQueued }: DetectedPageProps) {
     setBusy(true);
     setFeedback(null);
     setActionError(null);
+    onQueueing?.();
     sendToBackground('downloads/start', { requests })
       .then(
         (result) => {
@@ -142,6 +147,7 @@ export function DetectedPage({ onShowQueue, onQueued }: DetectedPageProps) {
       )
       .finally(() => {
         setBusy(false);
+        if (pendingGrab.current === null) onQueueAborted?.();
       });
   };
 
