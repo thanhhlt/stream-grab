@@ -2,7 +2,7 @@
  * Bộ biểu tượng nét 16 px của popup (Claw). Một nét 1.9, đầu tròn; riêng `play` tô đặc.
  * Luôn là trang trí (`aria-hidden`): nút chỉ có biểu tượng phải tự mang `aria-label`.
  */
-export type IconName = 'chevron' | 'close' | 'tick' | 'download' | 'lock' | 'clock' | 'play' | 'warning' | 'sun' | 'moon';
+export type IconName = 'chevron' | 'close' | 'tick' | 'download' | 'lock' | 'clock' | 'play' | 'warning' | 'sun' | 'moon' | 'heart' | 'back' | 'external';
 
 const PATHS: Record<Exclude<IconName, 'lock' | 'clock' | 'sun'>, string> = {
   chevron: 'M4.5 6.5 8 10l3.5-3.5',
@@ -12,6 +12,9 @@ const PATHS: Record<Exclude<IconName, 'lock' | 'clock' | 'sun'>, string> = {
   play: 'M5 3.2v9.6a.6.6 0 0 0 .9.5l7.6-4.8a.6.6 0 0 0 0-1L5.9 2.7a.6.6 0 0 0-.9.5Z',
   warning: 'M8 5.5v3.5m0 2.3v.1M7 2.6 1.6 12.2A1.2 1.2 0 0 0 2.6 14h10.8a1.2 1.2 0 0 0 1-1.8L9 2.6a1.2 1.2 0 0 0-2 0Z',
   moon: 'M8 2a4.24 4.24 0 0 0 6 6A6 6 0 1 1 8 2Z',
+  heart: 'M8 13.2S2.3 9.9 2.3 5.9A2.9 2.9 0 0 1 8 4.6a2.9 2.9 0 0 1 5.7 1.3c0 4-5.7 7.3-5.7 7.3Z',
+  back: 'M12.5 8h-9m4-4-4 4 4 4',
+  external: 'M9.5 2.5h4v4m0-4-6 6M12 9.5v3a1 1 0 0 1-1 1H3.5a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h3',
 };
 
 export function Icon({ name, className = 'size-4' }: { name: IconName; className?: string }) {

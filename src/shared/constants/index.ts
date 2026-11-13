@@ -1,5 +1,14 @@
 export const EXTENSION_NAME = 'StreamGrab';
 
+/** Links in the popup's About screen and support bar (and the README / .github/FUNDING.yml). */
+export const PROJECT_LINKS = {
+  source: 'https://github.com/thanhhlt/stream-grab',
+  issues: 'https://github.com/thanhhlt/stream-grab/issues',
+  changelog: 'https://github.com/thanhhlt/stream-grab/blob/main/CHANGELOG.md',
+  license: 'https://github.com/thanhhlt/stream-grab/blob/main/LICENSE',
+  donate: 'https://ko-fi.com/s1lent91505',
+} as const;
+
 /** Integer setting bounds. `default` is used when a stored value is missing or invalid. */
 export interface IntRange {
   readonly min: number;

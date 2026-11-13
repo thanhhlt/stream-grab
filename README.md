@@ -187,6 +187,14 @@ tests/
 `dist/ffmpeg/` holds FFmpeg.wasm's core, copied unchanged from `@ffmpeg/core`; the media worker
 loads it only when a downloaded task is merged.
 
+## Support
+
+StreamGrab is free, with every feature, and stays that way. If it saves you time, you can
+support it on [Ko-fi](https://ko-fi.com/s1lent91505); nothing in the extension depends on it.
+Bugs and requests go to [GitHub Issues](https://github.com/thanhhlt/stream-grab/issues). In the
+popup, a line under every tab holds the Ko-fi link and opens About (version, license, source
+code, Report a problem, what's new).
+
 ## License
 
 Copyright (C) 2026 Huỳnh Lê Tấn Thành.

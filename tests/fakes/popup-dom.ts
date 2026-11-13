@@ -33,6 +33,7 @@ export async function installPopupChrome(
     runtime: {
       id: 'test',
       getURL: (path: string) => `chrome-extension://test/${path}`,
+      getManifest: () => ({ version: '9.8.7' }),
       sendMessage: (envelope: { type: string; payload: unknown }) => {
         sent.push({ type: envelope.type, payload: envelope.payload });
         return Promise.resolve({ ok: true, data: options.answers?.[envelope.type] ?? {} });
