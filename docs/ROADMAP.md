@@ -12,7 +12,7 @@ use. 1.0.0 means "stable and public", not a feature milestone.
 | v0.6.0 | Range resume for the progressive engine fallback; a failed forced-MP4 task switches to MKV and is merged again from the stored segments; audio size known earlier for estimates |
 | v0.7.0 | Subtitles |
 | v0.8.0 | Chrome Web Store preparation (below) |
-| v0.9.0 | Self-test checklist (below), then a **public** Chrome Web Store listing |
+| v0.9.0 | Chrome 116 check, then a **public** Chrome Web Store listing; disk-space and multi-GB checks during the review (below) |
 | v1.0.0 | After a few weeks on the store without serious bugs; bug fixes only, no new features |
 
 Not planned: DRM, SAMPLE-AES, live download, an "always ask where to save" setting (Chrome's own
@@ -138,19 +138,21 @@ data-use answers are in [STORE.md](STORE.md), the privacy policy in [PRIVACY.md]
 
 ## v0.9.0: self-test checklist
 
-Automated tests (`npm run check`, `npm run test:e2e`) cover most behaviour. These are the checks
-that have never been run:
+Automated tests (`npm run check`, `npm run test:e2e`) cover most behaviour. Changed on 2026-11-13:
+the store listing comes first, and the 1–2 weeks of daily use on many sites is dropped (public store
+users take that role, through the Report a problem link). Order:
 
-- **Chrome 116** (`minimum_chrome_version`): run the e2e suite in Chrome for Testing 116. If it
-  fails, raise the minimum version instead of changing code.
-- **Nearly full disk**: put the Downloads folder or the profile on a small virtual disk (VHD of a
-  few GB) and check the disk-space messages.
-- **Multi-GB video**: measure Chrome's RAM during a real merge (OPFS output, v0.4.0).
-- **Daily use for 1–2 weeks** on 10–15 different video sites (HLS, DASH, MP4/WebM, a page with a
-  live stream); log every problem and fix it.
+1. **Chrome 116** (`minimum_chrome_version`): run the e2e suite in Chrome for Testing 116 before the
+   first upload, because the store shows the minimum version. If it fails, raise the minimum version
+   instead of changing code.
+2. **Release v0.9.0** (CHANGELOG, version, ZIP, GitHub Release) and submit it to the store as a
+   public listing.
+3. While the review runs (usually a few days): **nearly full disk** (the Downloads folder, then the
+   profile, on a small VHD of a few GB; check the disk-space messages) and **multi-GB video**
+   (measure Chrome's RAM during a merge with OPFS output, v0.4.0). Fixes ship as 0.9.x.
 
-Then submit to the store as a public listing. A first review often asks for changes (permission
-wording, policy); fixing them during 0.9.x keeps 1.0.0 free of that.
+A first review often asks for changes (permission wording, policy); fixing them during 0.9.x keeps
+1.0.0 free of that.
 
 ## Publishing on the Chrome Web Store
 
