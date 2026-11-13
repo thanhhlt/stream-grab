@@ -208,6 +208,9 @@ GNU General Public License as published by the Free Software Foundation, either 
 License, or (at your option) any later version. See [LICENSE](LICENSE) for the full text
 (SPDX: `GPL-3.0-or-later`).
 
+The name "StreamGrab", the icon and the logo are not part of that license: forks must use their
+own name and icon. See [TRADEMARK.md](TRADEMARK.md).
+
 Bundled third-party components keep their own licenses: FFmpeg.wasm (`@ffmpeg/core`) is
 GPL-2.0-or-later, `m3u8-parser` and `mpd-parser` are Apache-2.0, and React, `@xmldom/xmldom` and
 the other runtime dependencies are MIT. The popup font, Bricolage Grotesque, is under the SIL Open
