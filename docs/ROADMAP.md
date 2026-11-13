@@ -1,7 +1,7 @@
 # StreamGrab roadmap
 
-Plan agreed on 2026-11-11. Released versions are in [CHANGELOG.md](../CHANGELOG.md); v0.6.0
-(Range resume, Save as MKV) is the latest.
+Plan agreed on 2026-11-11. Released versions are in [CHANGELOG.md](../CHANGELOG.md); v0.8.0
+(Chrome Web Store preparation) is the latest.
 
 StreamGrab is built and tested by one person. There is no beta group: the release candidate is
 checked against the checklist below, and then the public Chrome Web Store listing collects real
@@ -109,6 +109,12 @@ Phases:
    its own (about 600 lines) is a candidate for a later version.
 
 ## v0.8.0: Chrome Web Store preparation
+
+Done (2026-11-13). YouTube is blocked; no permission could be dropped; the About screen and the
+Ko-fi line are in the popup; the listing text, single purpose, permission justifications and
+data-use answers are in [STORE.md](STORE.md), the privacy policy in [PRIVACY.md](PRIVACY.md)
+(its GitHub URL goes into the store; no GitHub Pages site needed), the assets in
+[store/](store/). i18n was skipped. The plan as written:
 
 - **Block YouTube** (`youtube.com`, `googlevideo.com`): the Chrome Web Store policy does not allow
   extensions that download YouTube videos, and this is the most common rejection for video

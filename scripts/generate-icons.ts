@@ -1,5 +1,6 @@
 /**
- * Generates the extension icons (public/icons/icon-{16,32,48,128}.png).
+ * Generates the extension icons (public/icons/icon-{16,32,48,128}.png) and the
+ * Chrome Web Store icon (docs/store/icon-128.png).
  *
  * Artwork (docs/DESIGN.md, "Identity"): a flat tangerine rounded square with the
  * ink claw of the popup header holding a small white play triangle. At 16 px the
@@ -12,7 +13,7 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { deflateSync } from 'node:zlib';
-import { publicDir } from '../build/paths.ts';
+import { projectRoot, publicDir } from '../build/paths.ts';
 
 const SIZES = [16, 32, 48, 128] as const;
 const SUPERSAMPLE = 6;
@@ -172,3 +173,18 @@ for (const size of SIZES) {
   writeFileSync(file, encodePng(size, renderIcon(size)));
   console.log(`wrote ${file}`);
 }
+
+// Chrome Web Store icon: 96x96 artwork centred in a transparent 128x128 square (the store's guideline).
+const STORE_SIZE = 128;
+const STORE_ART = 96;
+const art = renderIcon(STORE_ART);
+const store = new Uint8Array(STORE_SIZE * STORE_SIZE * 4);
+const inset = (STORE_SIZE - STORE_ART) / 2;
+for (let y = 0; y < STORE_ART; y++) {
+  store.set(art.subarray(y * STORE_ART * 4, (y + 1) * STORE_ART * 4), ((y + inset) * STORE_SIZE + inset) * 4);
+}
+const storeDir = join(projectRoot, 'docs', 'store');
+mkdirSync(storeDir, { recursive: true });
+const storeFile = join(storeDir, 'icon-128.png');
+writeFileSync(storeFile, encodePng(STORE_SIZE, store));
+console.log(`wrote ${storeFile}`);

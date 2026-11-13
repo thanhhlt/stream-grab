@@ -4,7 +4,7 @@ Browser extension (Chrome, Manifest V3) that detects, downloads and merges onlin
 entirely in the browser. No server, no native helper. It is built to support several streaming
 formats and protocols; see [Supported formats](#supported-formats) for what works today.
 
-Current version: **0.7.2** — see [CHANGELOG.md](CHANGELOG.md) and the
+Current version: **0.8.0** — see [CHANGELOG.md](CHANGELOG.md) and the
 [releases](https://github.com/thanhhlt/stream-grab/releases).
 
 Status: **all 10 phases done** (Phase 10: error handling, performance, testing). Streams are
@@ -44,7 +44,9 @@ FFmpeg.wasm (`@ffmpeg/core`) is licensed GPL-2.0-or-later and adds 32 MB to the 
 | WebVTT subtitles (HLS, DASH, `<track>`): files or embedded       | 0.7.0 |
 | WebVTT files a player loads outside the manifest                  | 0.7.2 |
 
-DRM-protected streams are detected and flagged but never downloaded. Live streams are not
+DRM-protected streams are detected and flagged but never downloaded. YouTube is not supported
+(0.8.0): the Chrome Web Store does not allow it, so its videos are neither listed nor downloaded.
+Live streams are not
 listed (0.4.0): they cannot be downloaded yet, and a live player's playlist reloads would flood
 the list. Progressive files are listed
 when a media element plays or references them; files a player fetches by script (Media Source
@@ -69,7 +71,8 @@ and stay protocol-independent. See
 3. Choose **Load unpacked** and select the extracted folder (the one that contains
    `manifest.json`).
 
-StreamGrab is not published on the Chrome Web Store.
+StreamGrab is not published on the Chrome Web Store yet; the listing, privacy policy and assets
+are ready in [docs/STORE.md](docs/STORE.md) and [docs/PRIVACY.md](docs/PRIVACY.md).
 
 ## Building from source
 
@@ -138,7 +141,8 @@ Serves a test site bound to 127.0.0.1, with these pages:
 | `npm run check`       | Typecheck + lint + tests                                            |
 | `npm run verify:dist` | Re-run the static checks on an existing `dist/`                     |
 | `npm run fixtures`    | Local test site for manual checks in Chrome                         |
-| `npm run icons`       | Regenerate `public/icons/*.png`                                     |
+| `npm run icons`       | Regenerate `public/icons/*.png` and the store icon                  |
+| `npm run store:assets` | Store screenshots and promo tile (`docs/store/`), after a build    |
 
 ## Layout
 

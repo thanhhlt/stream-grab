@@ -7,6 +7,32 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-11-13
+
+Preparation for the Chrome Web Store.
+
+### Added
+
+- **About** screen in the popup: version, a "Support on Ko-fi" panel, license (GPL-3.0-or-later,
+  with FFmpeg.wasm's GPL-2.0-or-later), source code, Report a problem (GitHub Issues) and What's
+  new (this changelog).
+- A quiet line under every tab: "StreamGrab is free. Support on Ko-fi" and the way into About.
+  Donating is voluntary and unlocks nothing. GitHub shows a Sponsor button
+  (`.github/FUNDING.yml`).
+- Privacy policy ([docs/PRIVACY.md](docs/PRIVACY.md)): StreamGrab collects no data.
+- Chrome Web Store listing text, single purpose and permission justifications
+  ([docs/STORE.md](docs/STORE.md)), with the store icon, three 1280×800 screenshots and the
+  440×280 promo tile in `docs/store/` (`npm run store:assets` photographs the real popup).
+
+### Changed
+
+- **YouTube is not supported**, as the Chrome Web Store requires: videos of `youtube.com`,
+  `youtu.be`, `youtube-nocookie.com`, `youtubekids.com`, `googlevideo.com` and
+  `youtube.googleapis.com` are not detected or
+  downloaded, the content script does not run there, and the popup says the site is not
+  supported. Queued tasks of those sites from an earlier version fail with that message.
+- Every permission was checked against its use; none could be dropped.
+
 ## [0.7.2] - 2026-11-13
 
 ### Fixed
@@ -278,7 +304,8 @@ Notably: merging is stream copy only (no re-encoding); SAMPLE-AES and DRM-protec
 not supported; subtitles are ignored; the bundled FFmpeg.wasm core is licensed
 GPL-2.0-or-later and adds 32 MB to the extension.
 
-[Unreleased]: https://github.com/thanhhlt/stream-grab/compare/v0.7.2...HEAD
+[Unreleased]: https://github.com/thanhhlt/stream-grab/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/thanhhlt/stream-grab/compare/v0.7.2...v0.8.0
 [0.7.2]: https://github.com/thanhhlt/stream-grab/compare/v0.7.1...v0.7.2
 [0.7.1]: https://github.com/thanhhlt/stream-grab/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/thanhhlt/stream-grab/compare/v0.6.0...v0.7.0
