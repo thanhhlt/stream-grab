@@ -67,13 +67,16 @@ The donation line stays voluntary: no feature behind it and no wording that sugg
 | Asset | File | Size |
 |---|---|---|
 | Store icon | `icon-128.png` | 128×128, 96×96 artwork with a transparent 16 px border |
-| Screenshot 1 | `screenshot-1-detected.png` | 1280×800 |
-| Screenshot 2 | `screenshot-2-queue.png` | 1280×800 |
-| Screenshot 3 | `screenshot-3-completed.png` | 1280×800 |
+| Screenshot 1 (overview) | `screenshot-1-overview.png` | 1280×800 |
+| Screenshot 2 | `screenshot-2-detected.png` | 1280×800 |
+| Screenshot 3 | `screenshot-3-queue.png` | 1280×800 |
+| Screenshot 4 | `screenshot-4-completed.png` | 1280×800 |
 | Small promo tile | `promo-tile-440x280.png` | 440×280 |
 
-The screenshots are the real popup (built from `dist/`, at 2x) on a local demo page
-(`www.example.com` mapped to the fixture site); the media is synthetic.
+Upload the screenshots in file-name order: the store shows the first one first. The overview puts
+the popup over a drawn browser window on the brand's tangerine. All screenshots show the real popup
+(built from `dist/`, at 2x) on a local demo page (`www.example.com` mapped to the fixture site);
+the media is synthetic.
 
 **Homepage URL:** https://github.com/thanhhlt/stream-grab
 

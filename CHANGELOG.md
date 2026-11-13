@@ -21,8 +21,8 @@ Preparation for the Chrome Web Store.
   (`.github/FUNDING.yml`).
 - Privacy policy ([docs/PRIVACY.md](docs/PRIVACY.md)): StreamGrab collects no data.
 - Chrome Web Store listing text, single purpose and permission justifications
-  ([docs/STORE.md](docs/STORE.md)), with the store icon, three 1280×800 screenshots and the
-  440×280 promo tile in `docs/store/` (`npm run store:assets` photographs the real popup).
+  ([docs/STORE.md](docs/STORE.md)), with the store icon, four 1280×800 screenshots (an overview
+  first, added after the release) and the 440×280 promo tile in `docs/store/` (`npm run store:assets` photographs the real popup).
 
 ### Changed
 

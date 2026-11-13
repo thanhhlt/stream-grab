@@ -213,6 +213,63 @@ p { margin-top: 24px; font-size: 21px; line-height: 1.5; color: ${muted}; max-wi
 </body></html>`;
 }
 
+/**
+ * The first screenshot: an overview on the brand's tangerine, the popup opened from the toolbar over
+ * the page whose videos it lists, as a user sees it. Ink outlines and hard offset shadows, like the
+ * claw-machine cabinet the identity comes from (docs/DESIGN.md, "Identity"). The tangerine is softened
+ * by a light sheen, and the window is mirrored on a glossy floor.
+ */
+function heroPage(shot: string): string {
+  const ink = '#1B2030';
+  return `<!doctype html><html><head><style>${BASE_CSS}
+body { width: 1280px; height: 800px; color: ${ink}; position: relative; overflow: hidden;
+  background:
+    radial-gradient(ellipse 70% 60% at 22% 18%, rgba(255, 255, 255, 0.30), transparent 70%),
+    linear-gradient(165deg, #FF9A55 0%, #FB8233 45%, #EE6E1C 100%); }
+.stage { position: absolute; left: 600px; top: 76px; width: 602px; height: 566px;
+  -webkit-box-reflect: below 10px linear-gradient(to bottom, transparent 70%, rgba(255, 255, 255, 0.2) 100%); }
+.text { position: absolute; left: 88px; top: 0; bottom: 0; width: 470px; display: flex; flex-direction: column; justify-content: center; }
+.brand { display: flex; align-items: center; gap: 14px; font-size: 26px; font-weight: 800; letter-spacing: -0.02em; margin-bottom: 44px; }
+.brand img { width: 52px; height: 52px; border-radius: 12px; border: 2px solid ${ink}; }
+h1 { font-size: 76px; line-height: 0.98; font-weight: 800; letter-spacing: -0.035em; font-variation-settings: 'opsz' 96; }
+p { margin-top: 28px; font-size: 22px; line-height: 1.45; max-width: 25ch; }
+.formats { display: flex; gap: 10px; margin-top: 32px; }
+.formats span { border: 2px solid ${ink}; border-radius: 999px; padding: 6px 16px; font-size: 18px; font-weight: 700; background: rgba(255, 241, 230, 0.85); }
+.window { position: absolute; left: 0; top: 0; width: 600px; height: 520px; background: #FFFFFF; color: ${ink}; border: 2.5px solid ${ink}; border-radius: 14px; box-shadow: 12px 12px 0 ${ink}; overflow: hidden; }
+.bar { height: 56px; display: flex; align-items: center; gap: 12px; padding: 0 16px; border-bottom: 2px solid ${ink}; background: #FFF1E6; }
+.dots { display: flex; gap: 7px; }
+.dots i { width: 12px; height: 12px; border-radius: 50%; border: 2px solid ${ink}; }
+.address { flex: 1; height: 32px; border-radius: 999px; background: #FFFFFF; border: 2px solid ${ink}; display: flex; align-items: center; padding: 0 14px; font-size: 15px; color: #5B6274; }
+.address b { color: ${ink}; font-weight: 600; }
+.action { width: 36px; height: 36px; border-radius: 9px; background: ${ink}; display: grid; place-items: center; }
+.action img { width: 26px; height: 26px; }
+.page { width: 232px; padding: 26px 0 0 28px; } /* the part the popup leaves visible */
+.player { height: 150px; border-radius: 10px; background: linear-gradient(180deg, #2A3350 0%, #3D4466 55%, #C86A3A 100%); position: relative; }
+.player .play { position: absolute; left: 50%; top: 50%; width: 52px; height: 52px; margin: -26px 0 0 -26px; border-radius: 50%; background: rgba(255,255,255,0.92); }
+.player .play::after { content: ''; position: absolute; left: 21px; top: 16px; border-left: 15px solid ${ink}; border-top: 10px solid transparent; border-bottom: 10px solid transparent; }
+.player .track { position: absolute; left: 16px; right: 16px; bottom: 16px; height: 5px; border-radius: 3px; background: rgba(255,255,255,0.35); }
+.player .track::before { content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 38%; border-radius: 3px; background: #FF7A1A; }
+.page h2 { margin-top: 18px; font-size: 21px; line-height: 1.2; font-weight: 700; letter-spacing: -0.01em; }
+.line { height: 10px; border-radius: 5px; background: #EDE6DF; margin-top: 14px; }
+.popup { position: absolute; left: 246px; top: 72px; width: 344px; height: 482px; border: 2.5px solid ${ink}; border-radius: 12px; box-shadow: 12px 12px 0 ${ink}; overflow: hidden; background: #FFFFFF; }
+.popup img { width: 100%; height: 100%; display: block; }
+</style></head><body>
+<div class="text">
+  <div class="brand"><img src="data:image/png;base64,${icon}" alt="">StreamGrab</div>
+  <h1>Save the videos a page plays</h1>
+  <p>Streams are listed as they play. One click saves them as one file, merged in your browser.</p>
+  <div class="formats"><span>HLS</span><span>DASH</span><span>MP4</span><span>WebM</span></div>
+</div>
+<div class="stage">
+<div class="window">
+  <div class="bar"><div class="dots"><i></i><i></i><i></i></div><div class="address"><b>www.example.com</b>/showcase</div><div class="action"><img src="data:image/png;base64,${icon}" alt=""></div></div>
+  <div class="page"><div class="player"><span class="play"></span><span class="track"></span></div><h2>Harbour at dawn · timelapse</h2><div class="line" style="width: 62%"></div><div class="line" style="width: 44%"></div></div>
+</div>
+<div class="popup"><img src="data:image/png;base64,${shot}" alt=""></div>
+</div>
+</body></html>`;
+}
+
 const TILE_PAGE = `<!doctype html><html><head><style>${BASE_CSS}
 body { width: 440px; height: 280px; background: #1B2030; color: #EEF0F4; display: flex; flex-direction: column; justify-content: center; padding: 0 40px; }
 .brand { display: flex; align-items: center; gap: 16px; font-size: 40px; font-weight: 800; letter-spacing: -0.02em; }
@@ -240,21 +297,21 @@ const shots = await capturePopup();
 mkdirSync(outDir, { recursive: true });
 const frames: Frame[] = [
   {
-    file: 'screenshot-1-detected.png',
+    file: 'screenshot-2-detected.png',
     dark: false,
     headline: 'Every video on the page, one click away',
     body: 'HLS, DASH, MP4 and WebM streams are listed as the page plays them. Pick the quality, audio and subtitles.',
     shot: shots.detected,
   },
   {
-    file: 'screenshot-2-queue.png',
+    file: 'screenshot-3-queue.png',
     dark: true,
     headline: 'Downloads keep going in the background',
     body: 'Segments in parallel, retries, resume after a restart. FFmpeg joins video and audio into one MP4 inside your browser.',
     shot: shots.queue,
   },
   {
-    file: 'screenshot-3-completed.png',
+    file: 'screenshot-4-completed.png',
     dark: false,
     headline: 'Saved to your Downloads folder',
     body: 'No server, no account, no tracking. StreamGrab collects no data.',
@@ -263,6 +320,7 @@ const frames: Frame[] = [
 ];
 const browser = await puppeteer.launch({ executablePath: await chromePath(), headless: true });
 try {
+  await render(browser, heroPage(shots.detected), 1280, 800, 'screenshot-1-overview.png');
   for (const frame of frames) await render(browser, framePage(frame), 1280, 800, frame.file);
   await render(browser, TILE_PAGE, 440, 280, 'promo-tile-440x280.png');
 } finally {
