@@ -31,6 +31,16 @@ const BIBLIOGRAPHIC: Record<string, string> = {
   gre: 'ell', ice: 'isl', mac: 'mkd', mao: 'mri', may: 'msa', per: 'fas', rum: 'ron', slo: 'slk', tib: 'bod', wel: 'cym',
 };
 
+const KNOWN_CODES = new Set([...Object.keys(ISO_639_1_TO_2), ...Object.values(ISO_639_1_TO_2), ...Object.keys(BIBLIOGRAPHIC)]);
+
+/** A tag whose language is in the tables above ("zh", "pt-BR", "eng", "fre"): safe to read out of a file name. */
+export function isKnownLanguage(tag: string): boolean {
+  const parts = tag.split('-');
+  const primary = parts[0]?.toLowerCase() ?? '';
+  if (!KNOWN_CODES.has(primary)) return false;
+  return parts.slice(1).every((part) => /^(?:[a-z]{2}|[0-9]{3}|[a-z]{4})$/i.test(part));
+}
+
 /** The language of a tag, to compare two tags: "fr-CA", "fra" and "fre" → "fra"; undefined as iso6392. */
 export function languageKey(tag: string | undefined): string | undefined {
   const code = iso6392(tag);

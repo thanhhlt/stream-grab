@@ -69,13 +69,18 @@ export interface DownloadRequest {
 
 /** A subtitle track chosen for a task (0.7.0). */
 export interface TaskSubtitle {
-  /** SubtitleTrack.id in the manifest; `track-N` for a progressive file's `<track>`. */
+  /** SubtitleTrack.id in the manifest; `track-N` for a progressive file's `<track>`; `page-N` for a page subtitle file (0.7.2). */
   id: string;
   name: string;
   language?: string;
   forced?: boolean;
-  /** Progressive files: the `<track src>` WebVTT file (there is no manifest to read it from again). */
+  /**
+   * The WebVTT file, when no manifest names it: a progressive file's `<track src>`, or a page
+   * subtitle file (0.7.2, any protocol). Manifest renditions have none.
+   */
   url?: string;
+  /** Page subtitle files (0.7.2): seconds the page's player adds to the file's cue times. */
+  offsetSec?: number;
 }
 
 /** Download progress of a task, reported by the engine. */
@@ -208,6 +213,20 @@ export interface SubtitleOutput {
   error?: string;
 }
 
+/**
+ * A WebVTT file the page loaded on its own (0.7.2), saved with an HLS/DASH
+ * video. Its cues are on the player's timeline: 0 is where the video starts.
+ */
+export interface PageSubtitleFile {
+  /** TaskSubtitle.id (`page-N`). */
+  id: string;
+  url: string;
+  name: string;
+  language?: string;
+  /** Seconds the page's player adds to the file's cue times. */
+  offsetSec?: number;
+}
+
 /** What the engine needs to run one task; built by the service worker. */
 export interface EngineTaskSpec {
   taskId: string;
@@ -219,6 +238,8 @@ export interface EngineTaskSpec {
   audioTrackIds: string[];
   /** WebVTT subtitle tracks downloaded with the segments (0.7.0); absent when none. */
   subtitleTrackIds?: string[];
+  /** HLS/DASH (0.7.2): the page's own WebVTT files, downloaded as one-file subtitle tracks. */
+  pageSubtitles?: PageSubtitleFile[];
   /** Simultaneous segment requests (Settings, 1–16). */
   concurrency: number;
   file?: { container: ProgressiveContainer; bytes?: number };

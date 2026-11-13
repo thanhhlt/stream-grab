@@ -1,3 +1,4 @@
+import { parseOffsetSec } from '@/core/subtitles/cue-offset';
 import {
   DETECTION_EVIDENCE,
   DETECTION_STATUSES,
@@ -31,6 +32,8 @@ export interface StoredTabDetections {
   generation: number;
   pageUrl?: string;
   streams: DetectedStream[];
+  /** WebVTT files the page loaded on its own (0.7.2), ids `page-N`; also listed in the streams' media summaries. */
+  subtitleFiles?: SubtitleTrackSummary[];
   updatedAt: number;
 }
 
@@ -156,6 +159,8 @@ export function parseSubtitleTrackSummary(raw: unknown): SubtitleTrackSummary | 
     const url = typeof raw['url'] === 'string' ? parseHttpUrl(raw['url']) : null;
     if (url === null) return null;
     summary.url = url.href;
+    const offsetSec = parseOffsetSec(raw['offsetSec']);
+    if (offsetSec !== undefined) summary.offsetSec = offsetSec;
   }
   return summary;
 }
@@ -279,5 +284,12 @@ export function parseStoredTabDetections(raw: unknown): StoredTabDetections | nu
   };
   const pageUrl = optionalString(raw['pageUrl']);
   if (pageUrl !== undefined) data.pageUrl = pageUrl;
+  if (Array.isArray(raw['subtitleFiles'])) {
+    const files = raw['subtitleFiles']
+      .slice(0, MAX_SUMMARY_ITEMS)
+      .map(parseSubtitleTrackSummary)
+      .filter((track): track is SubtitleTrackSummary => track !== null && track.url !== undefined);
+    if (files.length > 0) data.subtitleFiles = files;
+  }
   return data;
 }

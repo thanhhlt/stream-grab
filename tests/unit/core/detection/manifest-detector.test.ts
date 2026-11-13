@@ -28,6 +28,36 @@ describe('classifyMimeType', () => {
   });
 });
 
+describe('classifyResponse: page subtitle files (0.7.2)', () => {
+  it('reports WebVTT files by name, also with a version suffix, or by Content-Type', () => {
+    for (const url of [
+      'https://cdn.example.com/subs/en.vtt',
+      'https://cdn.example.com/subs/en.vtt?sig=1',
+      'https://cdn.example.com/sub/captions.zh.vtt.r20240612',
+      'https://cdn.example.com/subs/movie.webvtt',
+    ]) {
+      expect(classifyResponse(observe(url, { contentType: 'application/octet-stream' })), url).toEqual({ kind: 'subtitle' });
+    }
+    expect(classifyResponse(observe('https://cdn.example.com/subs/en.vtt', { statusCode: 304 }))).toEqual({ kind: 'subtitle' });
+    expect(classifyResponse(observe('https://api.example.com/subs/42', { contentType: 'text/vtt; charset=utf-8' }))).toEqual({ kind: 'subtitle' });
+    expect(classifyResponse(observe('https://cdn.example.com/subs/en.vtt', { resourceType: 'media', contentType: 'text/vtt' }))).toEqual({
+      kind: 'subtitle',
+    });
+  });
+
+  it('leaves out other bodies at those names and other subtitle formats', () => {
+    expect(classifyResponse(observe('https://cdn.example.com/subs/en.vtt', { contentType: 'text/html' }))).toEqual({
+      kind: 'ignore',
+      reason: 'content-type',
+    });
+    expect(classifyResponse(observe('https://cdn.example.com/subs/en.srt'))).toEqual({ kind: 'ignore', reason: 'segment' });
+    expect(classifyResponse(observe('https://cdn.example.com/vtt/index.html'))).toEqual({ kind: 'ignore', reason: 'segment' });
+    // A manifest or segment whose name merely contains ".vtt".
+    expect(classifyResponse(observe('https://cdn.example.com/subs/en.vtt.m3u8'))).toMatchObject({ kind: 'manifest', protocol: 'hls' });
+    expect(classifyResponse(observe('https://cdn.example.com/subs/en.vtt.m4s'))).toEqual({ kind: 'ignore', reason: 'segment' });
+  });
+});
+
 describe('classifyResponse', () => {
   it('detects manifests by Content-Type even without a recognisable extension', () => {
     expect(
@@ -74,7 +104,7 @@ describe('classifyResponse', () => {
       'https://cdn.example.com/hls/init.mp4',
       'https://cdn.example.com/hls/master.m3u8/seg1.ts',
       'https://cdn.example.com/keys/key.key',
-      'https://cdn.example.com/subs/en.vtt',
+      'https://cdn.example.com/subs/en.srt',
     ]) {
       expect(classifyResponse(observe(url, { contentType: 'application/octet-stream' }))).toEqual({
         kind: 'ignore',

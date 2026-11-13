@@ -8,11 +8,13 @@ import {
 import { detectionStorageKey, SessionDetectionStore } from '@/core/detection/detection-store';
 import { inspectManifest } from '@/core/detection/manifest-inspector';
 import type { InspectionOutcome } from '@/core/detection/stream-inspector';
+import type { SubtitleFileInspection } from '@/core/detection/subtitle-inspector';
 import { PROGRESSIVE_VARIANT_ID, type ProgressiveInfo, type RequestContext } from '@/core/models/detected-stream';
 import dashDrm from '@tests/fixtures/manifests/dash/drm.mpd?raw';
 import dashDynamic from '@tests/fixtures/manifests/dash/dynamic.mpd?raw';
 import dashStatic from '@tests/fixtures/manifests/dash/static-separate-av.mpd?raw';
 import hlsMaster from '@tests/fixtures/manifests/hls/master.m3u8?raw';
+import hlsMasterSubtitles from '@tests/fixtures/manifests/hls/master-subtitles.m3u8?raw';
 import hlsLive from '@tests/fixtures/manifests/hls/media-live.m3u8?raw';
 import hlsTs from '@tests/fixtures/manifests/hls/media-ts.m3u8?raw';
 import { FakeStorageArea } from '@tests/fakes/fake-storage';
@@ -42,7 +44,14 @@ function deferred<T>() {
 type Outcomes = Record<string, InspectionOutcome | (() => Promise<InspectionOutcome>)>;
 
 function setup(
-  options: { outcomes?: Outcomes; pageInfo?: PageInfo; limits?: Partial<DetectionLimits>; area?: FakeStorageArea; concurrency?: number } = {},
+  options: {
+    outcomes?: Outcomes;
+    pageInfo?: PageInfo;
+    limits?: Partial<DetectionLimits>;
+    area?: FakeStorageArea;
+    concurrency?: number;
+    subtitleFiles?: Record<string, SubtitleFileInspection>;
+  } = {},
 ) {
   const outcomes: Outcomes = options.outcomes ?? {};
   const area = options.area ?? new FakeStorageArea('session');
@@ -53,10 +62,14 @@ function setup(
     return Promise.resolve(outcome ?? { kind: 'failed', reason: 'no fixture' });
   });
   const resolvePageInfo = vi.fn(() => Promise.resolve(options.pageInfo ?? {}));
+  const inspectSubtitle = vi.fn(
+    (url: string): Promise<SubtitleFileInspection> => Promise.resolve(options.subtitleFiles?.[url] ?? { ok: false, reason: 'no fixture' }),
+  );
   const badge = new Map<number, number>();
   const manager = new DetectionManager({
     store: new SessionDetectionStore(area),
     inspect,
+    inspectSubtitle,
     resolvePageInfo,
     onTabChanged: (tabId, streams) => badge.set(tabId, streams.length),
     now: () => clock,
@@ -68,6 +81,7 @@ function setup(
     manager,
     area,
     inspect,
+    inspectSubtitle,
     resolvePageInfo,
     badge,
     outcomes,
@@ -714,5 +728,171 @@ describe('DetectionManager: <track> subtitles of progressive files (0.7.0)', () 
     await manager.idle();
     const [stream] = await manager.getStreams(1);
     expect(stream?.media).toEqual({ variants: [{ id: PROGRESSIVE_VARIANT_ID, audioOnly: false, audioTrackIds: [] }], audioTracks: [] });
+  });
+});
+
+describe('DetectionManager: page subtitle files (0.7.2)', () => {
+  const MEDIA = 'https://cdn.example.com/vod/movie/720p.m3u8';
+  const ZH = 'https://cdn.example.com/sub/captions.zh.vtt.r20240612';
+  const EN = 'https://cdn.example.com/sub/movie.en.vtt';
+  const SEGMENT = 'https://cdn.example.com/sub/seg_0001.vtt';
+  const files: Record<string, SubtitleFileInspection> = {
+    [ZH]: { ok: true, language: 'zh' },
+    [EN]: { ok: true, language: 'en' },
+    [SEGMENT]: { ok: false, reason: 'A segment of a subtitle rendition, not a whole file' },
+  };
+  const subtitleFile = (url: string, frameId = 0) => ({ tabId: 1, frameId, url, requestContext: { referer: 'https://site.example/' }, timestamp: 1_000 });
+  const ZH_TRACK = { id: 'page-0', name: 'Chinese', language: 'zh', isDefault: false, url: ZH };
+
+  it('offers a checked file with every quality of an HLS stream, found before or after the stream', async () => {
+    const { manager, area, inspectSubtitle } = setup({ outcomes: { [MEDIA]: manifest(hlsTs, MEDIA) }, subtitleFiles: files });
+    await manager.handleSubtitleFile(subtitleFile(ZH));
+    await manager.handleCandidate(candidate(MEDIA));
+    await manager.idle();
+    let [stream] = await manager.getStreams(1);
+    expect(stream?.media?.subtitleTracks).toEqual([ZH_TRACK]);
+    expect(stream?.media?.variants.every((variant) => variant.subtitleTrackIds?.join() === 'page-0')).toBe(true);
+
+    // Segments of a rendition are rejected; the same file is checked once.
+    await manager.handleSubtitleFile(subtitleFile(SEGMENT));
+    await manager.handleSubtitleFile(subtitleFile(ZH));
+    await manager.handleSubtitleFile(subtitleFile(EN));
+    await manager.idle();
+    expect(inspectSubtitle).toHaveBeenCalledTimes(3);
+    [stream] = await manager.getStreams(1);
+    expect(stream?.media?.subtitleTracks?.map((track) => [track.id, track.name])).toEqual([
+      ['page-0', 'Chinese'],
+      ['page-1', 'English'],
+    ]);
+    expect(area.data.get(detectionStorageKey(1))).toMatchObject({ subtitleFiles: [ZH_TRACK, { id: 'page-1', url: EN }] });
+  });
+
+  it('keeps the files across a restart and forgets them on navigation', async () => {
+    const area = new FakeStorageArea('session');
+    const first = setup({ area, subtitleFiles: files });
+    await first.manager.handleSubtitleFile(subtitleFile(ZH));
+    await first.manager.idle();
+
+    const second = setup({ area, outcomes: { [MEDIA]: manifest(hlsTs, MEDIA) }, subtitleFiles: files });
+    await second.manager.handleCandidate(candidate(MEDIA));
+    await second.manager.handleSubtitleFile(subtitleFile(ZH));
+    await second.manager.idle();
+    expect(second.inspectSubtitle).not.toHaveBeenCalled();
+    expect((await second.manager.getStreams(1))[0]?.media?.subtitleTracks).toEqual([ZH_TRACK]);
+
+    await second.manager.resetTab(1, 'https://site.example/next');
+    await second.manager.handleCandidate(candidate(MEDIA));
+    await second.manager.idle();
+    expect((await second.manager.getStreams(1))[0]?.media?.subtitleTracks).toBeUndefined();
+  });
+
+  it("lists a progressive file's <track> once, and the page's other files after its tracks", async () => {
+    const FILE = 'https://cdn.example.com/v/clip.mp4';
+    const TRACK = { id: 'track-0', name: 'English', language: 'en', isDefault: true, url: EN };
+    const { manager } = setup({ outcomes: { [FILE]: { kind: 'progressive', finalUrl: FILE, info: { container: 'mp4' } } }, subtitleFiles: files });
+    await manager.handleCandidate(
+      candidate(FILE, { match: { protocol: 'progressive', evidence: 'dom' }, progressive: { container: 'mp4' }, subtitles: [TRACK] }),
+    );
+    await manager.handleSubtitleFile(subtitleFile(EN));
+    await manager.handleSubtitleFile(subtitleFile(ZH));
+    await manager.idle();
+    const [stream] = await manager.getStreams(1);
+    expect(stream?.media?.subtitleTracks?.map((track) => track.id)).toEqual(['track-0', 'page-1']);
+    expect(stream?.media?.variants[0]?.subtitleTrackIds).toEqual(['track-0', 'page-1']);
+  });
+
+  it('keeps the newest files when full (a single-page site moving on), never reusing an id', async () => {
+    const many = Object.fromEntries(Array.from({ length: 5 }, (_, i) => [`https://cdn.example.com/s${'abcde'[i]}/x.vtt`, { ok: true } as const]));
+    const { manager } = setup({ outcomes: { [MEDIA]: manifest(hlsTs, MEDIA) }, subtitleFiles: many, limits: { maxSubtitleFilesPerTab: 2 } });
+    await manager.handleCandidate(candidate(MEDIA));
+    for (const url of Object.keys(many)) await manager.handleSubtitleFile(subtitleFile(url));
+    await manager.idle();
+    const [stream] = await manager.getStreams(1);
+    expect(stream?.media?.subtitleTracks?.map((track) => track.id)).toEqual(['page-3', 'page-4']);
+  });
+
+  it('keeps the newest link of a file it already has', async () => {
+    const { manager } = setup({ outcomes: { [MEDIA]: manifest(hlsTs, MEDIA) }, subtitleFiles: { [ZH]: files[ZH]!, [`${ZH}?token=2`]: files[ZH]! } });
+    await manager.handleCandidate(candidate(MEDIA));
+    await manager.handleSubtitleFile(subtitleFile(ZH));
+    await manager.handleSubtitleFile(subtitleFile(`${ZH}?token=2`));
+    await manager.idle();
+    expect((await manager.getStreams(1))[0]?.media?.subtitleTracks).toEqual([{ ...ZH_TRACK, url: `${ZH}?token=2` }]);
+  });
+
+  it('keeps the files when the list is cleared, also one still being checked; a file that could not be fetched is checked again', async () => {
+    const pending = deferred<SubtitleFileInspection>();
+    let calls = 0;
+    const custom = new DetectionManager({
+      store: new SessionDetectionStore(new FakeStorageArea('session')),
+      inspect: (url) => Promise.resolve(url === MEDIA ? manifest(hlsTs, MEDIA) : { kind: 'failed', reason: 'x' }),
+      inspectSubtitle: () => {
+        calls += 1;
+        return calls === 1 ? Promise.resolve({ ok: false, reason: 'HTTP 503', transient: true }) : pending.promise;
+      },
+      resolvePageInfo: () => Promise.resolve({}),
+      flushDelayMs: 0,
+    });
+    await custom.handleSubtitleFile(subtitleFile(ZH)); // 503: forgotten
+    const second = custom.handleSubtitleFile(subtitleFile(ZH)); // checked again, still running when the list is cleared
+    await custom.clearTab(1);
+    pending.resolve({ ok: true, language: 'zh' });
+    await second;
+    await custom.handleCandidate(candidate(MEDIA));
+    await custom.idle();
+    expect(calls).toBe(2);
+    expect((await custom.getStreams(1))[0]?.media?.subtitleTracks).toEqual([ZH_TRACK]);
+  });
+
+  it('records how far the player moves the file’s cues, asking its frame and then the top frame', async () => {
+    const fileCues = [
+      { start: 10.086, text: '我會的' },
+      { start: 27.266, text: '老公' },
+    ];
+    const shifted = [{ kind: 'metadata', cues: fileCues.map((cue) => ({ ...cue, start: cue.start + 4.56 })) }];
+    const asked: number[] = [];
+    let attempt = 0;
+    const area = new FakeStorageArea('session');
+    const manager = new DetectionManager({
+      store: new SessionDetectionStore(area),
+      inspect: (url) => Promise.resolve(url === MEDIA ? manifest(hlsTs, MEDIA) : { kind: 'failed', reason: 'x' }),
+      inspectSubtitle: () => Promise.resolve({ ok: true, language: 'zh', cues: fileCues }),
+      // The player adds its cues a little after loading the file: none on the first try, then in the top frame.
+      readTextTracks: (_tabId, frameId) => {
+        asked.push(frameId);
+        if (frameId === 0) attempt += 1;
+        return Promise.resolve(frameId === 0 && attempt >= 2 ? shifted : []);
+      },
+      cueCheckDelaysMs: [0, 0, 0],
+      resolvePageInfo: () => Promise.resolve({}),
+      flushDelayMs: 0,
+    });
+    await manager.handleCandidate(candidate(MEDIA));
+    await manager.handleSubtitleFile(subtitleFile(ZH, 3));
+    await vi.waitFor(async () => {
+      expect((await manager.getStreams(1))[0]?.media?.subtitleTracks).toEqual([{ ...ZH_TRACK, offsetSec: 4.56 }]);
+    });
+    await manager.idle();
+    expect(asked).toEqual([3, 0, 3, 0]);
+    expect(area.data.get(detectionStorageKey(1))).toMatchObject({ subtitleFiles: [{ id: 'page-0', offsetSec: 4.56 }] });
+  });
+
+  it('does not offer again what the manifest already has: a file in its language, or its numbered segments', async () => {
+    const EN_FILE = { ok: true, language: 'en' } as const;
+    const SEG = (n: number) => `https://cdn.example.com/vod/movie/subs/en/seg-${n}.vtt`;
+    const { manager } = setup({
+      outcomes: { [MASTER]: manifest(hlsMasterSubtitles, MASTER) },
+      subtitleFiles: { [EN]: EN_FILE, [ZH]: files[ZH]!, [SEG(1)]: { ok: true }, [SEG(2)]: { ok: true }, [SEG(3)]: { ok: true } },
+    });
+    await manager.handleCandidate(candidate(MASTER));
+    await manager.idle();
+    for (const url of [EN, ZH, SEG(1), SEG(2), SEG(3)]) await manager.handleSubtitleFile(subtitleFile(url));
+    await manager.idle();
+    const [stream] = await manager.getStreams(1);
+    const own = stream?.media?.subtitleTracks?.filter((track) => !track.id.startsWith('page-')) ?? [];
+    expect(own.some((track) => track.language === 'en')).toBe(true);
+    // English is the manifest's own; the numbered files are a rendition's segments: only Chinese is added.
+    expect(stream?.media?.subtitleTracks?.filter((track) => track.id.startsWith('page-')).map((track) => track.name)).toEqual(['Chinese']);
+    expect(stream?.media?.subtitleTracks?.slice(0, own.length)).toEqual(own);
   });
 });

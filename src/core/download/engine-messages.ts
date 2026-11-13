@@ -1,3 +1,4 @@
+import { parseOffsetSec } from '@/core/subtitles/cue-offset';
 import { MEDIA_PROTOCOLS, PROGRESSIVE_CONTAINERS, type RequestContext } from '@/core/models/detected-stream';
 import {
   FAILURE_REASONS,
@@ -11,6 +12,7 @@ import {
   type MediaProgress,
   type MediaReport,
   type MediaTaskSpec,
+  type PageSubtitleFile,
   type SaveRequest,
   type SubtitleFileRequest,
   type TaskProgress,
@@ -27,6 +29,7 @@ import { TRACK_TYPES } from '@/core/models/media-segment';
 import { SEGMENT_CONCURRENCY } from '@/shared/constants';
 import { clampInt, OUTPUT_FORMATS, SUBTITLE_FORMATS, SUBTITLE_MODES } from '@/shared/settings/settings';
 import { isOneOf, isRecord } from '@/shared/utils/guards';
+import { parseHttpUrl } from '@/shared/utils/url';
 
 /**
  * Runtime validation of engine messages. Both ends are extension code, but
@@ -91,6 +94,23 @@ export function parseEngineTaskSpec(raw: unknown): EngineTaskSpec | null {
     ? raw['subtitleTrackIds'].filter((id): id is string => str(id, 64) !== undefined).slice(0, 20)
     : [];
   if (subtitleTrackIds.length > 0) spec.subtitleTrackIds = subtitleTrackIds;
+  const pageSubtitles = Array.isArray(raw['pageSubtitles'])
+    ? raw['pageSubtitles'].slice(0, 20).flatMap((item): PageSubtitleFile[] => {
+        if (!isRecord(item)) return [];
+        const id = str(item['id'], 64);
+        const url = str(item['url']);
+        const name = str(item['name'], 200);
+        if (id === undefined || url === undefined || name === undefined || !parseHttpUrl(url)) return [];
+        if (subtitleTrackIds.includes(id)) return [];
+        const file: PageSubtitleFile = { id, url, name };
+        const language = str(item['language'], 35);
+        if (language !== undefined) file.language = language;
+        const offsetSec = parseOffsetSec(item['offsetSec']);
+        if (offsetSec !== undefined) file.offsetSec = offsetSec;
+        return [file];
+      })
+    : [];
+  if (pageSubtitles.length > 0 && protocol !== 'progressive') spec.pageSubtitles = pageSubtitles;
   if (isOneOf(container, PROGRESSIVE_CONTAINERS)) {
     const bytes = nonNegative(file?.['bytes']);
     spec.file = { container, ...(bytes !== undefined && bytes > 0 ? { bytes } : {}) };

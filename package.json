@@ -1,6 +1,6 @@
 {
   "name": "streamgrab",
-  "version": "0.7.1",
+  "version": "0.7.2",
   "private": true,
   "description": "Browser extension (Chrome MV3) that detects, downloads and merges online media streams entirely in the browser.",
   "license": "GPL-3.0-or-later",

@@ -11,6 +11,7 @@ import {
   type EngineWork,
   type MediaReport,
   type MediaTaskSpec,
+  type PageSubtitleFile,
   type ProgressiveTaskInfo,
   type SaveRequest,
   type SubtitleOutput,
@@ -683,7 +684,7 @@ export class DownloadCoordinator {
       let result: Pick<SubtitleOutput, 'downloadId' | 'error'>;
       try {
         if (!subtitle) throw new Error('the track is no longer part of the task');
-        const url = entry.url ?? (task.progressive ? await this.#trackFileUrl(task.id, subtitle.url, format) : undefined);
+        const url = entry.url ?? (task.progressive ? await this.#trackFileUrl(task.id, subtitle.url, format, subtitle.offsetSec) : undefined);
         if (url === undefined) throw new Error('the file is gone');
         const fileName = await this.#inFolder(subtitleFileName(videoBase, subtitle, chosen, format));
         result = { downloadId: await files.save({ url, fileName }) };
@@ -706,7 +707,7 @@ export class DownloadCoordinator {
   }
 
   /** A progressive file's `<track>` file, fetched with the page's Referer/Origin and converted, as a data: URL. */
-  async #trackFileUrl(taskId: string, url: string | undefined, format: SubtitleFormat): Promise<string> {
+  async #trackFileUrl(taskId: string, url: string | undefined, format: SubtitleFormat, offsetSec?: number): Promise<string> {
     if (url === undefined) throw new Error('the page gave no address for it');
     const context = await this.#deps.store.findContext(taskId);
     const release = context !== undefined && !isEmptyRequestContext(context) ? await this.#deps.acquireContext(url, context) : undefined;
@@ -721,7 +722,7 @@ export class DownloadCoordinator {
     } finally {
       await release?.().catch(() => undefined);
     }
-    return subtitleDataUrl(convertTrackFile(text, format), format);
+    return subtitleDataUrl(convertTrackFile(text, format, offsetSec), format);
   }
 
   /**
@@ -1189,9 +1190,19 @@ export class DownloadCoordinator {
       audioTrackIds: task.selection.audioTrackIds,
       concurrency: settings.segmentConcurrency,
     };
-    // Subtitles of a stream come with its segments; a progressive file's `<track>` files are fetched when it is saved.
+    // Subtitles of a stream come with its segments: manifest renditions by id, the page's own WebVTT files
+    // (0.7.2) by URL. A progressive file's subtitle files are fetched when it is saved.
     const subtitles = task.progressive ? [] : (task.selection.subtitles ?? []);
-    if (subtitles.length > 0) spec.subtitleTrackIds = subtitles.map((subtitle) => subtitle.id);
+    const renditions = subtitles.filter((subtitle) => subtitle.url === undefined);
+    if (renditions.length > 0) spec.subtitleTrackIds = renditions.map((subtitle) => subtitle.id);
+    const pageFiles = subtitles.flatMap((subtitle): PageSubtitleFile[] => {
+      if (subtitle.url === undefined) return [];
+      const file: PageSubtitleFile = { id: subtitle.id, url: subtitle.url, name: subtitle.name };
+      if (subtitle.language !== undefined) file.language = subtitle.language;
+      if (subtitle.offsetSec !== undefined) file.offsetSec = subtitle.offsetSec;
+      return [file];
+    });
+    if (pageFiles.length > 0) spec.pageSubtitles = pageFiles;
     // A progressive file the engine fetches with the page's Referer/Origin (0.3.0).
     const file = task.progressive;
     if (file) spec.file = { container: file.container, ...(file.bytes !== undefined ? { bytes: file.bytes } : {}) };

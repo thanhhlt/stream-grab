@@ -65,7 +65,11 @@
       const list = document.getElementById('streams');
       (async () => {
         const streams = await (await fetch('/download/streams.json')).json();
-        for (const { path, title, tryThis } of streams) {
+        // ?stream=<folder> loads that stream alone; streams with page files only load that way (their files
+        // would be offered with every video of the page).
+        const only = new URLSearchParams(location.search).get('stream');
+        const chosen = streams.filter((stream) => (only ? stream.path.split('/')[2] === only : !stream.pageFiles));
+        for (const { path, title, tryThis, pageFiles = [], cueShiftSec } of chosen) {
           const item = document.createElement('li');
           item.innerHTML = '<b></b> · <code></code><br><span class="hint"></span><br><span class="status">loading…</span>';
           item.querySelector('b').textContent = title;
@@ -77,6 +81,21 @@
           try {
             const response = await fetch(path);
             await response.text();
+            for (const file of pageFiles) {
+              const text = await (await fetch(file)).text();
+              // Like some real players: the file's cues go into a hidden metadata track, moved by an offset.
+              if (cueShiftSec !== undefined) {
+                const video = document.createElement('video');
+                video.hidden = true;
+                item.append(video);
+                const track = video.addTextTrack('metadata', 'Chinese', 'zh');
+                track.mode = 'hidden';
+                const time = (value) => value.split(':').reduce((sum, part) => sum * 60 + Number(part), 0);
+                for (const [, start, end, line] of text.matchAll(/([\d:.]+) --> ([\d:.]+)\n(.+)/g)) {
+                  track.addCue(new VTTCue(time(start) + cueShiftSec, time(end) + cueShiftSec, line));
+                }
+              }
+            }
             item.className = response.ok ? 'done' : 'fail';
             status.textContent = `${response.status} ${response.headers.get('content-type') ?? ''}`;
           } catch (error) {

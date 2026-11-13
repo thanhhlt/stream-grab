@@ -70,6 +70,7 @@ describe('subtitle file names and contents', () => {
 class Engine implements EngineChannel {
   open = true;
   media: MediaTaskSpec[][] = [];
+  downloads: EngineWork['downloads'][] = [];
   exists = () => Promise.resolve(this.open);
   ensure = () => {
     this.open = true;
@@ -78,6 +79,7 @@ class Engine implements EngineChannel {
   close = () => Promise.resolve();
   sync = (work: EngineWork) => {
     this.media.push(work.media);
+    this.downloads.push(work.downloads);
     return Promise.resolve([...work.downloads, ...work.media].map((task) => task.taskId));
   };
   cancel = () => Promise.resolve();
@@ -147,6 +149,16 @@ describe('DownloadCoordinator: subtitle files of merged videos (0.7.0)', () => {
     const { coordinator, engine } = await setup([{ task: dash }]);
     await coordinator.pump();
     expect(engine.media.at(-1)).toEqual([{ taskId: 'd', job: 'process', format: 'auto', title: 'Movie', subtitles: { protocol: 'dash', format: 'srt', mode: 'file' } }]);
+  });
+
+  it('hands the engine manifest subtitles by id and page subtitle files by URL (0.7.2)', async () => {
+    const page: TaskSubtitle = { id: 'page-0', name: 'Chinese', language: 'zh', url: 'https://cdn.example.com/sub/zh.vtt' };
+    const queued = makeTask('q', { status: 'queued', selection: { ...processing('q').selection, subtitles: [ENGLISH, page] } });
+    const { coordinator, engine } = await setup([{ task: queued }]);
+    await coordinator.pump();
+    const spec = engine.downloads.flat().find((candidate) => candidate.taskId === 'q');
+    expect(spec?.subtitleTrackIds).toEqual([ENGLISH.id]);
+    expect(spec?.pageSubtitles).toEqual([{ id: 'page-0', url: page.url, name: 'Chinese', language: 'zh' }]);
   });
 
   it('saves the subtitle files after the video, named after its final name, and completes the task once they are saved', async () => {

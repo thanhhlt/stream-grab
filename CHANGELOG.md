@@ -7,6 +7,19 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.7.2] - 2026-11-13
+
+### Fixed
+
+- Subtitles a site's player loads as a separate WebVTT file (outside the HLS/DASH manifest and
+  without a `<track>`, often named like `captions.zh.vtt.r20240612`) were never offered. They are
+  now detected when the player loads them, checked once, named by their language, and offered
+  under Options with every video of the page. They are saved as files or added to the video like
+  a manifest's subtitles, timed from the video's start.
+- When the page's player shifts such a file's subtitles (seen on a site that shows every line
+  4.56 s later than the file says), the saved subtitles are shifted the same way, read from the
+  cues the player holds, so they match the video as the site plays it.
+
 ## [0.7.1] - 2026-11-12
 
 ### Fixed
@@ -265,7 +278,11 @@ Notably: merging is stream copy only (no re-encoding); SAMPLE-AES and DRM-protec
 not supported; subtitles are ignored; the bundled FFmpeg.wasm core is licensed
 GPL-2.0-or-later and adds 32 MB to the extension.
 
-[Unreleased]: https://github.com/thanhhlt/stream-grab/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/thanhhlt/stream-grab/compare/v0.7.2...HEAD
+[0.7.2]: https://github.com/thanhhlt/stream-grab/compare/v0.7.1...v0.7.2
+[0.7.1]: https://github.com/thanhhlt/stream-grab/compare/v0.7.0...v0.7.1
+[0.7.0]: https://github.com/thanhhlt/stream-grab/compare/v0.6.0...v0.7.0
+[0.6.0]: https://github.com/thanhhlt/stream-grab/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/thanhhlt/stream-grab/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/thanhhlt/stream-grab/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/thanhhlt/stream-grab/compare/v0.2.0...v0.3.0

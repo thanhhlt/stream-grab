@@ -7,17 +7,20 @@
  *
  * Responsibilities:
  *  - answer metadata requests (titles, <video> elements) for detected streams,
- *  - report manifests referenced directly by <video>/<source> elements.
+ *  - report manifests referenced directly by <video>/<source> elements,
+ *  - answer what cues the frame's players hold (page subtitle file timing, 0.7.2).
  */
 import { sendToBackground } from '@/shared/messaging/client';
 import { createMessageRouter } from '@/shared/messaging/router';
 import { collectFrameMetadata } from './page-metadata';
+import { collectTextTracks } from './text-tracks';
 import { watchDomSources } from './video-detector';
 
 chrome.runtime.onMessage.addListener(
   createMessageRouter('content', {
     'content/ping': () => ({ isTopFrame: window.top === window }),
     'content/getMetadata': () => collectFrameMetadata(document, window),
+    'content/getTextTracks': () => collectTextTracks(document),
   }),
 );
 

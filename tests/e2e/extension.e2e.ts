@@ -14,7 +14,7 @@ import type { DownloadTask } from '@/core/models/download-task';
 import { STORAGE_KEYS } from '@/shared/constants';
 import { formatBytes } from '@/shared/utils/bytes';
 import { NodeFfmpegRunner } from '@tests/fakes/ffmpeg-node';
-import { DEMO_MEDIA } from '@tests/fixtures/download-routes';
+import { DEMO_MEDIA, SIDECAR_CUE_SHIFT_SEC, SIDECAR_SUBTITLE_PATH } from '@tests/fixtures/download-routes';
 import { LIVE_PAGE_PATH, LIVE_PATH, LIVE_RELOADS, LIVE_VOD_PATH } from '@tests/fixtures/fixture-routes';
 import { syntheticFiles } from '@tests/fixtures/media/synthetic-files';
 import {
@@ -748,6 +748,68 @@ describe('StreamGrab in Chrome (Chrome for Testing, unpacked dist/)', () => {
       await chrome.storage.local.set({ [key]: { ...current, subtitleLanguages: '', subtitleMode: 'file' } });
     }, STORAGE_KEYS.settings);
     await popup.close();
+    await demo.close();
+    await ext.close();
+  });
+
+  it('offers a WebVTT file the player loads on its own with the HLS video, and saves and embeds it (0.7.2)', async () => {
+    const ext = await extensionPage();
+    const setMode = (mode: string) =>
+      ext.evaluate(
+        async (key, mode) => {
+          const current = (await chrome.storage.local.get(key))[key] as Record<string, unknown> | undefined;
+          await chrome.storage.local.set({ [key]: { ...current, subtitleMode: mode } });
+        },
+        STORAGE_KEYS.settings,
+        mode,
+      );
+    await setMode('both');
+
+    const demoUrl = `${site.origin}/download?stream=sidecar`;
+    const demo = await browser.newPage();
+    await demo.goto(demoUrl);
+    // Found, then timed as the page's player shows it (its hidden track moves the cues).
+    const stream = await waitFor('the sidecar video with its page subtitle file, timed by the player', async () => {
+      const { streams } = await detected(ext, demoUrl, ['/download/sidecar/sidecar.m3u8']);
+      const found = streams[0];
+      return found?.media?.subtitleTracks?.[0]?.offsetSec !== undefined ? found : undefined;
+    }, 30_000);
+    expect(stream.media?.subtitleTracks).toEqual([
+      { id: 'page-0', name: 'Chinese', language: 'zh', isDefault: false, url: `${site.origin}${SIDECAR_SUBTITLE_PATH}`, offsetSec: SIDECAR_CUE_SHIFT_SEC },
+    ]);
+    expect(stream.media?.variants.every((variant) => variant.subtitleTrackIds?.includes('page-0'))).toBe(true);
+
+    const { tabId } = await detected(ext, demoUrl, ['/download/sidecar/sidecar.m3u8']);
+    const started = await send<{ created: { taskId: string }[] }>(ext, 'downloads/start', {
+      requests: [{ ...request(tabId, stream), subtitleTrackIds: ['page-0'], fileName: 'Sidecar' }],
+    });
+    const taskId = started.created[0]?.taskId ?? '';
+    const task = await waitFor('the video with its page subtitles', async () => {
+      const found = (await tasks(ext)).find((candidate) => candidate.id === taskId);
+      if (found?.status === 'failed') throw new Error(`failed: ${found.statusMessage ?? ''}`);
+      return found?.status === 'completed' ? found : undefined;
+    });
+    const video = task.output.saved?.path ?? '';
+    const [entry] = task.output.subtitles ?? [];
+    expect(entry).toMatchObject({ trackId: 'page-0', embedded: true });
+    expect(entry?.saved?.path).toBe(`${video.replace(/\.(mp4|mkv)$/, '')}.zh.srt`);
+    const text = readFileSync(entry?.saved?.path ?? '', 'utf8');
+    // Where the player shows it: the file's 5 s plus the player's shift; one cue every 20 s.
+    const first = /^1\r\n00:00:(\d\d),(\d{3}) --> [^\r]+\r\n中文字幕 1\r\n/.exec(text);
+    expect(Number(first?.[1]) + Number(first?.[2]) / 1000).toBeCloseTo(5 + SIDECAR_CUE_SHIFT_SEC, 1);
+    expect(text.match(/ --> /g)?.length).toBe(DEMO_SECONDS / 20);
+
+    const name = `saved.${video.endsWith('.mkv') ? 'mkv' : 'mp4'}`;
+    const probe = await ffmpeg.run({
+      tool: 'ffprobe',
+      args: ['-hide_banner', '-v', 'error', '-show_streams', '-select_streams', 's', '-of', 'json', `/in/${name}`],
+      inputs: [{ name, data: new Blob([new Uint8Array(readFileSync(video))]) }],
+      outputs: [],
+    });
+    const embedded = (JSON.parse(probe.stdout) as { streams: { tags?: Record<string, string> }[] }).streams;
+    expect(embedded.map((subtitle) => subtitle.tags?.['language'])).toEqual(['zho']);
+
+    await setMode('file');
     await demo.close();
     await ext.close();
   });

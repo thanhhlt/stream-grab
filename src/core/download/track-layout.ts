@@ -1,3 +1,4 @@
+import { parseOffsetSec } from '@/core/subtitles/cue-offset';
 import type { TrackLayout } from '@/core/models/media-info';
 import { TRACK_TYPES, type ContainerFormat, type MediaSegment } from '@/core/models/media-segment';
 import type { AudioTrack, SubtitleTrack } from '@/core/models/streaming-manifest';
@@ -39,6 +40,10 @@ export function buildLayout(
       if (named) {
         track.name = named.name;
         if (named.language !== undefined) track.language = named.language;
+        if ('pageFile' in named && named.pageFile === true) {
+          track.pageFile = true;
+          if ('offsetSec' in named && named.offsetSec !== undefined) track.offsetSec = named.offsetSec;
+        }
       }
       tracks.set(segment.trackId, track);
     }
@@ -85,6 +90,11 @@ export function parseLayout(raw: unknown): TrackLayout[] | null {
     const track: TrackLayout = { trackId, trackType, segments, initIndexes, discontinuityIndexes, container, durationSec };
     if (typeof item['name'] === 'string' && item['name'].length <= 200) track.name = item['name'];
     if (typeof item['language'] === 'string' && item['language'].length <= 35) track.language = item['language'];
+    if (trackType === 'subtitle' && item['pageFile'] === true) {
+      track.pageFile = true;
+      const offsetSec = parseOffsetSec(item['offsetSec']);
+      if (offsetSec !== undefined) track.offsetSec = offsetSec;
+    }
     tracks.push(track);
   }
   return tracks;

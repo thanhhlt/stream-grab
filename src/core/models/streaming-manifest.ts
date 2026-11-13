@@ -38,6 +38,10 @@ export interface SubtitleTrack {
     /** Representation of the text adaptation set (its highest-bandwidth one). */
     representationId: string;
   };
+  /** A page subtitle file (0.7.2), not from the manifest: one WebVTT file whose cues are on the player's timeline. */
+  pageFile?: true;
+  /** A page subtitle file: seconds the page's player adds to its cue times. */
+  offsetSec?: number;
 }
 
 /** Protocol-independent view of a parsed manifest. */

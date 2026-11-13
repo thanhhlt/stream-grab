@@ -2,6 +2,7 @@ import type { StartDownloadsResult } from '@/core/download/task-service';
 import type { RequestContext } from '@/core/models/detected-stream';
 import type { DownloadRequest, EngineReport, EngineWork, MediaReport, SaveRequest } from '@/core/models/download-task';
 import type { DomSource, FrameMetadata } from '@/shared/types/page-metadata';
+import type { PageTextTrack } from '@/shared/types/text-tracks';
 import { isRecord } from '@/shared/utils/guards';
 import type { SerializedError } from '@/shared/utils/errors';
 
@@ -86,6 +87,8 @@ export type ContentContract = {
   'content/ping': Exchange<undefined, ContentFrameInfo>;
   /** Title, structured data and <video> elements of the receiving frame. */
   'content/getMetadata': Exchange<undefined, FrameMetadata>;
+  /** The first cues of the frame's <video> text tracks (0.7.2): how the player times a page subtitle file. */
+  'content/getTextTracks': Exchange<undefined, { tracks: PageTextTrack[] }>;
 };
 
 export interface ContractsByTarget {

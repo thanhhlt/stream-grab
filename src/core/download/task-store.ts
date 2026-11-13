@@ -1,3 +1,4 @@
+import { parseOffsetSec } from '@/core/subtitles/cue-offset';
 import {
   MEDIA_PROTOCOLS,
   PROGRESSIVE_CONTAINERS,
@@ -414,6 +415,8 @@ export function parseTaskSubtitles(raw: unknown): TaskSubtitle[] {
       if (url === null) continue;
       subtitle.url = url.href;
     }
+    const offsetSec = parseOffsetSec(item['offsetSec']);
+    if (offsetSec !== undefined && subtitle.url !== undefined) subtitle.offsetSec = offsetSec;
     subtitles.push(subtitle);
   }
   return subtitles;

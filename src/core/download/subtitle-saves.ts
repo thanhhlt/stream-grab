@@ -58,10 +58,11 @@ export function subtitleFileName(videoBase: string, subtitle: TaskSubtitle, chos
 }
 
 /** A progressive file's `<track>` WebVTT file → the subtitle file's text; throws when it is not usable. */
-export function convertTrackFile(text: string, format: SubtitleFormat): string {
+/** offsetSec (0.7.2): how far the page's player moves the file's cues (a page subtitle file). */
+export function convertTrackFile(text: string, format: SubtitleFormat, offsetSec = 0): string {
   const parsed = parseWebVtt(text);
   if (!parsed) throw new Error('The subtitle file is not WebVTT');
-  const cues = joinCues([{ cues: parsed.cues, offsetSec: 0 }]);
+  const cues = joinCues([{ cues: parsed.cues, offsetSec }]).filter((cue) => cue.end > 0);
   if (cues.length === 0) throw new Error('The subtitle file has no subtitles');
   return format === 'srt' ? formatSrt(cues) : formatWebVtt(cues);
 }

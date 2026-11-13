@@ -87,7 +87,7 @@ function createPipeline(tabId: number) {
       statusCode: response.status,
       contentType: response.contentType,
     });
-    if (verdict.kind === 'ignore') return;
+    if (verdict.kind === 'ignore' || verdict.kind === 'subtitle') return;
     const candidate: DetectionCandidate = {
       tabId,
       frameId,

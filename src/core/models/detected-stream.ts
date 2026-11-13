@@ -116,14 +116,27 @@ export interface AudioTrackSummary {
 
 /** A WebVTT subtitle track (0.7.0). */
 export interface SubtitleTrackSummary {
-  /** SubtitleTrack.id in the parsed manifest; for a progressive file, `track-N`. */
+  /** SubtitleTrack.id in the parsed manifest; for a progressive file, `track-N`; a page subtitle file (0.7.2), `page-N`. */
   id: string;
   name: string;
   language?: string;
   isDefault: boolean;
   forced?: boolean;
-  /** Progressive files only: the `<track src>` WebVTT file. */
+  /** The WebVTT file: a progressive file's `<track src>`, or a page subtitle file (any protocol). */
   url?: string;
+  /** Page subtitle files (0.7.2): seconds the page's player adds to the file's cue times (found from its text tracks). */
+  offsetSec?: number;
+}
+
+/**
+ * Ids of page subtitle files (0.7.2): WebVTT files a player loaded on its
+ * own, offered with every video of the page. Manifest renditions and
+ * `<track>`s never use this prefix.
+ */
+export const PAGE_SUBTITLE_PREFIX = 'page-';
+
+export function isPageSubtitleId(id: string): boolean {
+  return id.startsWith(PAGE_SUBTITLE_PREFIX);
 }
 
 /** What parsing the manifest revealed about the media (HLS and DASH). */

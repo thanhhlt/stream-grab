@@ -36,6 +36,10 @@ export async function storeSegments(
     name?: string;
     /** Subtitle tracks: the manifest's language (with `name`). */
     language?: string;
+    /** Subtitle tracks (0.7.2): a page subtitle file (with `name`). */
+    pageFile?: true;
+    /** A page subtitle file: how far its player moves the cues. */
+    offsetSec?: number;
   }[],
 ): Promise<void> {
   const segments: MediaSegment[] = [];
@@ -43,7 +47,15 @@ export async function storeSegments(
   const subtitleTracks: SubtitleTrack[] = [];
   for (const track of tracks) {
     if (track.name !== undefined && track.trackType === 'subtitle') {
-      subtitleTracks.push({ id: track.trackId, name: track.name, ...(track.language !== undefined ? { language: track.language } : {}), isDefault: false, forced: false });
+      subtitleTracks.push({
+        id: track.trackId,
+        name: track.name,
+        ...(track.language !== undefined ? { language: track.language } : {}),
+        isDefault: false,
+        forced: false,
+        ...(track.pageFile ? { pageFile: true as const } : {}),
+        ...(track.offsetSec !== undefined ? { offsetSec: track.offsetSec } : {}),
+      });
     } else if (track.name !== undefined) audioTracks.push({ id: track.trackId, name: track.name, language: 'en', isDefault: true });
     for (const [index, spec] of track.segments.entries()) {
       segments.push({

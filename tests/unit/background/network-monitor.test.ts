@@ -6,7 +6,7 @@ import {
   type WebRequestApi,
   type WebRequestEventLike,
 } from '@/background/network-monitor';
-import type { DetectionCandidate } from '@/core/detection/detection-manager';
+import type { DetectionCandidate, SubtitleFileCandidate } from '@/core/detection/detection-manager';
 
 const EXTENSION_ID = 'abcdefghijklmnopabcdefghijklmnop';
 
@@ -68,17 +68,20 @@ describe('NetworkMonitor', () => {
     onErrorOccurred: FakeEvent<chrome.webRequest.OnErrorOccurredDetails>;
   };
   let candidates: DetectionCandidate[];
+  let subtitleFiles: SubtitleFileCandidate[];
   let navigations: [number, string][];
   let monitor: NetworkMonitor;
 
   beforeEach(() => {
     api = { onSendHeaders: new FakeEvent(), onResponseStarted: new FakeEvent(), onErrorOccurred: new FakeEvent() };
     candidates = [];
+    subtitleFiles = [];
     navigations = [];
     monitor = new NetworkMonitor(
       api satisfies WebRequestApi,
       {
         candidate: (candidate) => candidates.push(candidate),
+        subtitleFile: (file) => subtitleFiles.push(file),
         navigation: (tabId, url) => navigations.push([tabId, url]),
       },
       EXTENSION_ID,
@@ -113,6 +116,18 @@ describe('NetworkMonitor', () => {
         requestContext: { referer: 'https://site.example/watch' },
         timestamp: 5_000,
       },
+    ]);
+  });
+
+  it('reports WebVTT files a player loads on its own as subtitle files, not candidates (0.7.2)', () => {
+    const url = 'https://cdn.example.com/sub/captions.zh.vtt.r20240612';
+    api.onSendHeaders.emit({ ...base({ url, requestId: '9' }), requestHeaders: [{ name: 'Referer', value: 'https://site.example/watch' }] });
+    api.onResponseStarted.emit(response({ url, requestId: '9' }, 'application/octet-stream'));
+    api.onResponseStarted.emit(response({ url: 'https://cdn.example.com/api/subs/42', requestId: '10' }, 'text/vtt; charset=utf-8'));
+    expect(candidates).toEqual([]);
+    expect(subtitleFiles).toEqual([
+      { tabId: 7, frameId: 0, url, requestContext: { referer: 'https://site.example/watch' }, timestamp: 5_000 },
+      { tabId: 7, frameId: 0, url: 'https://cdn.example.com/api/subs/42', requestContext: {}, timestamp: 5_000 },
     ]);
   });
 

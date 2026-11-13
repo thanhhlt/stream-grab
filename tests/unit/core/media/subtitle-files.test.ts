@@ -147,6 +147,47 @@ describe('subtitle files of merged videos (real FFmpeg)', () => {
     });
   });
 
+  it('HLS: a page subtitle file is timed from the video’s start, whatever its first timestamp (0.7.2)', async () => {
+    expect(firstPts).toBeGreaterThan(0.5); // otherwise this test would not tell the two timings apart
+    const { request, file } = await process(
+      [
+        { trackId: 'main', trackType: 'main', container: 'mpeg-ts', segments: segmentsOf(media.ts.muxed) },
+        {
+          trackId: 'page-0',
+          trackType: 'subtitle',
+          container: 'webvtt',
+          name: 'Chinese',
+          language: 'zh',
+          pageFile: true,
+          // The site's own shape: header lines, minutes-only timestamps; no X-TIMESTAMP-MAP.
+          segments: [vtt('WEBVTT\nKind: subtitles\nLanguage: zh\n\n00:01.000 --> 00:02.500\n你好\n\n00:05.000 --> 00:06.000\n世界\n')],
+        },
+      ],
+      { protocol: 'hls', format: 'srt', mode: 'file' },
+    );
+    expect(request?.subtitles).toEqual([{ trackId: 'page-0', url: expect.any(String) as string, size: expect.any(Number) as number }]);
+    expect((await file('page-0'))?.text).toBe('1\r\n00:00:01,000 --> 00:00:02,500\r\n你好\r\n\r\n2\r\n00:00:05,000 --> 00:00:06,000\r\n世界\r\n');
+  });
+
+  it('HLS: a page subtitle file moves by the offset its player applies (0.7.2)', async () => {
+    const { file } = await process(
+      [
+        { trackId: 'main', trackType: 'main', container: 'mpeg-ts', segments: segmentsOf(media.ts.muxed) },
+        {
+          trackId: 'page-0',
+          trackType: 'subtitle',
+          container: 'webvtt',
+          name: 'Chinese',
+          pageFile: true,
+          offsetSec: 1.25,
+          segments: [vtt('WEBVTT\n\n00:01.000 --> 00:02.500\n你好\n')],
+        },
+      ],
+      { protocol: 'hls', format: 'srt', mode: 'file' },
+    );
+    expect((await file('page-0'))?.text).toBe('1\r\n00:00:02,250 --> 00:00:03,750\r\n你好\r\n');
+  });
+
   it('HLS: a cue after a discontinuity lands in the joined run, after the first run’s length (WebVTT)', async () => {
     const map = `X-TIMESTAMP-MAP=MPEGTS:${mpegts(firstPts)},LOCAL:00:00:00.000`;
     const run = parseProbeOutput((await ffmpeg.run(probeJob('run.ts', new Blob(media.ts.muxed.segments)))).stdout);

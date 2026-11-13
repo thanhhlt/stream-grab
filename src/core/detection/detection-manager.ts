@@ -1,5 +1,7 @@
 import {
   isEmptyRequestContext,
+  isPageSubtitleId,
+  PAGE_SUBTITLE_PREFIX,
   PROGRESSIVE_VARIANT_ID,
   requestContextKey,
   type DetectedStream,
@@ -9,15 +11,19 @@ import {
   type RequestContext,
   type SubtitleTrackSummary,
 } from '@/core/models/detected-stream';
+import { languageKey } from '@/core/media/languages';
 import { describeDrm } from '@/core/protocols/drm';
 import { createLimiter, type Limiter } from '@/shared/utils/concurrency';
 import { errorMessage } from '@/shared/utils/errors';
 import { stableHash } from '@/shared/utils/hash';
 import type { Logger } from '@/shared/utils/logger';
-import { dedupeKey, parseHttpUrl, urlShape } from '@/shared/utils/url';
+import { dedupeKey, fileNameOf, parseHttpUrl, urlShape } from '@/shared/utils/url';
 import type { DetectionStore, StoredTabDetections } from './detection-store';
 import type { ManifestInfo } from './manifest-inspector';
 import type { InspectionKind, InspectionOutcome } from './stream-inspector';
+import type { SubtitleFileInspection } from './subtitle-inspector';
+import { cueOffsetSec } from '@/core/subtitles/cue-offset';
+import type { PageCue, PageTextTrack } from '@/shared/types/text-tracks';
 
 /** A possible manifest or progressive file observed in a tab (network request or DOM element). */
 export interface DetectionCandidate {
@@ -36,6 +42,16 @@ export interface DetectionCandidate {
   subtitles?: SubtitleTrackSummary[];
 }
 
+/** A WebVTT file a page loaded on its own (0.7.2), offered with every video of the tab once checked. */
+export interface SubtitleFileCandidate {
+  tabId: number;
+  /** Frame whose request loaded the file: its player is asked how it times the cues. */
+  frameId: number;
+  url: string;
+  requestContext: RequestContext;
+  timestamp: number;
+}
+
 export interface PageInfo {
   pageUrl?: string;
   pageTitle?: string;
@@ -49,18 +65,30 @@ export interface DetectionLimits {
   maxProbesPerPage: number;
   /** A failed inspection is retried when the page requests the manifest again, at most this often. */
   retryFailedAfterMs: number;
+  /** Page subtitle files offered per page (0.7.2). */
+  maxSubtitleFilesPerTab: number;
+  /** WebVTT files fetched per page to check them (segments of a rendition are rejected but still cost a request). */
+  maxSubtitleChecksPerPage: number;
 }
 
 export const DEFAULT_DETECTION_LIMITS: Readonly<DetectionLimits> = {
   maxStreamsPerTab: 100,
   maxProbesPerPage: 40,
   retryFailedAfterMs: 5_000,
+  maxSubtitleFilesPerTab: 8,
+  maxSubtitleChecksPerPage: 30,
 };
 
 export interface DetectionManagerOptions {
   store: DetectionStore;
   inspect: (url: string, context: RequestContext, kind: InspectionKind) => Promise<InspectionOutcome>;
   resolvePageInfo: (tabId: number, frameId: number) => Promise<PageInfo>;
+  /** Fetches and checks a page subtitle file (0.7.2); without it such files are ignored. */
+  inspectSubtitle?: (url: string, context: RequestContext) => Promise<SubtitleFileInspection>;
+  /** The first cues of a frame's <video> text tracks (0.7.2): how its player times a page subtitle file. */
+  readTextTracks?: (tabId: number, frameId: number) => Promise<PageTextTrack[]>;
+  /** When to ask the player for its cues after a page subtitle file was found (it adds them after loading it). */
+  cueCheckDelaysMs?: readonly number[];
   /** Called after a tab's detections were persisted (badge updates). */
   onTabChanged?: (tabId: number, streams: readonly DetectedStream[]) => void;
   now?: () => number;
@@ -85,10 +113,45 @@ interface TabState {
   inspecting: Set<string>;
   /** Dedupe keys the user removed; ignored until the next navigation. */
   dismissedKeys: Set<string>;
+  /** Page subtitle files (0.7.2), ids `page-N` in the order found; offered with every video of the page. */
+  subtitleFiles: SubtitleTrackSummary[];
+  /** Dedupe keys of WebVTT files checked (or being checked) on this page. */
+  subtitleKeys: Set<string>;
+  /** Checks since the page loaded or the last new video (a single-page site moving to the next video). */
+  subtitleChecks: number;
+  /** URL shapes of numbered WebVTT files that are a rendition's segments. */
+  subtitleRunShapes: Set<string>;
+  /** Incremented on navigation only: checks started for an earlier page are discarded. */
+  subtitleGeneration: number;
+  /** Number of the next page file's id (`page-N`): ids are not reused within a page. */
+  nextSubtitleId: number;
   flushTimer: ReturnType<typeof setTimeout> | undefined;
   /** Whether a record for this tab exists in the store. */
   persisted: boolean;
   removed: boolean;
+}
+
+function languageName(tag: string): string | undefined {
+  try {
+    const name = new Intl.DisplayNames(['en'], { type: 'language', fallback: 'none' }).of(tag);
+    return name === undefined || name === '' ? undefined : name;
+  } catch {
+    return undefined;
+  }
+}
+
+/** "Chinese", else the file's name ("captions.zh"); a second file of the same name gets a number. */
+export function pageSubtitleName(existing: readonly SubtitleTrackSummary[], url: string, language: string | undefined): string {
+  const fromFile = fileNameOf(url)
+    .replace(/\.(?:web)?vtt(?:\.[^.]*)?$/i, '')
+    .trim()
+    .slice(0, 60);
+  const base = (language === undefined ? undefined : languageName(language)) ?? (fromFile || `Subtitles ${existing.length + 1}`);
+  const taken = new Set(existing.map((track) => track.name));
+  if (!taken.has(base)) return base;
+  for (let n = 2; ; n++) {
+    if (!taken.has(`${base} ${n}`)) return `${base} ${n}`;
+  }
 }
 
 export function streamIdFor(key: string): string {
@@ -126,6 +189,9 @@ export class DetectionManager {
   readonly #store: DetectionStore;
   readonly #inspect: DetectionManagerOptions['inspect'];
   readonly #resolvePageInfo: DetectionManagerOptions['resolvePageInfo'];
+  readonly #inspectSubtitle: DetectionManagerOptions['inspectSubtitle'];
+  readonly #readTextTracks: DetectionManagerOptions['readTextTracks'];
+  readonly #cueCheckDelaysMs: readonly number[];
   readonly #onTabChanged: DetectionManagerOptions['onTabChanged'];
   readonly #now: () => number;
   readonly #limit: Limiter;
@@ -141,6 +207,9 @@ export class DetectionManager {
     this.#store = options.store;
     this.#inspect = options.inspect;
     this.#resolvePageInfo = options.resolvePageInfo;
+    this.#inspectSubtitle = options.inspectSubtitle;
+    this.#readTextTracks = options.readTextTracks;
+    this.#cueCheckDelaysMs = options.cueCheckDelaysMs ?? [1_000, 3_000, 8_000, 20_000, 60_000];
     this.#onTabChanged = options.onTabChanged;
     this.#now = options.now ?? Date.now;
     this.#limit = createLimiter(options.inspectionConcurrency ?? 3);
@@ -155,12 +224,23 @@ export class DetectionManager {
     return this.#track(this.#handleCandidate(candidate));
   }
 
+  /** A WebVTT file the page loaded on its own (0.7.2): checked once, then offered with the tab's videos. */
+  handleSubtitleFile(file: SubtitleFileCandidate): Promise<void> {
+    return this.#track(this.#handleSubtitleFile(file));
+  }
+
   /** The tab navigated to a new document: forget everything detected for the previous one. */
   resetTab(tabId: number, pageUrl?: string): Promise<void> {
     return this.#track(
       (async () => {
         const tab = await this.#tab(tabId);
         this.#clear(tab);
+        tab.subtitleFiles = [];
+        tab.subtitleKeys.clear();
+        tab.subtitleChecks = 0;
+        tab.subtitleRunShapes.clear();
+        tab.subtitleGeneration += 1;
+        tab.nextSubtitleId = 0;
         tab.pageUrl = pageUrl;
         tab.dismissedKeys.clear();
         await this.#flushNow(tab);
@@ -263,6 +343,110 @@ export class DetectionManager {
     this.#addStream(tab, candidate, key, id, candidate.match.protocol, candidate.match.evidence);
   }
 
+  async #handleSubtitleFile(file: SubtitleFileCandidate): Promise<void> {
+    const inspect = this.#inspectSubtitle;
+    if (!inspect || !parseHttpUrl(file.url)) return;
+    const tab = await this.#tab(file.tabId);
+    if (tab.removed) return;
+    const key = dedupeKey(file.url);
+    if (tab.subtitleKeys.has(key)) {
+      // The same file again, maybe with a fresh token: keep the newest link.
+      const known = tab.subtitleFiles.find((track) => track.url !== undefined && dedupeKey(track.url) === key);
+      if (known && known.url !== file.url) {
+        known.url = file.url;
+        for (const stream of tab.streams.values()) this.#applySubtitles(tab, stream);
+        this.#markDirty(tab);
+      }
+      return;
+    }
+    // Numbered files of one shape on a page whose video has subtitle renditions: that rendition's
+    // segments (those without X-TIMESTAMP-MAP pass the content check), not files of their own.
+    const shape = urlShape(file.url);
+    if (tab.subtitleRunShapes.has(shape)) return;
+    const hasRenditions = [...tab.streams.values()].some((stream) => stream.media?.subtitleTracks?.some((track) => track.url === undefined));
+    if (hasRenditions && [...tab.subtitleKeys].some((known) => urlShape(known) === shape)) {
+      tab.subtitleRunShapes.add(shape);
+      const before = tab.subtitleFiles.length;
+      tab.subtitleFiles = tab.subtitleFiles.filter((track) => track.url === undefined || urlShape(track.url) !== shape);
+      if (tab.subtitleFiles.length !== before) {
+        for (const stream of tab.streams.values()) this.#applySubtitles(tab, stream);
+        this.#markDirty(tab);
+      }
+      return;
+    }
+    if (tab.subtitleChecks >= this.#limits.maxSubtitleChecksPerPage) return;
+    tab.subtitleKeys.add(key);
+    tab.subtitleChecks += 1;
+    // Only a navigation drops page files: clearing the list (which also starts a new generation) keeps them.
+    const generation = tab.subtitleGeneration;
+    let result: SubtitleFileInspection;
+    try {
+      result = await this.#limit(() => inspect(file.url, file.requestContext));
+    } catch (error) {
+      result = { ok: false, reason: errorMessage(error), transient: true };
+    }
+    if (tab.removed || tab.subtitleGeneration !== generation) return;
+    if (!result.ok) {
+      // A file that could not be fetched is checked again when the page loads it again.
+      if (result.transient) tab.subtitleKeys.delete(key);
+      this.#logger?.debug('Ignoring a WebVTT file', { url: file.url, reason: result.reason });
+      return;
+    }
+    if (tab.subtitleRunShapes.has(shape)) return;
+    // Full: the oldest file goes (a single-page site's earlier videos); ids are never reused.
+    while (tab.subtitleFiles.length >= this.#limits.maxSubtitleFilesPerTab) tab.subtitleFiles.shift();
+    const track: SubtitleTrackSummary = {
+      id: `${PAGE_SUBTITLE_PREFIX}${tab.nextSubtitleId}`,
+      name: pageSubtitleName(tab.subtitleFiles, file.url, result.language),
+      isDefault: false,
+      url: file.url,
+    };
+    tab.nextSubtitleId += 1;
+    if (result.language !== undefined) track.language = result.language;
+    tab.subtitleFiles.push(track);
+    for (const stream of tab.streams.values()) this.#applySubtitles(tab, stream);
+    this.#markDirty(tab);
+    if (result.cues && result.cues.length > 0) this.#checkCues(tab, track.id, file.frameId, result.cues, 0);
+  }
+
+  /**
+   * Asks the player that loaded a page subtitle file (its frame, then the top
+   * frame) which cues it shows, and records how far it moved the file's
+   * times. Players add the cues some time after loading the file, so this is
+   * tried a few times; once the cues are found (shifted or not) it stops.
+   */
+  #checkCues(tab: TabState, id: string, frameId: number, cues: readonly PageCue[], attempt: number): void {
+    const read = this.#readTextTracks;
+    const delay = this.#cueCheckDelaysMs[attempt];
+    if (!read || delay === undefined) return;
+    const generation = tab.subtitleGeneration;
+    setTimeout(() => {
+      void this.#track(
+        (async () => {
+          const current = () => tab.subtitleGeneration === generation && !tab.removed && tab.subtitleFiles.some((track) => track.id === id);
+          if (!current()) return;
+          let offsetSec: number | undefined;
+          for (const frame of frameId === 0 ? [0] : [frameId, 0]) {
+            const tracks = await read(tab.tabId, frame).catch(() => []);
+            offsetSec = cueOffsetSec(cues, tracks);
+            if (offsetSec !== undefined) break;
+          }
+          if (!current()) return;
+          if (offsetSec === undefined) {
+            this.#checkCues(tab, id, frameId, cues, attempt + 1);
+            return;
+          }
+          const track = tab.subtitleFiles.find((candidate) => candidate.id === id);
+          if (!track || offsetSec === 0 || track.offsetSec === offsetSec) return;
+          track.offsetSec = offsetSec;
+          this.#logger?.debug('A page subtitle file is shifted by its player', { id, offsetSec });
+          for (const stream of tab.streams.values()) this.#applySubtitles(tab, stream);
+          this.#markDirty(tab);
+        })(),
+      );
+    }, delay);
+  }
+
   #refresh(tab: TabState, stream: DetectedStream, candidate: DetectionCandidate): void {
     stream.lastSeen = Math.max(stream.lastSeen, candidate.timestamp);
     let changed = false;
@@ -291,7 +475,7 @@ export class DetectionManager {
       stream.title = candidate.title;
       changed = true;
     }
-    if (candidate.subtitles && this.#setDomSubtitles(stream, candidate.subtitles)) changed = true;
+    if (candidate.subtitles && this.#setDomSubtitles(tab, stream, candidate.subtitles)) changed = true;
     if (!changed) return;
     this.#markDirty(tab);
     // A fresh URL or context (e.g. a re-signed link after expiry) is worth another inspection.
@@ -348,8 +532,10 @@ export class DetectionManager {
     if (tab.pageUrl !== undefined) stream.pageUrl = tab.pageUrl;
     if (candidate.title !== undefined) stream.title = candidate.title;
     if (protocol === 'progressive' && candidate.progressive) stream.progressive = { ...candidate.progressive };
-    if (candidate.subtitles) this.#setDomSubtitles(stream, candidate.subtitles);
+    if (candidate.subtitles) this.#setDomSubtitles(tab, stream, candidate.subtitles);
     tab.streams.set(id, stream);
+    // A new video (on a single-page site, maybe the next one) may bring its own subtitle files.
+    tab.subtitleChecks = 0;
     this.#markDirty(tab);
     if (inspect) this.#scheduleInspection(tab, id);
     this.#schedulePageInfo(tab, id);
@@ -440,6 +626,7 @@ export class DetectionManager {
     };
     if (info.media) stream.media = info.media;
     else delete stream.media;
+    this.#applySubtitles(tab, stream);
     if (info.drmSystems.length > 0) {
       stream.status = 'drm';
       stream.statusMessage = describeDrm(info.drmSystems);
@@ -491,7 +678,7 @@ export class DetectionManager {
     stream.inspectedAt = this.#now();
     stream.progressive = info;
     stream.media = { variants: [{ id: PROGRESSIVE_VARIANT_ID, audioOnly: false, audioTrackIds: [] }], audioTracks: [] };
-    this.#applyDomSubtitles(stream);
+    this.#applySubtitles(tab, stream);
     stream.status = 'ready';
     delete stream.statusMessage;
     const target = dedupeKey(finalUrl);
@@ -505,24 +692,41 @@ export class DetectionManager {
   }
 
   /** Records a progressive file's current `<track>` list (an empty one clears it); true when it changed. */
-  #setDomSubtitles(stream: DetectedStream, tracks: SubtitleTrackSummary[]): boolean {
+  #setDomSubtitles(tab: TabState, stream: DetectedStream, tracks: SubtitleTrackSummary[]): boolean {
     if (stream.protocol !== 'progressive') return false;
     if (JSON.stringify(stream.domSubtitles ?? []) === JSON.stringify(tracks)) return false;
     if (tracks.length > 0) stream.domSubtitles = tracks;
     else delete stream.domSubtitles;
-    this.#applyDomSubtitles(stream);
+    this.#applySubtitles(tab, stream);
     return true;
   }
 
-  /** Lists a progressive file's `<track>` subtitles in its media summary, once the file was inspected. */
-  #applyDomSubtitles(stream: DetectedStream): void {
+  /**
+   * Lists a stream's subtitles in its media summary, once it was inspected:
+   * its own (manifest renditions; a progressive file's `<track>`s), then the
+   * page's subtitle files (0.7.2) offered with every quality. A page file that
+   * is also one of the video's `<track>`s is listed once, as the track.
+   */
+  #applySubtitles(tab: TabState, stream: DetectedStream): void {
     const media = stream.media;
-    if (stream.protocol !== 'progressive' || !media) return;
-    const tracks = stream.domSubtitles ?? [];
-    const ids = tracks.map((track) => track.id);
+    if (!media) return;
+    const progressive = stream.protocol === 'progressive';
+    const own = progressive ? (stream.domSubtitles ?? []) : (media.subtitleTracks ?? []).filter((track) => !isPageSubtitleId(track.id));
+    const ownUrls = new Set(own.flatMap((track) => (track.url === undefined ? [] : [track.url])));
+    // A manifest's own subtitle file is often fetched whole by the player too (DASH text, a one-file
+    // HLS rendition): a page file in a language the manifest already has is that file again.
+    const ownLanguages = new Set(progressive ? [] : own.flatMap((track) => languageKey(track.language) ?? []));
+    const page = tab.subtitleFiles
+      .filter((track) => track.url === undefined || !ownUrls.has(track.url))
+      .filter((track) => { const language = languageKey(track.language); return language === undefined || !ownLanguages.has(language); })
+      .map((track) => ({ ...track }));
+    const tracks = [...own, ...page];
     if (tracks.length > 0) media.subtitleTracks = tracks;
     else delete media.subtitleTracks;
+    const pageIds = page.map((track) => track.id);
     for (const variant of media.variants) {
+      const ownIds = progressive ? own.map((track) => track.id) : (variant.subtitleTrackIds ?? []).filter((id) => !isPageSubtitleId(id));
+      const ids = [...ownIds, ...pageIds];
       if (ids.length > 0) variant.subtitleTrackIds = ids;
       else delete variant.subtitleTrackIds;
     }
@@ -583,6 +787,12 @@ export class DetectionManager {
       probes: 0,
       inspecting: new Set(),
       dismissedKeys: new Set(),
+      subtitleFiles: stored?.subtitleFiles ?? [],
+      subtitleKeys: new Set((stored?.subtitleFiles ?? []).flatMap((track) => (track.url === undefined ? [] : [dedupeKey(track.url)]))),
+      subtitleChecks: 0,
+      subtitleRunShapes: new Set(),
+      subtitleGeneration: 0,
+      nextSubtitleId: Math.max(0, ...(stored?.subtitleFiles ?? []).map((track) => Number(track.id.slice(PAGE_SUBTITLE_PREFIX.length)) + 1).filter(Number.isFinite)),
       flushTimer: undefined,
       persisted: stored !== null,
       removed: false,
@@ -642,7 +852,7 @@ export class DetectionManager {
       if (tab.removed) return;
       const streams = this.#visible(tab);
       try {
-        if (streams.length === 0) {
+        if (streams.length === 0 && tab.subtitleFiles.length === 0) {
           if (tab.persisted) await this.#store.remove(tab.tabId);
           tab.persisted = false;
         } else {
@@ -654,6 +864,8 @@ export class DetectionManager {
             updatedAt: this.#now(),
           };
           if (tab.pageUrl !== undefined) record.pageUrl = tab.pageUrl;
+          // Kept also before any video is found: a player often loads its subtitles first.
+          if (tab.subtitleFiles.length > 0) record.subtitleFiles = tab.subtitleFiles;
           await this.#store.save(record);
           tab.persisted = true;
         }

@@ -72,7 +72,7 @@ async function setup(settings: Partial<Settings> = {}) {
     now: () => 1000,
     newId: () => `task-${++counter}`,
   });
-  return { service, store };
+  return { service, store, streams };
 }
 
 const request = (streamId: string, overrides: Partial<DownloadRequest> = {}): DownloadRequest => ({
@@ -167,6 +167,37 @@ describe('subtitles in download requests and tasks (0.7.0)', () => {
     };
     expect(parseEngineTaskSpec({ ...spec, subtitleTrackIds: ['subtitle-0', 3, 'x'.repeat(65)] })?.subtitleTrackIds).toEqual(['subtitle-0']);
     expect(parseEngineTaskSpec(spec)?.subtitleTrackIds).toBeUndefined();
+  });
+
+  it('records a page subtitle file with an HLS stream, after its manifest subtitles (0.7.2)', async () => {
+    const { service, store, streams } = await setup({ subtitleMode: 'embed' });
+    const hls = streams.get('hls')!;
+    const page = { id: 'page-0', name: 'Chinese', language: 'zh', isDefault: false, url: 'https://cdn.example.com/sub/captions.zh.vtt.r2024' };
+    hls.media = {
+      ...hls.media!,
+      subtitleTracks: [...(hls.media!.subtitleTracks ?? []), page],
+      variants: hls.media!.variants.map((variant) => ({ ...variant, subtitleTrackIds: [...(variant.subtitleTrackIds ?? []), 'page-0'] })),
+    };
+    const result = await service.start([request('hls', { variantId: 'video-1', subtitleTrackIds: ['page-0'] })]);
+    expect(result.failed).toEqual([]);
+    const [task] = await store.list();
+    expect(task?.selection.subtitles).toEqual([{ id: 'page-0', name: 'Chinese', language: 'zh', url: page.url }]);
+    expect(task?.output.subtitleMode).toBe('embed');
+    expect(parseTask(JSON.parse(JSON.stringify(task)))).toEqual(task);
+  });
+
+  it('passes page subtitle files to the engine by URL, never for a progressive file (0.7.2)', () => {
+    const spec = { taskId: 't', protocol: 'hls', manifestUrl: MASTER, context: {}, variant: { id: 'video-0' }, audioTrackIds: [], concurrency: 6 };
+    const zh = { id: 'page-0', url: 'https://cdn.example.com/sub/zh.vtt', name: 'Chinese', language: 'zh' };
+    expect(
+      parseEngineTaskSpec({
+        ...spec,
+        subtitleTrackIds: ['subtitle-0'],
+        pageSubtitles: [zh, { id: 'page-1', url: 'ftp://x/y.vtt', name: 'X' }, { id: 'subtitle-0', url: zh.url, name: 'Dup' }, 'junk'],
+      })?.pageSubtitles,
+    ).toEqual([zh]);
+    const file = { ...spec, protocol: 'progressive', file: { container: 'mp4' } };
+    expect(parseEngineTaskSpec({ ...file, pageSubtitles: [zh] })?.pageSubtitles).toBeUndefined();
   });
 
   it('defaults the subtitle format to SRT and accepts WebVTT', () => {

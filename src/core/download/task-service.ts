@@ -1,4 +1,4 @@
-import { PROGRESSIVE_VARIANT_ID, type DetectedStream } from '@/core/models/detected-stream';
+import { isPageSubtitleId, PROGRESSIVE_VARIANT_ID, type DetectedStream } from '@/core/models/detected-stream';
 import {
   ACTIVE_TASK_STATUSES,
   type DownloadRequest,
@@ -162,10 +162,12 @@ export class TaskService {
       }
       return track;
     });
+    // The page's own WebVTT files (0.7.2) come from detection: the manifest does not name them.
+    const pageSubtitles = (stream.media?.subtitleTracks ?? []).filter((track) => isPageSubtitleId(track.id) && track.url !== undefined);
     const subtitles = chosenSubtitles(
       request.subtitleTrackIds,
-      (manifest.subtitleTracks ?? []).map((track) => taskSubtitle(track)),
-      variant.subtitleTrackIds ?? [],
+      [...(manifest.subtitleTracks ?? []), ...pageSubtitles].map((track) => taskSubtitle(track)),
+      [...(variant.subtitleTrackIds ?? []), ...pageSubtitles.map((track) => track.id)],
     );
 
     const label = variantLabel(variant);
@@ -264,11 +266,12 @@ export class TaskService {
   }
 }
 
-function taskSubtitle(track: { id: string; name: string; language?: string; forced?: boolean; url?: string }): TaskSubtitle {
+function taskSubtitle(track: { id: string; name: string; language?: string; forced?: boolean; url?: string; offsetSec?: number }): TaskSubtitle {
   const subtitle: TaskSubtitle = { id: track.id, name: track.name };
   if (track.language !== undefined) subtitle.language = track.language;
   if (track.forced === true) subtitle.forced = true;
   if (track.url !== undefined) subtitle.url = track.url;
+  if (track.url !== undefined && track.offsetSec !== undefined) subtitle.offsetSec = track.offsetSec;
   return subtitle;
 }
 

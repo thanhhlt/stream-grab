@@ -39,7 +39,20 @@ export interface DemoStream {
   path: string;
   title: string;
   tryThis: string;
+  /**
+   * Files the page loads after the manifest, as its player would (0.7.2: a WebVTT file outside the
+   * manifest). Such a stream is loaded alone, on `/download?stream=<its folder>`: the page's files
+   * are offered with every video of the page.
+   */
+  pageFiles?: readonly string[];
+  /** The page's "player" puts the page files' cues into a hidden metadata track, moved by this many seconds (0.7.2). */
+  cueShiftSec?: number;
 }
+
+/** The page subtitle file of the `sidecar` stream (0.7.2): named and shaped like a real site's. */
+export const SIDECAR_SUBTITLE_PATH = '/download/sidecar/subs/captions.zh.vtt.r20240612';
+/** How far the demo page's player moves that file's cues, as the real site did. */
+export const SIDECAR_CUE_SHIFT_SEC = 4.56;
 
 /** Manifests the download page loads, as a player would. */
 export const DOWNLOAD_STREAMS: readonly DemoStream[] = [
@@ -69,6 +82,13 @@ export const DOWNLOAD_STREAMS: readonly DemoStream[] = [
     tryThis: 'Tick subtitles under Options (Settings → Subtitle languages ticks them for you), download, and find .srt files next to the video or the tracks inside it.',
   },
   {
+    path: '/download/sidecar/sidecar.m3u8',
+    title: 'HLS · Chinese subtitles the player loads on its own (one WebVTT file, not in the manifest)',
+    tryThis: 'Open /download?stream=sidecar: "Chinese" is offered under Options, and saved or added like a manifest’s subtitles.',
+    pageFiles: [SIDECAR_SUBTITLE_PATH],
+    cueShiftSec: SIDECAR_CUE_SHIFT_SEC,
+  },
+  {
     path: '/download/expiring/expiring.m3u8',
     title: 'HLS · link "expires" a third of the way in (HTTP 403)',
     tryThis: 'Fails with the expired-link message after two manifest refreshes.',
@@ -76,7 +96,7 @@ export const DOWNLOAD_STREAMS: readonly DemoStream[] = [
 ];
 
 const HLS = 'application/vnd.apple.mpegurl';
-const KINDS = new Set(['plain', 'flaky', 'protected', 'expiring', 'subtitled']);
+const KINDS = new Set(['plain', 'flaky', 'protected', 'expiring', 'subtitled', 'sidecar']);
 const AUDIO_ID = 'audio-en';
 
 /** Subtitles of the `subtitled` stream (0.7.0): one WebVTT file per 2 minutes, a cue every 20 seconds. */
@@ -100,6 +120,16 @@ function subtitleSegment(line: (index: number) => string, index: number): string
     cues.push(`${vttTime(start + 5)} --> ${vttTime(start + 7)}\n${line(start / CUE_EVERY_SECONDS + 1)}`);
   }
   return `WEBVTT\n\n${cues.join('\n\n')}\n`;
+}
+
+/** A cue every 20 seconds (5–7 s into each slot), in the site's shape: header lines, minutes-only timestamps. */
+export function sidecarSubtitles(totalSeconds: number): string {
+  const time = (seconds: number) => `${String(Math.floor(seconds / 60)).padStart(2, '0')}:${(seconds % 60).toFixed(3).padStart(6, '0')}`;
+  const cues: string[] = [];
+  for (let start = 0; start < totalSeconds; start += CUE_EVERY_SECONDS) {
+    cues.push(`${time(start + 5)} --> ${time(start + 7)}\n中文字幕 ${start / CUE_EVERY_SECONDS + 1}`);
+  }
+  return `WEBVTT\nKind: subtitles\nLanguage: zh\nVersion: 1\n\n${cues.join('\n\n')}\n`;
 }
 
 function subtitlePlaylist(totalSeconds: number): string {
@@ -169,6 +199,9 @@ export function createDownloadRouter(
       const index = Number(subtitle[3]);
       return index * SUBTITLE_SEGMENT_SECONDS < totalSeconds ? ok('text/vtt', subtitleSegment(track.line, index), latencyMs) : undefined;
     }
+
+    // A generic type, as many CDNs answer: the extension goes by the name (`.vtt` before a version suffix).
+    if (pathname === SIDECAR_SUBTITLE_PATH) return ok('application/octet-stream', sidecarSubtitles(totalSeconds), latencyMs);
 
     const hls = /^\/download\/(\w+)\/(?:(\w+)\.m3u8|(\w+)\/(?:(index\.m3u8)|seg-(\d+)\.ts))$/.exec(pathname);
     const kind = hls?.[1];

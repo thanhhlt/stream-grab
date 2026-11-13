@@ -1,11 +1,11 @@
-import type { RequestContext } from '@/core/models/detected-stream';
+import { isPageSubtitleId, type RequestContext } from '@/core/models/detected-stream';
 import type { ProgressiveContainer } from '@/core/models/detected-stream';
 import type { EngineReport, EngineTaskSpec, FailureReason, SaveRequest } from '@/core/models/download-task';
 import type { TrackLayout } from '@/core/models/media-info';
 import type { MediaSegment } from '@/core/models/media-segment';
 import type { FetchFunction } from '@/core/network/manifest-fetcher';
 import { describeDrm } from '@/core/protocols/drm';
-import type { StreamingManifest } from '@/core/models/streaming-manifest';
+import type { StreamingManifest, SubtitleTrack } from '@/core/models/streaming-manifest';
 import type { VideoVariant } from '@/core/models/video-variant';
 import type { ProtocolRegistry, StreamingProtocolAdapter } from '@/core/protocols/protocol-adapter';
 import { errorMessage, StreamGrabError } from '@/shared/utils/errors';
@@ -433,7 +433,9 @@ export class DownloadManager {
         if (error instanceof StorageWriteError) throw await this.#storageFailure(error);
         const where = `Segment ${position + 1} of ${run.plan.length}`;
         const givingUp = kind === 'fatal' || attempt >= this.#policy.maxAttempts;
-        if (kind === 'expired') {
+        // A page subtitle file (0.7.2) is not in the manifest: a refresh cannot renew its link, and must not
+        // risk the video (re-reading an expired manifest would fail the task).
+        if (kind === 'expired' && !isPageSubtitleId(segment.trackId)) {
           if (await this.#refresh(run, generation, signal)) {
             attempt -= 1; // a refresh is not a failed attempt; refreshes themselves are capped
             continue;
@@ -765,8 +767,9 @@ export class DownloadManager {
       if (segments.some((segment) => segment.encryption?.method === 'SAMPLE-AES')) {
         throw new TaskFailure('SAMPLE-AES encrypted streams are not supported yet.');
       }
-      const split = await this.#splitSingleFiles(spec.taskId, segments, signal);
-      return { segments: split, layout: buildLayout(split, manifest.audioTracks, manifest.subtitleTracks) };
+      const pageFiles = pageSubtitleTracks(spec, segments);
+      const split = await this.#splitSingleFiles(spec.taskId, [...segments, ...pageFiles.segments], signal);
+      return { segments: split, layout: buildLayout(split, manifest.audioTracks, [...(manifest.subtitleTracks ?? []), ...pageFiles.tracks]) };
     } catch (error) {
       if (error instanceof TaskFailure || isAbortError(error)) throw error;
       if (error instanceof StreamGrabError && error.code === 'MANIFEST_UNAVAILABLE' && /HTTP (401|403|404|410)/.test(error.message)) {
@@ -912,6 +915,34 @@ function fileSegment(url: string, container: ProgressiveContainer): MediaSegment
     duration: 0,
     discontinuity: 0,
     container: container === 'webm' ? 'webm' : 'unknown',
+  };
+}
+
+/**
+ * The page's own WebVTT files (0.7.2) as one-segment subtitle tracks after the
+ * stream's own, each lasting as long as the video (it covers all of it).
+ */
+function pageSubtitleTracks(spec: EngineTaskSpec, segments: readonly MediaSegment[]): { segments: MediaSegment[]; tracks: SubtitleTrack[] } {
+  const files = (spec.pageSubtitles ?? []).filter((file) => !segments.some((segment) => segment.trackId === file.id));
+  const duration = segments.reduce((sum, segment) => (segment.trackType === 'main' && segment.kind === 'media' ? sum + segment.duration : sum), 0);
+  return {
+    segments: files.map((file) => ({
+      id: `${file.id}:0`,
+      trackId: file.id,
+      trackType: 'subtitle',
+      index: 0,
+      kind: 'media',
+      url: file.url,
+      duration,
+      discontinuity: 0,
+      container: 'webvtt',
+    })),
+    tracks: files.map((file) => {
+      const track: SubtitleTrack = { id: file.id, name: file.name, isDefault: false, forced: false, pageFile: true };
+      if (file.language !== undefined) track.language = file.language;
+      if (file.offsetSec !== undefined) track.offsetSec = file.offsetSec;
+      return track;
+    }),
   };
 }
 

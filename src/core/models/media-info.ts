@@ -21,6 +21,10 @@ export interface TrackLayout {
   /** Audio tracks: name and language from the manifest. */
   name?: string;
   language?: string;
+  /** Subtitles (0.7.2): a page subtitle file, timed from the video's start rather than by the protocol's rules. */
+  pageFile?: true;
+  /** A page subtitle file: seconds the page's player adds to its cue times. */
+  offsetSec?: number;
 }
 
 /** Container written by the merge. */

@@ -1146,4 +1146,36 @@ describe('DownloadManager: subtitle tracks (0.7.0)', () => {
     const { complete } = await storage.inspectTask('t1');
     expect(complete.filter((segment) => segment.trackId === 'subtitle-0').map((segment) => segment.bytes)).toEqual([vtt.length, vtt.length, 0, vtt.length]);
   });
+
+  it('downloads page subtitle files whole after the stream, marked in the layout; a missing one is stored empty (0.7.2)', async () => {
+    const vtt = 'WEBVTT\nLanguage: zh\n\n00:01.000 --> 00:02.000\n你好\n';
+    const zh = `${BASE}subs/captions.zh.vtt.r20240612`;
+    const site = movieSite(4).serve(`${BASE}subbed.m3u8`, ['#EXTM3U', '#EXT-X-STREAM-INF:BANDWIDTH=2000000,RESOLUTION=1280x720', 'v720/index.m3u8'].join('\n'));
+    site.serve(zh, vtt, 'text/vtt');
+    // A page file's link cannot be renewed: its 404 must not spend the manifest's refreshes.
+    const freshSource = vi.fn(() => Promise.resolve(null));
+    const { manager, outcome, storage } = setup(site, { chunkSize: 16, freshSource });
+    manager.sync([
+      spec({
+        manifestUrl: `${BASE}subbed.m3u8`,
+        audioTrackIds: [],
+        pageSubtitles: [
+          { id: 'page-0', url: zh, name: 'Chinese', language: 'zh' },
+          { id: 'page-1', url: `${BASE}subs/gone.vtt`, name: 'gone' },
+        ],
+      }),
+    ]);
+    await manager.idle();
+    expect(outcome()).toEqual({ status: 'downloaded' });
+    const layout = (await storage.getPlan('t1'))?.layout ?? [];
+    expect(layout.filter((track) => track.trackType === 'subtitle')).toEqual([
+      expect.objectContaining({ trackId: 'page-0', name: 'Chinese', language: 'zh', container: 'webvtt', segments: 1, pageFile: true }),
+      expect.objectContaining({ trackId: 'page-1', name: 'gone', segments: 1, pageFile: true }),
+    ]);
+    const parts = await storage.trackData('t1', 'page-0');
+    expect(await new Blob(parts.map((part) => part.data)).text()).toBe(vtt);
+    const { complete } = await storage.inspectTask('t1');
+    expect(complete.filter((segment) => segment.trackId === 'page-1').map((segment) => segment.bytes)).toEqual([0]);
+    expect(freshSource).not.toHaveBeenCalled();
+  });
 });

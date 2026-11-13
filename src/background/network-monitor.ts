@@ -1,4 +1,4 @@
-import type { DetectionCandidate } from '@/core/detection/detection-manager';
+import type { DetectionCandidate, SubtitleFileCandidate } from '@/core/detection/detection-manager';
 import { classifyResponse, OBSERVED_RESOURCE_TYPES } from '@/core/detection/manifest-detector';
 import { isEmptyRequestContext, type RequestContext } from '@/core/models/detected-stream';
 import { pickRequestContext, type HeaderLike } from './request-context';
@@ -7,7 +7,8 @@ import { pickRequestContext, type HeaderLike } from './request-context';
  * Observes the network with chrome.webRequest (non-blocking, as MV3 allows):
  *  - onSendHeaders captures the Referer/Origin of candidate requests,
  *  - onResponseStarted classifies responses (status, Content-Type, URL):
- *    manifests, and progressive MP4/WebM files played by media elements,
+ *    manifests, progressive MP4/WebM files played by media elements, and
+ *    WebVTT files a player loads next to its video (0.7.2),
  *  - onResponseStarted for main frames signals navigations.
  *
  * Requests that are not tied to a tab (tabId -1) are skipped: that includes
@@ -31,6 +32,8 @@ export interface WebRequestApi {
 
 export interface NetworkMonitorSink {
   candidate(candidate: DetectionCandidate): void;
+  /** A WebVTT file the page loaded on its own (0.7.2): a player's subtitles, next to its video. */
+  subtitleFile(file: SubtitleFileCandidate): void;
   /** A tab's top frame started loading a new document. */
   navigation(tabId: number, url: string): void;
 }
@@ -135,6 +138,16 @@ export class NetworkMonitor {
       contentLength: contentLength(details.responseHeaders),
     });
     if (verdict.kind === 'ignore') return;
+    if (verdict.kind === 'subtitle') {
+      this.#sink.subtitleFile({
+        tabId: details.tabId,
+        frameId: Math.max(0, details.frameId),
+        url: details.url,
+        requestContext: context,
+        timestamp: details.timeStamp,
+      });
+      return;
+    }
 
     const candidate: DetectionCandidate = {
       tabId: details.tabId,

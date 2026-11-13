@@ -47,6 +47,8 @@ export type ManifestVerdict =
   | { kind: 'manifest'; protocol: StreamingProtocol; evidence: ManifestEvidence }
   | { kind: 'progressive'; container: ProgressiveContainer; evidence: ProgressiveEvidence; mimeType?: string }
   | { kind: 'probe' }
+  /** A whole WebVTT file a player loads on its own, next to the video (0.7.2). */
+  | { kind: 'subtitle' }
   | { kind: 'ignore'; reason: IgnoreReason };
 
 export type ProgressiveEvidence = 'content-type' | 'extension';
@@ -137,6 +139,18 @@ export function isNonManifestUrl(url: URL): boolean {
   return NON_MANIFEST_EXTENSIONS.has(pathExtension(url));
 }
 
+const VTT_MIME = new Set(['text/vtt', 'text/webvtt']);
+/** `sub.vtt`, also with a version or cache suffix after it (`captions.zh.vtt.r20240612`). */
+const VTT_FILE_NAME = /\.(?:web)?vtt(?:\.([a-z0-9_-]{1,32}))?$/i;
+
+/** A WebVTT file by its name (the last path segment); not when the suffix is a manifest or media extension (`x.vtt.m3u8`). */
+export function isSubtitleFileUrl(url: URL): boolean {
+  const match = VTT_FILE_NAME.exec(url.pathname);
+  if (!match) return false;
+  const suffix = match[1]?.toLowerCase();
+  return suffix === undefined || (!(suffix in MANIFEST_EXTENSIONS) && !NON_MANIFEST_EXTENSIONS.has(suffix));
+}
+
 export function hasManifestKeyword(url: URL): boolean {
   return decodedTail(url)
     .split(/[^a-z0-9]+/)
@@ -195,8 +209,10 @@ export function classifyResponse(observation: ResponseObservation): ManifestVerd
   // A 304 carries no Content-Type; judge it by URL only.
   const mime = observation.statusCode === 304 ? 'generic' : classifyMimeType(observation.contentType);
   if (mime === 'hls' || mime === 'dash') return { kind: 'manifest', protocol: mime, evidence: 'content-type' };
+  if (observation.statusCode !== 304 && VTT_MIME.has(mimeEssence(observation.contentType))) return { kind: 'subtitle' };
   if (mime === 'other') return { kind: 'ignore', reason: 'content-type' };
 
+  if (isSubtitleFileUrl(url)) return { kind: 'subtitle' };
   if (isNonManifestUrl(url)) return { kind: 'ignore', reason: 'segment' };
   const fromUrl = protocolFromUrl(url);
   if (fromUrl) return { kind: 'manifest', protocol: fromUrl.protocol, evidence: fromUrl.evidence };

@@ -3,6 +3,7 @@ import { SessionDetectionStore } from '@/core/detection/detection-store';
 import { domSourceCandidate } from '@/core/detection/dom-candidate';
 import { inspectProgressiveFile } from '@/core/detection/file-inspector';
 import { inspectStream } from '@/core/detection/stream-inspector';
+import { inspectSubtitleFile } from '@/core/detection/subtitle-inspector';
 import type { RequestContext } from '@/core/models/detected-stream';
 import { ManifestFetcher } from '@/core/network/manifest-fetcher';
 import { DashAdapter } from '@/core/protocols/dash/dash-adapter';
@@ -11,6 +12,7 @@ import { ProtocolRegistry } from '@/core/protocols/protocol-adapter';
 import { sendToContent } from '@/shared/messaging/client';
 import { getSettingsStore } from '@/shared/settings/settings-store';
 import type { DomSource } from '@/shared/types/page-metadata';
+import { parseTextTracks } from '@/shared/types/text-tracks';
 import { errorMessage } from '@/shared/utils/errors';
 import { createLogger } from '@/shared/utils/logger';
 import { initBadgeStyle, updateBadge } from './badge';
@@ -52,6 +54,8 @@ export function startDetectionService(): DetectionService {
     // Progressive files (MP4/WebM) are checked from their first bytes, with the same request context as manifests.
     inspect: (url, context, kind) =>
       kind === 'progressive' ? inspectProgressiveFile(network, url, context) : inspectStream({ fetcher, protocols }, url, context),
+    inspectSubtitle: (url, context) => inspectSubtitleFile(network, url, context),
+    readTextTracks: async (tabId, frameId) => parseTextTracks(await sendToContent(tabId, frameId, 'content/getTextTracks')),
     resolvePageInfo: createPageInfoResolver({
       getTab: async (tabId) => {
         const tab = await chrome.tabs.get(tabId);
@@ -86,6 +90,9 @@ export function startDetectionService(): DetectionService {
     {
       candidate: (candidate) => {
         whenEnabled(() => manager.handleCandidate(candidate));
+      },
+      subtitleFile: (file) => {
+        whenEnabled(() => manager.handleSubtitleFile(file));
       },
       navigation: (tabId, url) => {
         void manager.resetTab(tabId, url);

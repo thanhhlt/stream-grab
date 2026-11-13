@@ -139,7 +139,7 @@ function createPipeline(options: { replayReferer: boolean }) {
       contentType: response.contentType,
       contentLength: length === undefined ? undefined : Number(length),
     });
-    if (verdict.kind === 'ignore' || verdict.kind === 'probe') return;
+    if (verdict.kind === 'ignore' || verdict.kind === 'probe' || verdict.kind === 'subtitle') return;
     const candidate: DetectionCandidate = {
       tabId: 1,
       frameId: 0,

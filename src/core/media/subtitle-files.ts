@@ -68,7 +68,8 @@ export function subtitleFileData(cues: readonly VttCue[], format: SubtitleFormat
  * its offset from the earliest track; joined runs follow each other, each
  * starting where the previous one ended (the concat demuxer). An HLS cue lands
  * at `runStart + MPEGTS/90000 − LOCAL − first PTS of the run + cue`; a DASH
- * cue at `runStart + cue`. The subtitle playlist's discontinuities are matched
+ * cue at `runStart + cue`, as does a cue of a page subtitle file (0.7.2: the
+ * player's timeline, 0 = the video's start). The subtitle playlist's discontinuities are matched
  * with the video's in order; when they do not match, the first run's timing
  * is used for all (right whenever the video's timestamps do not restart).
  * Where the video's timestamps go back inside one run, an HLS segment goes to
@@ -116,8 +117,10 @@ async function trackCues(taskId: string, track: TrackLayout, timings: RunTiming[
         unreadable += 1;
         continue;
       }
-      if (options.protocol !== 'hls') {
-        lists.push({ cues: parsed.cues, offsetSec: runs[0]?.runStartSec ?? 0 });
+      // A page subtitle file (0.7.2) is timed as the player shows it: 0 is where the video starts,
+      // plus the shift the player applies to the file (read from its text tracks).
+      if (options.protocol !== 'hls' || track.pageFile === true) {
+        lists.push({ cues: parsed.cues, offsetSec: (runs[0]?.runStartSec ?? 0) + (track.offsetSec ?? 0) });
         continue;
       }
       const timing = runs.length > 1 ? pickRun(runs, parsed, (runs[0]?.runStartSec ?? 0) + (index + 0.5) * segmentSec) : runs[0];

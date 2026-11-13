@@ -181,7 +181,8 @@ content script: <video>/<source> manifests ──▶ content/domSources ──�
    (`video/mp2t`, `video/mp4`, images, HTML, JSON…); `.m3u8`/`.m3u`/`.mpd` path extension (query
    strings and tokens ignored); format hints in the URL (`manifest(format=m3u8-cmaf)`,
    `?url=…/x.m3u8`); manifest keywords with a generic Content-Type → *probe*. Segment, key,
-   subtitle and asset extensions are never manifests. Only `GET` 2xx/304 responses of type
+   subtitle and asset extensions are never manifests; WebVTT files are *subtitle* (page subtitle
+   files, see Subtitles). Only `GET` 2xx/304 responses of type
    `xmlhttprequest`/`media`/`other` from tab documents are considered; requests without a tab
    (including the extension's own) are skipped.
 2. **Probing.** A probe fetches the body and lists the URL only if it is an HLS playlist or an
@@ -1258,14 +1259,47 @@ variant lists `subtitleTrackIds` through its `SUBTITLES` group); DASH text adapt
 elements (`findTrackSubtitles`, ids `track-N`); the detection manager keeps them per tab and
 stores them with the stream (`domSubtitles`), so they survive a service-worker restart.
 
+**Page subtitle files (0.7.2).** Many players fetch one WebVTT file on their own, outside the
+manifest and without a `<track>`. `classifyResponse` answers `subtitle` for `text/vtt` or a
+`.vtt`/`.webvtt` name, also with one suffix after it (`captions.zh.vtt.r20240612`); the network
+monitor hands it to `DetectionManager.handleSubtitleFile`. Each file is fetched once per page
+(`subtitle-inspector.ts`, ≤ 4 MB, with the request context): it must be WebVTT with cues of
+text (a thumbnail track, `sprite.jpg#xywh=…`, is not) and without `X-TIMESTAMP-MAP` (that would
+be a segment of a rendition, which comes with its manifest). A fetch failure is checked again
+when the page loads the file again. Its language comes from a `Language:` header line or the file
+name's last word when that is a known code (not an everyday word such as `my`, `id`, `it`); its
+name from the language (`Intl.DisplayNames`) or the file name. Checked files get ids `page-N`
+(never reused within a page), are kept per tab (`StoredTabDetections.subtitleFiles`, the newest
+8, ≤ 30 checks per page or since the last new video, kept when the list is cleared, forgotten
+on navigation) and are appended to every stream's `subtitleTracks` and every variant's
+`subtitleTrackIds` (`#applySubtitles`). What the video already has is not offered again: a
+progressive file's `<track>` of the same URL, a file in a language a manifest rendition has
+(players often fetch the manifest's own file whole), and numbered files of one URL shape on a
+page whose video has renditions (that rendition's segments).
+A task keeps their `url`; for HLS/DASH the coordinator sends them as `EngineTaskSpec.pageSubtitles`,
+for progressive files the service worker fetches them like `<track>` files.
+
+Some players move a file's cues when they load it (a site added 4.56 s to every cue, kept in a
+hidden `metadata` track): the file's own times are then not what the viewer sees. After a file is
+accepted, the detection manager asks the content script of the frame that loaded it, then the top
+frame (`content/getTextTracks`, the first cues of every `<video>` text track, any kind or mode),
+after 1, 3, 8, 20 and 60 s, until a track holds the file's cues. `cueOffsetSec` pairs cues by
+text (lines the file repeats are skipped; two pairs must agree within 50 ms) and the shift is
+stored as `offsetSec` on the page file, the task's subtitle, `PageSubtitleFile` and the layout
+(`TrackLayout.offsetSec`); it is added when cues are timed (`subtitle-files.ts`) or a progressive
+file's subtitles are converted (`convertTrackFile`). A player that draws cues without text tracks
+cannot be read: its files keep their own times.
+
 **Download.** `getSegments({subtitleTrackIds})` adds `subtitle` segments; the engine stores them
-like other tracks (`buildLayout` takes subtitle tracks for name and language). A subtitle playlist
-or segment that fails is stored empty and never fails the video.
+like other tracks (`buildLayout` takes subtitle tracks for name and language). Page subtitle files
+are appended as one-segment `subtitle` tracks (`pageSubtitleTracks`), marked `pageFile` in the
+layout; an expired page-file link is skipped at once (no manifest refresh can renew it). A subtitle playlist or segment that fails is stored empty and never fails the video.
 
 **Timing and joining** (`core/subtitles/webvtt.ts`, `core/media/subtitle-files.ts`). FFmpeg does not
 move a subtitle input to 0 and `-itsoffset` adds, so cues are written on the merged file's
 timeline: HLS `out = runStart + MPEGTS/90000 − LOCAL − runFirstPts + cue` from `X-TIMESTAMP-MAP`,
-DASH `out = runStart + cue` (period-relative); a run starts at the sum of the earlier runs'
+DASH and page subtitle files `out = runStart + cue` (period-relative; a page file is on the
+player's timeline, 0 = the video's start); a run starts at the sum of the earlier runs'
 durations. Repeated cues are removed, split cues joined, cues cut at the video's end (a later cue
 lengthens the file). Joined files have no `STYLE` block (FFmpeg's WebVTT demuxer then drops every
 cue). Multi-run files are probed run by run only when useful (≤ 100 runs).
@@ -1291,7 +1325,12 @@ order, never a forced one (`languageKey` maps ISO 639-2/B codes to /T, `pt-BR` t
   burned-in subtitles are not supported. A single MPEG-TS input whose PTS jumps without a
   discontinuity (FFmpeg corrects it itself) is timed by its first run. Progressive `<track>` files
   larger than 1.5 MB are not saved. `subtitleLanguages` is empty by default: nothing is ticked
-  until the user ticks it or sets a language.
+  until the user ticks it or sets a language. Page subtitle files are offered with every video
+  of the page (a page with several videos, or a single-page site moving from video to video,
+  lists each file under each of them, until the page is reloaded), and only once the player has
+  loaded them (usually when playback starts or the track is chosen). A page file in a language
+  the manifest already has is not offered, even when its text differs. SRT, ASS and TTML files a
+  player loads are not detected.
 - **Progressive files.** Chrome's own downloads carry no Referer/Origin; the engine fallback
   needs the task's request context (lost after a browser restart until the video is played
   again), resumes with Range after a failure only when the server sends a strong ETag or Last-Modified (otherwise it starts over) and needs room for the file twice while
