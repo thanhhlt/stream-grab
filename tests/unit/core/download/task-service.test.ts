@@ -177,6 +177,19 @@ describe('TaskService.start', () => {
     expect(result.failed).toEqual([{ streamId: 'sample', message: 'SAMPLE-AES encrypted streams are not supported yet.' }]);
   });
 
+  it('refuses streams of, for or from a blocked site (0.8.0)', async () => {
+    const { service, streams, store } = await setup();
+    const base = streams.get('hls');
+    if (!base) throw new Error('fixture missing');
+    streams.set('yt-page', { ...base, id: 'yt-page', pageUrl: 'https://www.youtube.com/watch?v=abc' });
+    streams.set('yt-referer', { ...base, id: 'yt-referer', requestContext: { referer: 'https://m.youtube.com/' } });
+    streams.set('yt-media', { ...base, id: 'yt-media', url: 'https://rr1---sn-abc.googlevideo.com/master.m3u8' });
+    const result = await service.start([request('yt-page'), request('yt-referer'), request('yt-media')]);
+    expect(result.created).toEqual([]);
+    expect(result.failed.map((failure) => failure.message)).toEqual(Array(3).fill('StreamGrab does not support this site.'));
+    expect(await store.list()).toEqual([]);
+  });
+
   it('queues progressive files (0.3.0): the original file in its own container, fetched by Chrome first', async () => {
     const { service, streams, store, session } = await setup({ settings: { outputFormat: 'mkv' } });
     const file = (id: string, url: string, container: 'mp4' | 'webm', bytes?: number): DetectedStream => ({

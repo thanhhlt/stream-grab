@@ -56,6 +56,7 @@ export function startDetectionService(): DetectionService {
       kind === 'progressive' ? inspectProgressiveFile(network, url, context) : inspectStream({ fetcher, protocols }, url, context),
     inspectSubtitle: (url, context) => inspectSubtitleFile(network, url, context),
     readTextTracks: async (tabId, frameId) => parseTextTracks(await sendToContent(tabId, frameId, 'content/getTextTracks')),
+    getTabUrl: async (tabId) => (await chrome.tabs.get(tabId)).url,
     resolvePageInfo: createPageInfoResolver({
       getTab: async (tabId) => {
         const tab = await chrome.tabs.get(tabId);

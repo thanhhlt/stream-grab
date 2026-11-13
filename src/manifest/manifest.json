@@ -27,6 +27,7 @@
   "content_scripts": [
     {
       "matches": ["http://*/*", "https://*/*"],
+      "exclude_matches": ["*://*.youtube.com/*", "*://*.youtu.be/*", "*://*.youtube-nocookie.com/*", "*://*.youtubekids.com/*", "*://*.googlevideo.com/*", "*://youtube.googleapis.com/*"],
       "js": ["content/content-script.js"],
       "run_at": "document_idle",
       "all_frames": true

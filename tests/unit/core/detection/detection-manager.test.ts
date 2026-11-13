@@ -51,6 +51,7 @@ function setup(
     area?: FakeStorageArea;
     concurrency?: number;
     subtitleFiles?: Record<string, SubtitleFileInspection>;
+    tabUrl?: string;
   } = {},
 ) {
   const outcomes: Outcomes = options.outcomes ?? {};
@@ -71,6 +72,7 @@ function setup(
     inspect,
     inspectSubtitle,
     resolvePageInfo,
+    ...(options.tabUrl !== undefined ? { getTabUrl: () => Promise.resolve(options.tabUrl) } : {}),
     onTabChanged: (tabId, streams) => badge.set(tabId, streams.length),
     now: () => clock,
     flushDelayMs: 0,
@@ -894,5 +896,88 @@ describe('DetectionManager: page subtitle files (0.7.2)', () => {
     // English is the manifest's own; the numbered files are a rendition's segments: only Chinese is added.
     expect(stream?.media?.subtitleTracks?.filter((track) => track.id.startsWith('page-')).map((track) => track.name)).toEqual(['Chinese']);
     expect(stream?.media?.subtitleTracks?.slice(0, own.length)).toEqual(own);
+  });
+});
+
+describe('DetectionManager on blocked sites (0.8.0)', () => {
+  const WATCH = 'https://www.youtube.com/watch?v=abc';
+
+  it('ignores media of, for or from YouTube without inspecting it', async () => {
+    const { manager, inspect } = setup({ outcomes: { [MASTER]: manifest(hlsMaster, MASTER) } });
+    const { match: _match, ...unknownType } = candidate('https://rr1---sn-abc.googlevideo.com/videoplayback?itag=18');
+    await manager.handleCandidate(unknownType);
+    await manager.handleCandidate(candidate(MASTER, { requestContext: { referer: WATCH } }));
+    await manager.handleCandidate(candidate(MASTER, { requestContext: { origin: 'https://www.youtube-nocookie.com' } }));
+    await manager.idle();
+    expect(inspect).not.toHaveBeenCalled();
+    expect(await manager.getStreams(1)).toEqual([]);
+  });
+
+  it('ignores everything once the tab is on a blocked page', async () => {
+    const { manager, inspect, inspectSubtitle } = setup({ outcomes: { [MASTER]: manifest(hlsMaster, MASTER) } });
+    await manager.resetTab(1, WATCH);
+    await manager.handleCandidate(candidate(MASTER));
+    await manager.handleSubtitleFile({ tabId: 1, frameId: 0, url: 'https://cdn.example.com/subs/en.vtt', requestContext: {}, timestamp: 1_000 });
+    await manager.idle();
+    expect(inspect).not.toHaveBeenCalled();
+    expect(inspectSubtitle).not.toHaveBeenCalled();
+    expect(await manager.getStreams(1)).toEqual([]);
+  });
+
+  it('drops a stream whose page turns out to be on a blocked site, and ignores the tab from then on', async () => {
+    const { manager, inspect } = setup({ outcomes: { [MASTER]: manifest(hlsMaster, MASTER) }, pageInfo: { pageUrl: WATCH } });
+    await manager.handleCandidate(candidate(MASTER));
+    await manager.idle();
+    expect(await manager.getStreams(1)).toEqual([]);
+    inspect.mockClear();
+    await manager.handleCandidate(candidate('https://cdn.example.com/other/master.m3u8'));
+    await manager.idle();
+    expect(inspect).not.toHaveBeenCalled();
+  });
+
+  it('asks the tab for its URL when the one kept from the last navigation is missing (worker restarted)', async () => {
+    const { manager, inspect, inspectSubtitle } = setup({ outcomes: { [MASTER]: manifest(hlsMaster, MASTER) }, tabUrl: WATCH });
+    await manager.handleCandidate(candidate(MASTER, { requestContext: { referer: 'https://ads.example.net/frame' } }));
+    await manager.handleSubtitleFile({ tabId: 1, frameId: 0, url: 'https://cdn.example.com/subs/en.vtt', requestContext: {}, timestamp: 1_000 });
+    await manager.idle();
+    expect(inspect).not.toHaveBeenCalled();
+    expect(inspectSubtitle).not.toHaveBeenCalled();
+    expect(await manager.getStreams(1)).toEqual([]);
+  });
+
+  it('trusts the tab over a stale navigation URL (prerendered or restored page)', async () => {
+    const { manager } = setup({ outcomes: { [MASTER]: manifest(hlsMaster, MASTER) }, tabUrl: 'https://site.example/watch' });
+    await manager.resetTab(1, WATCH);
+    await manager.handleCandidate(candidate(MASTER));
+    await manager.idle();
+    expect(await manager.getStreams(1)).toHaveLength(1);
+  });
+
+  it('drops a file that redirects onto a blocked site, and does not check it again', async () => {
+    const FRONT = 'https://front.example/latest_version?id=abc&itag=22';
+    const { manager, inspect } = setup({
+      outcomes: {
+        [FRONT]: {
+          kind: 'progressive',
+          info: { container: 'mp4' },
+          finalUrl: 'https://rr1---sn-abc.googlevideo.com/videoplayback?itag=22',
+        },
+      },
+    });
+    const file = candidate(FRONT, { match: { protocol: 'progressive', evidence: 'dom' }, progressive: { container: 'mp4' } });
+    await manager.handleCandidate(file);
+    await manager.idle();
+    expect(await manager.getStreams(1)).toEqual([]);
+    await manager.handleCandidate(file);
+    await manager.idle();
+    expect(inspect).toHaveBeenCalledTimes(1);
+  });
+
+  it('still lists streams of other sites', async () => {
+    const { manager } = setup({ outcomes: { [MASTER]: manifest(hlsMaster, MASTER) } });
+    await manager.resetTab(1, 'https://notyoutube.com/watch');
+    await manager.handleCandidate(candidate(MASTER, { requestContext: { referer: 'https://notyoutube.com/watch' } }));
+    await manager.idle();
+    expect(await manager.getStreams(1)).toHaveLength(1);
   });
 });

@@ -147,6 +147,9 @@ async function opfsFiles(page: Page, directory: string): Promise<string[]> {
 /** Files in the extension's OPFS merge directory. */
 const mergeFiles = (page: Page): Promise<string[]> => opfsFiles(page, MERGE_DIRECTORY);
 
+/** Not on Chrome's HSTS preload list for plain http, so the fixture site can stand in for it. */
+const BLOCKED_HOST = 'www.youtube-nocookie.com';
+
 /** Starts Chrome on the test profile with dist/ loaded; the extension ID derives from the path, so it stays the same. */
 async function launch(): Promise<void> {
   browser = await puppeteer.launch({
@@ -154,7 +157,8 @@ async function launch(): Promise<void> {
     headless: true,
     userDataDir: profile,
     enableExtensions: [dist],
-    args: ['--no-first-run', '--no-default-browser-check'],
+    // A blocked site (0.8.0) served by the fixture site.
+    args: ['--no-first-run', '--no-default-browser-check', `--host-resolver-rules=MAP ${BLOCKED_HOST} 127.0.0.1`],
   });
   extensionId = new URL((await serviceWorker()).url()).host;
 }
@@ -528,6 +532,39 @@ describe('StreamGrab in Chrome (Chrome for Testing, unpacked dist/)', () => {
     // Saved: the file and its record are gone from the extension's storage.
     await waitFor('the file deleted', async () => ((await opfsFiles(again, PARTIAL_DIRECTORY)).some((name) => name.startsWith(taskId)) ? undefined : true), 30_000);
     await again.close();
+  });
+
+  it('detects nothing on a blocked site and says so in the popup (0.8.0)', async () => {
+    const pageUrl = `http://${BLOCKED_HOST}:${new URL(site.origin).port}/download`;
+    const before = site.requests.length;
+    const page = await browser.newPage();
+    await page.goto(pageUrl);
+    expect(new URL(page.url()).hostname).toBe(BLOCKED_HOST);
+    const ext = await extensionPage();
+    // The demo player loads its manifests; give detection time it would need to list them.
+    await waitFor('the page to load its manifests', () =>
+      Promise.resolve(site.requests.slice(before).some((entry) => entry.path === '/download/plain/plain.m3u8') || undefined),
+    );
+    await new Promise((done) => setTimeout(done, 2_000));
+    const found = await ext.evaluate(async (pageUrl) => {
+      const [tab] = (await chrome.tabs.query({})).filter((candidate) => candidate.url === pageUrl);
+      if (tab?.id === undefined) return undefined;
+      const key = `detections:${tab.id}`;
+      const stored = (await chrome.storage.session.get(key))[key] as { streams: DetectedStream[] } | undefined;
+      return { streams: stored?.streams ?? [], badge: await chrome.action.getBadgeText({ tabId: tab.id }) };
+    }, pageUrl);
+    expect(found).toEqual({ streams: [], badge: '' });
+    // The popup, opened for that tab, explains why.
+    await page.bringToFront();
+    const known = new Set(browser.targets());
+    const worker = await (await serviceWorker()).worker();
+    await worker?.evaluate(() => chrome.action.openPopup());
+    const popupTarget = await browser.waitForTarget((target) => !known.has(target) && target.url().includes('/popup/index.html'), { timeout: 10_000 });
+    const popup = await popupTarget.asPage();
+    await popup.waitForFunction(() => document.body.innerText.includes('This site is not supported'), { timeout: 10_000 });
+    await popup.close();
+    await page.close();
+    await ext.close();
   });
 
   it('lists the VOD of a page that also plays a live channel, never the live, however often it reloads (0.4.0)', async () => {

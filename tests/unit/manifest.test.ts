@@ -47,10 +47,11 @@ describe('manifest.json', () => {
     expect(manifest).not.toHaveProperty('externally_connectable');
   });
 
-  it('declares the content script for http(s) frames', () => {
+  it('declares the content script for http(s) frames, except on blocked sites (0.8.0)', () => {
     expect(manifest.content_scripts).toEqual([
       {
         matches: ['http://*/*', 'https://*/*'],
+        exclude_matches: ['*://*.youtube.com/*', '*://*.youtu.be/*', '*://*.youtube-nocookie.com/*', '*://*.youtubekids.com/*', '*://*.googlevideo.com/*', '*://youtube.googleapis.com/*'],
         js: ['content/content-script.js'],
         run_at: 'document_idle',
         all_frames: true,

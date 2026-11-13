@@ -169,6 +169,16 @@ describe('DownloadCoordinator', () => {
     expect([await statusOf('a'), await statusOf('b'), await statusOf('c')]).toEqual(['downloading', 'downloading', 'queued']);
   });
 
+  it('fails queued tasks of a blocked site made by an earlier version instead of starting them (0.8.0)', async () => {
+    const youtube = makeTask('yt', { createdAt: 1, source: { ...makeTask('yt').source, pageUrl: 'https://www.youtube.com/watch?v=abc' } });
+    const media = makeTask('gv', { createdAt: 2, source: { ...makeTask('gv').source, manifestUrl: 'https://rr1---sn-abc.googlevideo.com/videoplayback' } });
+    const { coordinator, engine, store, statusOf } = await setup([{ task: youtube }, { task: media }, queued('ok', 3)], { settings: { maxActiveTasks: 1 } });
+    await coordinator.pump();
+    expect(engine.lastSync).toEqual(['ok']);
+    expect([await statusOf('yt'), await statusOf('gv')]).toEqual(['failed', 'failed']);
+    expect((await store.list()).find((task) => task.id === 'yt')?.statusMessage).toBe('StreamGrab does not support this site.');
+  });
+
   it('records progress and outcomes, then starts the next queued task', async () => {
     const { coordinator, engine, store, statusOf } = await setup([queued('a', 1), queued('b', 2)], { settings: { maxActiveTasks: 1 } });
     await coordinator.pump();

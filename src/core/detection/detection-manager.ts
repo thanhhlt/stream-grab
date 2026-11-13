@@ -18,6 +18,7 @@ import { errorMessage } from '@/shared/utils/errors';
 import { stableHash } from '@/shared/utils/hash';
 import type { Logger } from '@/shared/utils/logger';
 import { dedupeKey, fileNameOf, parseHttpUrl, urlShape } from '@/shared/utils/url';
+import { involvesBlockedSite, isBlockedUrl } from './blocked-sites';
 import type { DetectionStore, StoredTabDetections } from './detection-store';
 import type { ManifestInfo } from './manifest-inspector';
 import type { InspectionKind, InspectionOutcome } from './stream-inspector';
@@ -87,6 +88,11 @@ export interface DetectionManagerOptions {
   inspectSubtitle?: (url: string, context: RequestContext) => Promise<SubtitleFileInspection>;
   /** The first cues of a frame's <video> text tracks (0.7.2): how its player times a page subtitle file. */
   readTextTracks?: (tabId: number, frameId: number) => Promise<PageTextTrack[]>;
+  /**
+   * The tab's current URL (0.8.0), asked before anything new is fetched: the URL kept from the last
+   * navigation may be missing (worker restarted, extension updated) or stale (prerender, back/forward cache).
+   */
+  getTabUrl?: (tabId: number) => Promise<string | undefined>;
   /** When to ask the player for its cues after a page subtitle file was found (it adds them after loading it). */
   cueCheckDelaysMs?: readonly number[];
   /** Called after a tab's detections were persisted (badge updates). */
@@ -189,6 +195,7 @@ export class DetectionManager {
   readonly #store: DetectionStore;
   readonly #inspect: DetectionManagerOptions['inspect'];
   readonly #resolvePageInfo: DetectionManagerOptions['resolvePageInfo'];
+  readonly #getTabUrl: DetectionManagerOptions['getTabUrl'];
   readonly #inspectSubtitle: DetectionManagerOptions['inspectSubtitle'];
   readonly #readTextTracks: DetectionManagerOptions['readTextTracks'];
   readonly #cueCheckDelaysMs: readonly number[];
@@ -207,6 +214,7 @@ export class DetectionManager {
     this.#store = options.store;
     this.#inspect = options.inspect;
     this.#resolvePageInfo = options.resolvePageInfo;
+    this.#getTabUrl = options.getTabUrl;
     this.#inspectSubtitle = options.inspectSubtitle;
     this.#readTextTracks = options.readTextTracks;
     this.#cueCheckDelaysMs = options.cueCheckDelaysMs ?? [1_000, 3_000, 8_000, 20_000, 60_000];
@@ -321,7 +329,9 @@ export class DetectionManager {
   async #handleCandidate(candidate: DetectionCandidate): Promise<void> {
     if (!parseHttpUrl(candidate.url)) return;
     const tab = await this.#tab(candidate.tabId);
-    if (tab.removed) return;
+    if (tab.removed || this.#isBlocked(candidate.url, candidate.requestContext)) return;
+    // Everything below runs without yielding, as before: a duplicate candidate cannot slip in between.
+    if ((await this.#onBlockedPage(tab)) || tab.removed) return;
     const key = dedupeKey(candidate.url);
     if (tab.dismissedKeys.has(key) || this.#isChildKey(tab, key)) return;
     if (candidate.match?.protocol === 'progressive') {
@@ -347,7 +357,8 @@ export class DetectionManager {
     const inspect = this.#inspectSubtitle;
     if (!inspect || !parseHttpUrl(file.url)) return;
     const tab = await this.#tab(file.tabId);
-    if (tab.removed) return;
+    if (tab.removed || this.#isBlocked(file.url, file.requestContext)) return;
+    if ((await this.#onBlockedPage(tab)) || tab.removed) return;
     const key = dedupeKey(file.url);
     if (tab.subtitleKeys.has(key)) {
       // The same file again, maybe with a fresh token: keep the newest link.
@@ -586,6 +597,13 @@ export class DetectionManager {
   }
 
   #applyOutcome(tab: TabState, stream: DetectedStream, outcome: InspectionOutcome): void {
+    if ((outcome.kind === 'manifest' || outcome.kind === 'progressive') && isBlockedUrl(outcome.finalUrl)) {
+      // Redirected onto a blocked site (a front end for YouTube): never listed, not inspected again.
+      tab.streams.delete(stream.id);
+      tab.dismissedKeys.add(stream.dedupeKey);
+      this.#markDirty(tab);
+      return;
+    }
     switch (outcome.kind) {
       case 'manifest':
         this.#applyManifest(tab, stream, outcome.info);
@@ -745,6 +763,13 @@ export class DetectionManager {
           if (latest.title === undefined && info.title !== undefined) latest.title = info.title;
           if (info.pageTitle !== undefined) latest.pageTitle = info.pageTitle;
           if (info.durationHint !== undefined) latest.durationHint = info.durationHint;
+          if (isBlockedUrl(info.pageUrl)) {
+            // Played inside a page of a blocked site (an embedded player's frame told us late): never listed.
+            tab.pageUrl = info.pageUrl;
+            tab.streams.delete(id);
+            this.#markDirty(tab);
+            return;
+          }
           if (info.pageUrl !== undefined) {
             latest.pageUrl = info.pageUrl;
             tab.pageUrl ??= info.pageUrl;
@@ -812,6 +837,25 @@ export class DetectionManager {
     tab.liveKeys.clear();
     tab.probes = 0;
     tab.inspecting = new Set();
+  }
+
+  /** A request of or from a blocked site (0.8.0): ignored before anything is fetched. The tab's page: `#onBlockedPage`. */
+  #isBlocked(url: string, context: RequestContext): boolean {
+    return involvesBlockedSite(url, context.referer, context.origin);
+  }
+
+  /** The tab shows a blocked site now (asked fresh, see `getTabUrl`); its URL is kept for later candidates. */
+  async #onBlockedPage(tab: TabState): Promise<boolean> {
+    if (!this.#getTabUrl) return isBlockedUrl(tab.pageUrl);
+    let url: string | undefined;
+    try {
+      url = await this.#getTabUrl(tab.tabId);
+    } catch {
+      return isBlockedUrl(tab.pageUrl);
+    }
+    if (url === undefined || parseHttpUrl(url) === null) return isBlockedUrl(tab.pageUrl);
+    tab.pageUrl = url;
+    return isBlockedUrl(url);
   }
 
   #isCurrent(tab: TabState, generation: number): boolean {

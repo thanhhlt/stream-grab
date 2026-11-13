@@ -1,3 +1,4 @@
+import { BLOCKED_SITE_MESSAGE, involvesBlockedSite } from '@/core/detection/blocked-sites';
 import { containerExtension } from '@/core/media/containers';
 import { taskIdOfMergeFile, type OutputFileStore } from '@/core/media/output-files';
 import { taskIdOfPartialFile } from './partial-files';
@@ -369,7 +370,15 @@ export class DownloadCoordinator {
       const settings = await this.#deps.getSettings();
       const tasks = await this.#deps.store.list();
       const running = tasks.filter((task) => task.status === 'downloading');
-      const queued = tasks.filter((task) => task.status === 'queued').sort((a, b) => a.createdAt - b.createdAt);
+      // Tasks of a blocked site (0.8.0) made by an earlier version never start.
+      for (const task of tasks.filter((task) => task.status === 'queued' && involvesBlockedSite(task.source.manifestUrl, task.source.pageUrl))) {
+        await this.#deps.store.update(task.id, (current) =>
+          current.status === 'queued' ? { ...withoutRunData(current), status: 'failed', statusMessage: BLOCKED_SITE_MESSAGE, updatedAt: this.#now() } : current,
+        );
+      }
+      const queued = tasks
+        .filter((task) => task.status === 'queued' && !involvesBlockedSite(task.source.manifestUrl, task.source.pageUrl))
+        .sort((a, b) => a.createdAt - b.createdAt);
       const toStart = queued.slice(0, Math.max(0, settings.maxActiveTasks - running.length));
       for (const task of toStart) {
         await this.#deps.store.update(task.id, (current) =>

@@ -1,4 +1,5 @@
 import { useLayoutEffect, useRef, useState } from 'react';
+import { BLOCKED_SITE_MESSAGE, isBlockedUrl } from '@/core/detection/blocked-sites';
 import { extensionFor } from '@/core/download/file-name';
 import type { DetectedStream } from '@/core/models/detected-stream';
 import { sendToBackground } from '@/shared/messaging/client';
@@ -167,10 +168,11 @@ export function DetectedPage({ onShowQueue, onQueued, onQueueing, onQueueAborted
 
   const detectionOff = settings?.autoDetect === false;
   const httpPage = tab.url === undefined || parseHttpUrl(tab.url) !== null;
+  const blockedPage = isBlockedUrl(tab.url);
 
   return (
     <div className="flex h-full flex-col">
-      {detectionOff && (
+      {detectionOff && !blockedPage && (
         <div className="mx-3 mt-2 flex items-center gap-3 rounded-field bg-warning-surface px-3 py-2 text-meta text-warning">
           <span className="flex-1">Automatic detection is off. New streams are not being detected.</span>
           <button
@@ -206,7 +208,11 @@ export function DetectedPage({ onShowQueue, onQueued, onQueueing, onQueueAborted
         </div>
       )}
 
-      {streams.length === 0 ? (
+      {blockedPage ? (
+        <EmptyState title="This site is not supported" icon="off">
+          {BLOCKED_SITE_MESSAGE} Videos on it are not detected or downloaded.
+        </EmptyState>
+      ) : streams.length === 0 ? (
         httpPage ? (
           <EmptyState title="No streams detected on this page yet" icon="search">
             Start playing a video. Supported streams appear here as soon as the page loads them.

@@ -1,3 +1,4 @@
+import { BLOCKED_SITE_MESSAGE, involvesBlockedSite } from '@/core/detection/blocked-sites';
 import { isPageSubtitleId, PROGRESSIVE_VARIANT_ID, type DetectedStream } from '@/core/models/detected-stream';
 import {
   ACTIVE_TASK_STATUSES,
@@ -134,6 +135,9 @@ export class TaskService {
   ) {
     const stream = await this.#deps.getStream(request.tabId, request.streamId);
     if (!stream) throw new RequestError('This video is no longer listed. Reload the page and play it again.');
+    if (involvesBlockedSite(stream.url, stream.pageUrl, stream.requestContext.referer, stream.requestContext.origin)) {
+      throw new RequestError(BLOCKED_SITE_MESSAGE);
+    }
     switch (stream.status) {
       case 'pending':
         throw new RequestError('This stream is still being inspected. Try again in a moment.');
