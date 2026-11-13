@@ -7,6 +7,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-11-13
+
+First version submitted to the Chrome Web Store as a public listing.
+
 ### Fixed
 
 - A finished download could be fetched a second time and its segments deleted before the merge
@@ -318,7 +322,8 @@ Notably: merging is stream copy only (no re-encoding); SAMPLE-AES and DRM-protec
 not supported; subtitles are ignored; the bundled FFmpeg.wasm core is licensed
 GPL-2.0-or-later and adds 32 MB to the extension.
 
-[Unreleased]: https://github.com/thanhhlt/stream-grab/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/thanhhlt/stream-grab/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/thanhhlt/stream-grab/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/thanhhlt/stream-grab/compare/v0.7.2...v0.8.0
 [0.7.2]: https://github.com/thanhhlt/stream-grab/compare/v0.7.1...v0.7.2
 [0.7.1]: https://github.com/thanhhlt/stream-grab/compare/v0.7.0...v0.7.1

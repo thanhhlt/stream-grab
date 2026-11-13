@@ -150,7 +150,7 @@ users take that role, through the Report a problem link). Order:
    in code: a stale job list made the engine download a finished task again and delete its segments
    (also seen on Chrome 157, about one run in three), and Chrome 116 lists earlier downloads a moment
    after startup.
-2. **Release v0.9.0** (CHANGELOG, version, ZIP, GitHub Release) and submit it to the store as a
+2. **Release v0.9.0** (CHANGELOG, version, ZIP, GitHub Release; done 2026-11-13) and submit it to the store as a
    public listing.
 3. While the review runs (usually a few days): **nearly full disk** (the Downloads folder, then the
    profile, on a small VHD of a few GB; check the disk-space messages) and **multi-GB video**
