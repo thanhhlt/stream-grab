@@ -7,6 +7,20 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- A finished download could be fetched a second time and its segments deleted before the merge
+  ("The downloaded data is gone"): the engine now ignores a job list the service worker sent before
+  it learned the outcome. The same for a merge that failed (its segments were deleted, so Retry
+  downloaded everything again).
+- After Chrome crashed during a video Chrome downloads itself, the task could fail with "The
+  download was removed from Chrome's downloads" on Chrome 116: at startup StreamGrab now waits a few
+  seconds for Chrome to list its earlier downloads.
+
+### Changed
+
+- Tested on Chrome 116 (`minimum_chrome_version`) with the end-to-end suite.
+
 ## [0.8.0] - 2026-11-13
 
 Preparation for the Chrome Web Store.

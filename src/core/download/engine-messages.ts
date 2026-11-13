@@ -115,6 +115,8 @@ export function parseEngineTaskSpec(raw: unknown): EngineTaskSpec | null {
     const bytes = nonNegative(file?.['bytes']);
     spec.file = { container, ...(bytes !== undefined && bytes > 0 ? { bytes } : {}) };
   }
+  const run = nonNegative(raw['run']);
+  if (run !== undefined && Number.isInteger(run) && run > 0) spec.run = run;
   return spec;
 }
 

@@ -214,6 +214,28 @@ describe('MediaManager · outcomes', () => {
     expect(await storage.taskIds()).toEqual(['l']);
   });
 
+  it('sends a failure again to a sync built before it arrived, instead of running the job twice (0.9.0)', async () => {
+    let runs = 0;
+    const runner = new ScriptedRunner(() => {
+      runs += 1;
+      return Promise.reject(new FfmpegError('FFmpeg could not be loaded: CompileError', 'load'));
+    });
+    const { storage, manager, reports, process } = setup(runner);
+    await storeDownloadedTask(storage, 'l', [video(media.ts.video['v90'] as Rendition)]);
+    await process('l');
+    const ran = runs;
+    // Stale: the service worker had not seen the failure yet. Its next sync would have cancelled a
+    // second job and deleted the segments Retry needs.
+    expect((await process('l')).filter((report) => report.outcome).map((report) => report.outcome?.status)).toEqual(['failed', 'failed']);
+    expect(runs).toBe(ran);
+    await manager.syncSettled([]);
+    expect(await storage.taskIds()).toEqual(['l']);
+    // Listed again after a sync without it: a real new job (Retry).
+    await process('l');
+    expect(runs).toBeGreaterThan(ran);
+    expect(reports.at(-1)?.outcome?.status).toBe('failed');
+  });
+
   it('reports a failed merge with FFmpeg’s reason, and a merged file that lacks streams', async () => {
     const failing = scripted({
       merge: () => Promise.resolve({ ...probeResult([]), exitCode: 1, stdout: '', stderrTail: ['[mp4 @ 0x1] Could not write header: Invalid argument', 'Aborted()'] }),

@@ -145,6 +145,11 @@ users take that role, through the Report a problem link). Order:
 1. **Chrome 116** (`minimum_chrome_version`): run the e2e suite in Chrome for Testing 116 before the
    first upload, because the store shows the minimum version. If it fails, raise the minimum version
    instead of changing code.
+   Done 2026-11-13: Chrome for Testing 116.0.5845.96 passes (10 tests; the 2 that open the popup
+   window need Chrome 127 for the test harness). Two failures were real bugs on every version, fixed
+   in code: a stale job list made the engine download a finished task again and delete its segments
+   (also seen on Chrome 157, about one run in three), and Chrome 116 lists earlier downloads a moment
+   after startup.
 2. **Release v0.9.0** (CHANGELOG, version, ZIP, GitHub Release) and submit it to the store as a
    public listing.
 3. While the review runs (usually a few days): **nearly full disk** (the Downloads folder, then the

@@ -113,6 +113,8 @@ export interface CoordinatorDeps {
   newLeaseId?: () => string;
   /** Timer of the progress poll of progressive downloads (setTimeout; injectable for tests). */
   schedule?: (callback: () => void, delayMs: number) => void;
+  /** A pause at startup while Chrome's download list loads (setTimeout; injectable for tests). */
+  delay?: (ms: number) => Promise<void>;
   /** Fetches a progressive file's `<track>` subtitle files (0.7.0); `fetch` by default. */
   fetch?: (url: string, init: RequestInit) => Promise<Response>;
   logger?: Logger;
@@ -181,6 +183,9 @@ const KEEPS_DATA: readonly TaskStatus[] = ['queued', 'downloading', 'downloaded'
 
 /** How often the progress of progressive files Chrome downloads is read (chrome.downloads reports no progress events). */
 export const FILE_POLL_MS = 1000;
+/** Startup: how long to wait for Chrome to list its earlier downloads (about 5 s in all). */
+const STARTUP_LIST_TRIES = 11;
+const STARTUP_LIST_WAIT_MS = 500;
 
 /** Chrome's interrupt reasons for a server that refused the request: 401, 403, 404 (checked in Chrome 157). */
 const REFUSALS = new Set(['SERVER_UNAUTHORIZED', 'SERVER_FORBIDDEN', 'SERVER_BAD_CONTENT']);
@@ -317,6 +322,7 @@ export class DownloadCoordinator {
   readonly #newLeaseId: () => string;
   readonly #leases = new Map<string, ReleaseContext>();
   readonly #schedule: (callback: () => void, delayMs: number) => void;
+  readonly #delay: (ms: number) => Promise<void>;
   /** Speed of each progressive file Chrome downloads, from the bytes it reports (memory only; rebuilt after a restart). */
   readonly #fileSpeeds = new Map<string, { tracker: ProgressTracker; received: number }>();
   #pollScheduled = false;
@@ -328,6 +334,7 @@ export class DownloadCoordinator {
     this.#deps = deps;
     this.#now = deps.now ?? Date.now;
     this.#newLeaseId = deps.newLeaseId ?? (() => crypto.randomUUID());
+    this.#delay = deps.delay ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
     this.#schedule =
       deps.schedule ??
       ((callback, delayMs) => {
@@ -344,8 +351,10 @@ export class DownloadCoordinator {
    * orphaned data is deleted and the queue resumes.
    */
   async onStartup(): Promise<void> {
+    const tasks = await this.#deps.store.list();
+    await this.#awaitDownloadList(tasks);
     // Saves Chrome finished while this worker was not running.
-    for (const task of await this.#deps.store.list()) {
+    for (const task of tasks) {
       const downloadId = task.output.downloadId;
       if (downloadId === undefined) continue;
       if (task.status === 'processing') await this.#settleSave(downloadId);
@@ -380,20 +389,24 @@ export class DownloadCoordinator {
         .filter((task) => task.status === 'queued' && !involvesBlockedSite(task.source.manifestUrl, task.source.pageUrl))
         .sort((a, b) => a.createdAt - b.createdAt);
       const toStart = queued.slice(0, Math.max(0, settings.maxActiveTasks - running.length));
+      // As stored once started: its specs carry the new run number.
+      const started: DownloadTask[] = [];
       for (const task of toStart) {
-        await this.#deps.store.update(task.id, (current) =>
+        const updated = await this.#deps.store.update(task.id, (current) =>
           current.status === 'queued'
             ? {
                 ...withoutRunData(current),
                 status: 'downloading',
+                run: (current.run ?? 0) + 1,
                 updatedAt: this.#now(),
                 // What earlier runs stored stays visible until the engine confirms it.
                 ...(current.progress?.stale ? { progress: current.progress } : {}),
               }
             : current,
         );
+        if (updated?.status === 'downloading') started.push(updated);
       }
-      const active = [...running, ...toStart];
+      const active = [...running, ...started];
       // Progressive files Chrome downloads itself take a download slot, not the engine (0.3.0).
       const browserFiles = active.filter(fetchedByBrowser);
       let failedToStart = false;
@@ -1164,6 +1177,29 @@ export class DownloadCoordinator {
    * progress poll. Chrome decides whether a resume works (the server must
    * support ranges and still accept the link).
    */
+  /**
+   * Right after Chrome starts, chrome.downloads may not list its earlier downloads yet (Chrome 116
+   * loads them a moment later): a download a task waits for would be taken for one the user removed.
+   * Waits until every such download is listed, for STARTUP_LIST_TRIES × STARTUP_LIST_WAIT_MS at most.
+   */
+  async #awaitDownloadList(tasks: readonly DownloadTask[]): Promise<void> {
+    const files = this.#deps.files;
+    if (!files) return;
+    const ids = tasks.flatMap((task) => {
+      const downloadId = task.output.downloadId;
+      const subtitles = (task.output.subtitles ?? []).filter(isSaving).flatMap((file) => (file.downloadId === undefined ? [] : [file.downloadId]));
+      if (task.status === 'completed') return subtitles;
+      if (downloadId === undefined) return [];
+      if (task.status === 'processing') return [downloadId, ...subtitles];
+      return task.status === 'downloading' && task.progressive ? [downloadId] : [];
+    });
+    for (let attempt = 1; ids.length > 0; attempt += 1) {
+      const listed = await Promise.all(ids.map((id) => files.find(id).then((state) => state !== undefined, () => false)));
+      if (listed.every(Boolean) || attempt >= STARTUP_LIST_TRIES) return;
+      await this.#delay(STARTUP_LIST_WAIT_MS);
+    }
+  }
+
   async #recoverFile(task: DownloadTask, downloadId: number): Promise<void> {
     const files = this.#deps.files;
     const state = await files?.find(downloadId).catch(() => undefined);
@@ -1199,6 +1235,7 @@ export class DownloadCoordinator {
       audioTrackIds: task.selection.audioTrackIds,
       concurrency: settings.segmentConcurrency,
     };
+    if (task.run !== undefined) spec.run = task.run;
     // Subtitles of a stream come with its segments: manifest renditions by id, the page's own WebVTT files
     // (0.7.2) by URL. A progressive file's subtitle files are fetched when it is saved.
     const subtitles = task.progressive ? [] : (task.selection.subtitles ?? []);

@@ -186,6 +186,8 @@ export interface DownloadTask {
   media?: MediaAnalysis;
   /** Completed task the user cleared from the Queue tab (it stays under Completed). */
   dismissed?: boolean;
+  /** Counts the task's runs in the engine (0.9.0): one more each time it starts downloading. */
+  run?: number;
   /** Progressive files only (0.3.0): no segments, no FFmpeg; the original file is saved as it is. */
   progressive?: ProgressiveTaskInfo;
 }
@@ -243,6 +245,8 @@ export interface EngineTaskSpec {
   /** Simultaneous segment requests (Settings, 1–16). */
   concurrency: number;
   file?: { container: ProgressiveContainer; bytes?: number };
+  /** The task's run (DownloadTask.run): an engine re-sends a run's outcome rather than start that run again. */
+  run?: number;
 }
 
 /** Why a run failed, when the service worker may act on it (wording, recovery). */

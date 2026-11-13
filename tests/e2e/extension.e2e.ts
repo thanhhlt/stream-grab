@@ -57,10 +57,30 @@ let profile: string;
 let extensionId: string;
 const ffmpeg = new NodeFfmpegRunner();
 
+// STREAMGRAB_CHROME_BUILD: chạy bằng một bản Chrome for Testing khác trong .cache/chrome, chọn theo tiền tố buildId (vd. "116" = minimum_chrome_version).
+const chromeBuild = process.env['STREAMGRAB_CHROME_BUILD'];
+let chromeMajor = 0;
+/**
+ * The real popup opens with chrome.action.openPopup() run in the service worker: Chrome 127+ (and
+ * Puppeteer cannot evaluate in an older Chrome's service worker). The popup page itself is tested as a
+ * tab in every Chrome.
+ */
+const POPUP_WINDOW_CHROME = 127;
+
+/** The newest Chrome for Testing in .cache/chrome, or the one STREAMGRAB_CHROME_BUILD names. */
 async function chromePath(): Promise<string> {
-  const installed = await getInstalledBrowsers({ cacheDir: resolve(root, '.cache/chrome') });
-  const chrome = installed.find((candidate) => candidate.browser === BrowserKind.CHROME);
-  if (!chrome) throw new Error('Chrome for Testing is missing: run `npm run e2e:install` first.');
+  const chrome = (await getInstalledBrowsers({ cacheDir: resolve(root, '.cache/chrome') }))
+    .filter((candidate) => candidate.browser === BrowserKind.CHROME)
+    .filter((candidate) => !chromeBuild || candidate.buildId === chromeBuild || candidate.buildId.startsWith(`${chromeBuild}.`))
+    .sort((x, y) => y.buildId.localeCompare(x.buildId, 'en', { numeric: true }))[0];
+  if (!chrome) {
+    throw new Error(
+      chromeBuild
+        ? `Chrome for Testing ${chromeBuild} is missing: run npx @puppeteer/browsers install chrome@${chromeBuild} --path .cache/chrome`
+        : 'Chrome for Testing is missing: run `npm run e2e:install` first.',
+    );
+  }
+  chromeMajor = Number.parseInt(chrome.buildId, 10);
   return chrome.executablePath;
 }
 
@@ -152,13 +172,21 @@ const BLOCKED_HOST = 'www.youtube-nocookie.com';
 
 /** Starts Chrome on the test profile with dist/ loaded; the extension ID derives from the path, so it stays the same. */
 async function launch(): Promise<void> {
+  const executablePath = await chromePath();
+  // Puppeteer loads extensions over CDP (Extensions.loadUnpacked, Chrome 126+); older Chrome takes the command-line flags.
+  const legacy = chromeMajor < 126;
   browser = await puppeteer.launch({
-    executablePath: await chromePath(),
+    executablePath,
     headless: true,
     userDataDir: profile,
-    enableExtensions: [dist],
+    enableExtensions: legacy ? true : [dist],
     // A blocked site (0.8.0) served by the fixture site.
-    args: ['--no-first-run', '--no-default-browser-check', `--host-resolver-rules=MAP ${BLOCKED_HOST} 127.0.0.1`],
+    args: [
+      '--no-first-run',
+      '--no-default-browser-check',
+      `--host-resolver-rules=MAP ${BLOCKED_HOST} 127.0.0.1`,
+      ...(legacy ? [`--disable-extensions-except=${dist}`, `--load-extension=${dist}`] : []),
+    ],
   });
   extensionId = new URL((await serviceWorker()).url()).host;
 }
@@ -534,7 +562,7 @@ describe('StreamGrab in Chrome (Chrome for Testing, unpacked dist/)', () => {
     await again.close();
   });
 
-  it('detects nothing on a blocked site and says so in the popup (0.8.0)', async () => {
+  it('detects nothing on a blocked site and says so in the popup (0.8.0)', async ({ skip }) => {
     const pageUrl = `http://${BLOCKED_HOST}:${new URL(site.origin).port}/download`;
     const before = site.requests.length;
     const page = await browser.newPage();
@@ -555,6 +583,7 @@ describe('StreamGrab in Chrome (Chrome for Testing, unpacked dist/)', () => {
     }, pageUrl);
     expect(found).toEqual({ streams: [], badge: '' });
     // The popup, opened for that tab, explains why.
+    skip(chromeMajor < POPUP_WINDOW_CHROME, `the popup window needs Chrome ${POPUP_WINDOW_CHROME}+`);
     await page.bringToFront();
     const known = new Set(browser.targets());
     const worker = await (await serviceWorker()).worker();
@@ -670,7 +699,8 @@ describe('StreamGrab in Chrome (Chrome for Testing, unpacked dist/)', () => {
     await ext.close();
   });
 
-  it('ticks subtitles of the Settings languages in the real popup, puts them in the video and saves them as SRT files (0.7.0)', async () => {
+  it('ticks subtitles of the Settings languages in the real popup, puts them in the video and saves them as SRT files (0.7.0)', async ({ skip }) => {
+    skip(chromeMajor < POPUP_WINDOW_CHROME, `the popup window needs Chrome ${POPUP_WINDOW_CHROME}+`);
     const ext = await extensionPage();
     const settings = () => ext.evaluate(async (key) => (await chrome.storage.local.get(key))[key] as Record<string, unknown> | undefined, STORAGE_KEYS.settings);
     await ext.evaluate(() => {

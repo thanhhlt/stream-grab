@@ -118,6 +118,7 @@ async function setup(tasks: { task: DownloadTask; context?: RequestContext }[], 
     getSettings: () => Promise.resolve(DEFAULT_SETTINGS),
     getStream: () => Promise.resolve(undefined),
     now: () => 5000,
+    delay: () => Promise.resolve(),
     schedule: () => undefined,
     ...deps,
   });

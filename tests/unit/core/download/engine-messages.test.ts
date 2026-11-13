@@ -13,6 +13,12 @@ import type { MediaAnalysis } from '@/core/models/media-info';
 const progress = { segmentsTotal: 10, segmentsDone: 2, bytes: 100, bytesPerSecond: 50, percent: 20, retries: 0, startedAt: 1 };
 
 describe('engine messages', () => {
+  it('keeps the run number of a task spec, so the engine tells a Retry from the run before (0.9.0)', () => {
+    const base = { taskId: 't1', protocol: 'hls', manifestUrl: 'https://cdn.example.com/a.m3u8', variant: { id: 'video-0' }, audioTrackIds: [] };
+    const runs = [2, 0, 1.5, 'x', undefined].map((run) => parseEngineWork({ downloads: [{ ...base, run }], media: [] }).downloads[0]?.run);
+    expect(runs).toEqual([2, undefined, undefined, undefined, undefined]);
+  });
+
   it('validates task specs and clamps concurrency', () => {
     const { downloads: specs } = parseEngineWork({
       downloads: [

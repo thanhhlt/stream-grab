@@ -1,6 +1,6 @@
 import { isPageSubtitleId, type RequestContext } from '@/core/models/detected-stream';
 import type { ProgressiveContainer } from '@/core/models/detected-stream';
-import type { EngineReport, EngineTaskSpec, FailureReason, SaveRequest } from '@/core/models/download-task';
+import type { EngineReport, EngineTaskSpec, FailureReason, SaveRequest, TaskProgress } from '@/core/models/download-task';
 import type { TrackLayout } from '@/core/models/media-info';
 import type { MediaSegment } from '@/core/models/media-segment';
 import type { FetchFunction } from '@/core/network/manifest-fetcher';
@@ -140,6 +140,8 @@ interface Run {
   refreshing: Promise<void> | undefined;
   lastReport: number;
   finished: Promise<void>;
+  /** The run's outcome report: downloaded or failed (a cancelled run is not remembered). */
+  ended?: EngineReport;
 }
 
 const DEFAULT_CHUNK_SIZE = 16 * 1024 * 1024;
@@ -194,6 +196,14 @@ export class DownloadManager {
   readonly #policy: RetryPolicy;
   readonly #space: SpaceGuard;
   readonly #runs = new Map<string, Run>();
+  /**
+   * Outcome reports of runs that downloaded or failed, by task, until a sync no longer lists the task. A
+   * sync the service worker built before the outcome reached it still lists the same run: starting it
+   * again would fetch it twice, and the next sync would cancel that second run, deleting the downloaded
+   * data with it. The outcome is sent again instead (the service worker ignores it for a task no longer
+   * downloading). A spec with another run number (Retry) starts a new run.
+   */
+  readonly #ended = new Map<string, { run: number | undefined; report: EngineReport }>();
   readonly #createUrl: (blob: Blob) => string;
   readonly #revokeUrl: (url: string) => void;
 
@@ -216,8 +226,14 @@ export class DownloadManager {
     for (const [taskId, run] of this.#runs) {
       if (!wanted.has(taskId)) run.controller.abort();
     }
+    for (const taskId of [...this.#ended.keys()]) {
+      if (!wanted.has(taskId)) this.#ended.delete(taskId);
+    }
     for (const spec of specs) {
-      if (!this.#runs.has(spec.taskId)) this.#start(spec);
+      if (this.#runs.has(spec.taskId)) continue;
+      const ended = this.#ended.get(spec.taskId);
+      if (ended && ended.run === spec.run) this.#deps.report(ended.report);
+      else this.#start(spec);
     }
     return specs.map((spec) => spec.taskId).filter((id) => this.#runs.has(id));
   }
@@ -280,7 +296,10 @@ export class DownloadManager {
     };
     this.#runs.set(spec.taskId, run);
     run.finished = (spec.protocol === 'progressive' ? this.#runFile(run) : this.#run(run)).finally(() => {
-      if (this.#runs.get(spec.taskId) === run) this.#runs.delete(spec.taskId);
+      if (this.#runs.get(spec.taskId) !== run) return;
+      this.#runs.delete(spec.taskId);
+      if (run.ended) this.#ended.set(spec.taskId, { run: spec.run, report: run.ended });
+      else this.#ended.delete(spec.taskId);
     });
   }
 
@@ -716,11 +735,11 @@ export class DownloadManager {
         this.#finish(run, { status: 'cancelled' });
       } else {
         const failure = error instanceof TaskFailure ? error : new TaskFailure(errorMessage(error), { cause: error });
-        this.#deps.report({
-          taskId: spec.taskId,
-          progress: fileProgress(run.tracker.snapshot(), received, total, false),
-          outcome: { status: 'failed', message: failure.message, ...(failure.reason !== undefined ? { reason: failure.reason } : {}) },
-        });
+        this.#finish(
+          run,
+          { status: 'failed', message: failure.message, ...(failure.reason !== undefined ? { reason: failure.reason } : {}) },
+          fileProgress(run.tracker.snapshot(), received, total, false),
+        );
       }
     } finally {
       if (url !== undefined) this.#revokeUrl(url);
@@ -898,8 +917,10 @@ export class DownloadManager {
     this.#deps.report({ taskId: run.spec.taskId, progress: run.tracker.snapshot() });
   }
 
-  #finish(run: Run, outcome: NonNullable<EngineReport['outcome']>): void {
-    this.#deps.report({ taskId: run.spec.taskId, progress: run.tracker.snapshot(), outcome });
+  #finish(run: Run, outcome: NonNullable<EngineReport['outcome']>, progress: TaskProgress = run.tracker.snapshot()): void {
+    const report: EngineReport = { taskId: run.spec.taskId, progress, outcome };
+    if (outcome.status !== 'cancelled') run.ended = report;
+    this.#deps.report(report);
   }
 }
 

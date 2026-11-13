@@ -133,6 +133,7 @@ async function setup(
     findStreams: (streamId) => Promise.resolve((options.elsewhere ?? []).filter((stream) => stream.id === streamId)),
     now: () => 5000,
     newLeaseId: () => `lease-${++lease}`,
+    delay: () => Promise.resolve(),
     schedule: (callback) => {
       timers.push(callback);
     },
@@ -235,12 +236,14 @@ describe('DownloadCoordinator', () => {
 
   it('retries failed and cancelled tasks (from the start when nothing is stored)', async () => {
     const { coordinator, engine, store } = await setup([
-      { task: makeTask('f', { status: 'failed', statusMessage: 'HTTP 500', progress: progress(3) }) },
+      { task: makeTask('f', { status: 'failed', statusMessage: 'HTTP 500', progress: progress(3), run: 1 }) },
       { task: makeTask('ok', { status: 'downloaded' }) },
     ]);
     await expect(coordinator.retry(['f', 'ok'])).resolves.toBe(1);
     const task = (await store.list()).find((candidate) => candidate.id === 'f');
-    expect(task).toMatchObject({ status: 'downloading' });
+    // A new run (0.9.0): the engine tells it from the failed one.
+    expect(task).toMatchObject({ status: 'downloading', run: 2 });
+    expect(engine.synced.at(-1)?.[0]).toMatchObject({ taskId: 'f', run: 2 });
     expect(task?.statusMessage).toBeUndefined();
     expect(task?.progress).toBeUndefined();
     expect(engine.lastSync).toEqual(['f']);
@@ -1100,6 +1103,24 @@ describe('DownloadCoordinator: progressive files (0.3.0)', () => {
     expect(files.resumed).toEqual([2]);
     expect(await taskOf('closed')).toMatchObject({ status: 'downloading', output: { downloadId: 2 } });
     expect(await taskOf('broken')).toMatchObject({ status: 'failed', statusMessage: expect.stringContaining('disk space') as string });
+  });
+
+  it('waits at service-worker start for Chrome to list its earlier downloads, and only then calls one removed (0.9.0)', async () => {
+    const running = (id: string, downloadId: number) => fileTask(id, { status: 'downloading', output: { baseName: id, format: 'auto', downloadId } });
+    const { coordinator, files, taskOf } = await setup([{ task: running('closed', 1) }, { task: running('gone', 2) }]);
+    files.manual = true;
+    await files.save({ url: urlOf('closed'), fileName: 'closed.mp4' });
+    files.interrupt(1, 'CRASH', true);
+    // Chrome 116 lists its downloads a moment after it starts.
+    const find = files.find.bind(files);
+    let lookups = 0;
+    files.find = (id) => (++lookups <= 4 ? Promise.resolve(undefined) : find(id));
+
+    await coordinator.onStartup();
+    expect(files.resumed).toEqual([1]);
+    expect(await taskOf('closed')).toMatchObject({ status: 'downloading', output: { downloadId: 1 } });
+    // Never listed: removed from Chrome's list after all, once the wait is over.
+    expect(await taskOf('gone')).toMatchObject({ status: 'failed', statusMessage: FILE_REMOVED_MESSAGE });
   });
 });
 

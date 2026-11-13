@@ -288,6 +288,8 @@ export function parseTask(raw: unknown): DownloadTask | null {
     if (files.length > 0) task.output.subtitles = files;
   }
   if (raw['dismissed'] === true) task.dismissed = true;
+  const run = num(raw['run']);
+  if (run !== undefined && Number.isInteger(run) && run > 0) task.run = run;
   if (protocol === 'progressive') {
     // A progressive task always knows its container and how it is fetched.
     const progressive = parseProgressiveTask(raw['progressive']);

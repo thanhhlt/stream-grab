@@ -251,6 +251,44 @@ describe('DownloadManager', () => {
       expect(outcome('b')).toEqual({ status: 'downloaded' });
     });
 
+    it('sends the outcome again to a sync built before it arrived, instead of downloading the task twice (0.9.0)', async () => {
+      const site = movieSite(4);
+      const { manager, outcome, reports, storage } = setup(site);
+      manager.sync([spec({ audioTrackIds: [] })]);
+      await manager.idle();
+      expect(outcome()).toEqual({ status: 'downloaded' });
+      const requests = site.requests.length;
+      const outcomes = reports.filter((report) => report.outcome).length;
+
+      // Stale: the service worker had not seen "downloaded" yet. Its next sync would have cancelled a
+      // second run and deleted the segments the merge needs.
+      expect(manager.sync([spec({ audioTrackIds: [] })])).toEqual([]);
+      await manager.idle();
+      expect(site.requests.length).toBe(requests);
+      expect(reports.filter((report) => report.outcome).map((report) => report.outcome).slice(outcomes)).toEqual([{ status: 'downloaded' }]);
+      manager.sync([]);
+      await manager.idle();
+      expect((await storage.inspectTask('t1')).complete).toHaveLength(4);
+
+      // Listed again after a sync without it: a real new run (Retry).
+      expect(manager.sync([spec({ audioTrackIds: [] })])).toEqual(['t1']);
+      await manager.idle();
+      expect(site.requests.length).toBeGreaterThan(requests);
+    });
+
+    it('starts a Retry (another run number) even when no sync came between the failure and it (0.9.0)', async () => {
+      const site = movieSite(4);
+      site.failNext(`${BASE}v720/seg-2.ts`, { status: 500 }, { status: 500 }, { status: 500 });
+      const { manager, outcome } = setup(site);
+      manager.sync([spec({ audioTrackIds: [], concurrency: 1, run: 1 })]);
+      await manager.idle();
+      expect(outcome()).toMatchObject({ status: 'failed' });
+      // The failure is remembered for run 1 only: run 2 is downloaded, not failed again.
+      expect(manager.sync([spec({ audioTrackIds: [], concurrency: 1, run: 2 })])).toEqual(['t1']);
+      await manager.idle();
+      expect(outcome()).toEqual({ status: 'downloaded' });
+    });
+
     it('answers an emptying sync only after the stopped tasks deleted their data (the engine closes next)', async () => {
       const site = movieSite(40);
       site.latencyFor = (url) => (url.includes('/seg-') ? 10 : 0);
@@ -283,6 +321,7 @@ describe('DownloadManager', () => {
       expect(outcome()).toMatchObject({ status: 'failed' });
       const firstRun = reports.length;
 
+      manager.sync([]); // the service worker's next sync, once the outcome reached it
       manager.sync([spec({ audioTrackIds: [], concurrency: 1 })]);
       await manager.idle();
       expect(outcome()).toEqual({ status: 'downloaded' });
@@ -344,6 +383,7 @@ describe('DownloadManager', () => {
       expect((await storage.summary('t1'))?.segmentsDone).toBe(3);
 
       movieSite(5, '', site); // re-published with another segment list
+      manager.sync([]); // the service worker's next sync, once the outcome reached it
       manager.sync([spec({ audioTrackIds: [], concurrency: 1 })]);
       await manager.idle();
       expect(outcome()).toEqual({ status: 'downloaded' });
@@ -411,6 +451,7 @@ describe('DownloadManager', () => {
       const { layout: _layout, ...phase7 } = (await storage.getPlan('t1'))!;
       await storage.savePlan(phase7);
       const before = site.requests.length;
+      manager.sync([]); // the service worker's next sync, once the outcome reached it
       manager.sync([spec()]);
       await manager.idle();
       expect(outcome()).toEqual({ status: 'downloaded' });
@@ -467,6 +508,7 @@ describe('DownloadManager', () => {
       expect((await storage.inspectTask('t1')).complete).toHaveLength(4);
 
       disk.free = 10 * 1024 * 1024; // the user freed some space and pressed Retry
+      manager.sync([]); // the service worker's next sync, once the outcome reached it
       manager.sync([spec({ audioTrackIds: [], concurrency: 1 })]);
       await manager.idle();
       expect(outcome()).toEqual({ status: 'downloaded' });

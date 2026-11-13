@@ -897,6 +897,11 @@ assembled across a browser restart.
   (resolution · duration · the saved file's real size, codecs · container, *Show in folder*).
   `STREAMGRAB_EXTENSION_DIR=<folder>` runs the suite against another extension folder, e.g. an
   extracted release ZIP (`npx vitest run --config vitest.e2e.config.ts` skips the build).
+  The newest Chrome for Testing in `.cache/chrome` runs it; `STREAMGRAB_CHROME_BUILD=116` picks
+  another one by its version prefix, e.g. the `minimum_chrome_version` (install it with
+  `npx @puppeteer/browsers install chrome@116 --path .cache/chrome`). Before Chrome 126 the
+  extension is loaded with `--load-extension` instead of Puppeteer's CDP call; before Chrome 127
+  the two tests that open the real popup window (`chrome.action.openPopup()`) are skipped.
   Not covered there: notifications (headless Chrome has no notification center to inspect), the
   Queue tab's live progress (component tests), and real sites.
 - **Estimates** (`tests/unit/core/download/estimate.test.ts`, `progress.test.ts`,

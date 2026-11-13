@@ -64,6 +64,8 @@ interface Job {
   progress: MediaProgress;
   lastReport: number;
   finished: Promise<void>;
+  /** The failure report, when the job failed. */
+  failed?: MediaReport;
 }
 
 /** FFmpeg's own failures in the user's words. */
@@ -142,6 +144,13 @@ export class MediaManager {
   readonly #jobs = new Map<string, Job>();
   /** Merged files Chrome is saving: task → blob: URLs (the video's, then its subtitle files') and file on disk. */
   readonly #held = new Map<string, { urls: string[]; file: string | undefined }>();
+  /**
+   * Failure reports of jobs, until a sync no longer lists their task. A sync the service worker built
+   * before the failure reached it still lists the task: running the job again would fail or merge for
+   * nothing, and the next sync would cancel it, deleting the segments Retry needs. The failure is sent
+   * again instead (the service worker ignores it for a task no longer processing).
+   */
+  readonly #failed = new Map<string, MediaReport>();
   /** Makes each merge's file name unique, also within one millisecond. */
   #attempts = 0;
 
@@ -166,8 +175,14 @@ export class MediaManager {
     for (const taskId of [...this.#held.keys()]) {
       if (!wanted.has(taskId)) this.#release(taskId);
     }
+    for (const taskId of [...this.#failed.keys()]) {
+      if (!wanted.has(taskId)) this.#failed.delete(taskId);
+    }
     for (const spec of specs) {
-      if (!this.#jobs.has(spec.taskId) && !this.#held.has(spec.taskId)) this.#start(spec);
+      if (this.#jobs.has(spec.taskId) || this.#held.has(spec.taskId)) continue;
+      const failed = this.#failed.get(spec.taskId);
+      if (failed) this.#deps.report(failed);
+      else this.#start(spec);
     }
     return specs.map((spec) => spec.taskId).filter((id) => this.#jobs.has(id) || this.#held.has(id));
   }
@@ -264,7 +279,9 @@ export class MediaManager {
     };
     this.#jobs.set(spec.taskId, job);
     job.finished = this.#run(job).finally(() => {
-      if (this.#jobs.get(spec.taskId) === job) this.#jobs.delete(spec.taskId);
+      if (this.#jobs.get(spec.taskId) !== job) return;
+      this.#jobs.delete(spec.taskId);
+      if (job.failed) this.#failed.set(spec.taskId, job.failed);
     });
   }
 
@@ -426,11 +443,12 @@ export class MediaManager {
             ? describeFfmpegFailure(error)
             : `Media processing failed: ${errorMessage(error)}`;
       const reason = error instanceof MediaFailure ? error.reason : undefined;
-      this.#deps.report({
+      job.failed = {
         taskId: spec.taskId,
         progress: job.progress,
         outcome: { status: 'failed', message, ...(discard ? { discardedData: true } : {}), ...(reason ? { reason } : {}) },
-      });
+      };
+      this.#deps.report(job.failed);
     }
   }
 }
