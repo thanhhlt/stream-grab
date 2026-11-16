@@ -150,6 +150,9 @@ users take that role, through the Report a problem link). Order:
 3. While the review runs (usually a few days): **nearly full disk** (the Downloads folder, then the
    profile, on a small VHD of a few GB; check the disk-space messages) and **multi-GB video**
    (measure Chrome's RAM during a merge with OPFS output, v0.4.0). Fixes ship as 0.9.x.
+   Done 2026-11-16 for the multi-GB video: 2.9 GiB merged, peak +540 MiB over rest, browser process
+   flat (see ARCHITECTURE, Merged files on disk). The nearly-full-disk test with a VHD is dropped:
+   it needs changes to the test machine's disks; the error paths stay covered by unit tests.
 
 A first review often asks for changes (permission wording, policy); fixing them during 0.9.x keeps
 1.0.0 free of that.

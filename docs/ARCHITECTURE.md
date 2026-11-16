@@ -1195,9 +1195,15 @@ writes the merged file to the extension's origin private file system (`output-fi
   orphan placed there first included).
 
 Memory was measured in the Phase 1 spike with the same mechanism (Chrome's private bytes: OPFS
-write of 4.5 GiB +13 MiB, saving it +3–12 MiB), not again with the extension on a multi-GB video.
-Not tested: Chrome 116 (the minimum; sync handle methods are synchronous since Chrome 108) and a
-disk that really fills up.
+write of 4.5 GiB +13 MiB, saving it +3–12 MiB), and again with the extension on a multi-GB video
+(2026-11-16, Chrome for Testing, Windows, 15 GB RAM; opt-in `tests/e2e/big-merge.e2e.ts`: a 2.9 GiB
+DASH stream, 720p, 440 s; 80 s from start to saved): Chrome's private memory (all processes of the
+profile) went from 350 MiB at rest to a peak of 892 MiB while FFmpeg merged. The browser process stayed
+at 70–120 MiB throughout, where Blob parts would have added GBs there; the growth is the offscreen
+document's FFmpeg heap (renderer 140 → 675 MiB, back to 218 MiB when done), not proportional to the
+video. The saved MP4 (3.07 GB) was complete. Not tested: a disk that really fills up (the unit tests
+cover the error paths with a fake disk; no VHD was made, to leave the test machine's disks alone).
+Chrome 116 passed in 0.9.0.
 
 ### Downloads subfolder (Phase 2)
 
