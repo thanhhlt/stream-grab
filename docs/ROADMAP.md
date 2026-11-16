@@ -111,10 +111,8 @@ Phases:
 ## v0.8.0: Chrome Web Store preparation
 
 Done (2026-11-13). YouTube is blocked; no permission could be dropped; the About screen and the
-Ko-fi line are in the popup; the listing text, single purpose, permission justifications and
-data-use answers are in [STORE.md](STORE.md), the privacy policy in [PRIVACY.md](PRIVACY.md)
-(its GitHub URL goes into the store; no GitHub Pages site needed), the assets in
-[store/](store/). i18n was skipped. The plan as written:
+Ko-fi line are in the popup; the privacy policy is [PRIVACY.md](PRIVACY.md) (no GitHub Pages site
+needed). i18n was skipped. The plan as written:
 
 - **Block YouTube** (`youtube.com`, `googlevideo.com`): the Chrome Web Store policy does not allow
   extensions that download YouTube videos, and this is the most common rejection for video
@@ -131,9 +129,6 @@ data-use answers are in [STORE.md](STORE.md), the privacy policy in [PRIVACY.md]
 - **Donate link**: in the About section, the store description and the README
   (`.github/FUNDING.yml` adds GitHub's Sponsor button). It must stay voluntary: no feature behind
   it, no nagging popups, no misleading wording ("donate for faster downloads").
-- **Store assets**: 128 px icon, at least one 1280×800 or 640×400 screenshot, a 440×280 small
-  promo tile, a description that says DRM-protected content is refused and that the tool is for
-  content you are allowed to download.
 - Optional: i18n (English and Vietnamese).
 
 ## v0.9.0: self-test checklist
@@ -158,19 +153,3 @@ users take that role, through the Report a problem link). Order:
 
 A first review often asks for changes (permission wording, policy); fixing them during 0.9.x keeps
 1.0.0 free of that.
-
-## Publishing on the Chrome Web Store
-
-1. Developer account at `chrome.google.com/webstore/devconsole`: a one-time 5 USD fee and 2-step
-   verification.
-2. Trader / non-trader declaration (EU Digital Services Act). Accepting donations may count as
-   trading, which shows a public contact name and address; read Google's definition first.
-3. Upload the release ZIP (built from `dist/`, as for GitHub releases); every upload needs a higher
-   version.
-4. Listing: description, icon, screenshots, promo tile, category, language, support URL (GitHub
-   Issues), source link.
-5. Privacy practices tab: single purpose, permission justifications, data-use certification,
-   privacy policy URL.
-6. Submit for review: usually a few days, longer with broad host permissions.
-
-Minified code is accepted; obfuscated code is not.

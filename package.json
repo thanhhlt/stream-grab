@@ -22,7 +22,6 @@
     "e2e:install": "npx @puppeteer/browsers install chrome@stable --path .cache/chrome",
     "check": "npm run typecheck && npm run lint && npm run test",
     "icons": "node scripts/generate-icons.ts",
-    "store:assets": "node scripts/store-assets.ts",
     "fixtures": "node scripts/fixture-server.ts"
   },
   "dependencies": {

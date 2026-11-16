@@ -29,8 +29,8 @@ end-to-end test runs the built extension in Chrome for Testing (detection, Refer
 download, FFmpeg, saving, resume after a browser restart). See
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the design, measurements and known limitations,
 and [docs/SPEC.md](docs/SPEC.md) for the requirements. The popup's look (the Claw design) is
-described in [docs/DESIGN.md](docs/DESIGN.md). Planned versions up to 1.0.0 and the Chrome Web
-Store steps are in [docs/ROADMAP.md](docs/ROADMAP.md).
+described in [docs/DESIGN.md](docs/DESIGN.md). Planned versions up to 1.0.0 are in
+[docs/ROADMAP.md](docs/ROADMAP.md).
 
 FFmpeg.wasm (`@ffmpeg/core`) is licensed GPL-2.0-or-later and adds 32 MB to the package.
 
@@ -76,8 +76,7 @@ and stay protocol-independent. See
 3. Choose **Load unpacked** and select the extracted folder (the one that contains
    `manifest.json`).
 
-The store listing text and the privacy policy are in [docs/STORE.md](docs/STORE.md) and
-[docs/PRIVACY.md](docs/PRIVACY.md).
+The privacy policy is in [docs/PRIVACY.md](docs/PRIVACY.md).
 
 ## Building from source
 
@@ -146,8 +145,7 @@ Serves a test site bound to 127.0.0.1, with these pages:
 | `npm run check`       | Typecheck + lint + tests                                            |
 | `npm run verify:dist` | Re-run the static checks on an existing `dist/`                     |
 | `npm run fixtures`    | Local test site for manual checks in Chrome                         |
-| `npm run icons`       | Regenerate `public/icons/*.png` and the store icon                  |
-| `npm run store:assets` | Store screenshots and promo tile (`docs/store/`), after a build    |
+| `npm run icons`       | Regenerate `public/icons/*.png`                                     |
 
 ## Layout
 

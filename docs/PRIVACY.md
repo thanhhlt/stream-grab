@@ -50,8 +50,19 @@ when you click them. Donating is voluntary and unlocks nothing.
 
 ## Permissions
 
-Each permission the extension asks for, and why, is listed in
-[docs/STORE.md](STORE.md#permission-justifications).
+Each permission the extension asks for, and why:
+
+| Permission | Why |
+|---|---|
+| `webRequest` | Sees the URL, status, Content-Type and Content-Length of a tab's requests to recognise video manifests, video files and subtitles, and keeps the Referer and Origin of those media requests. Read only: requests are never blocked or changed. |
+| `declarativeNetRequestWithHostAccess` | Adds the page's Referer and Origin to the extension's own requests for a video, since many video servers refuse requests without them. Requests of web pages are never changed. |
+| `storage` | Keeps your settings, the videos detected in each tab and the download tasks. |
+| `unlimitedStorage` | Keeps downloaded segments until they are merged; a long video can be several gigabytes. |
+| `offscreen` | Runs the download engine and FFmpeg (WebAssembly) in an offscreen document. |
+| `downloads` | Saves the finished video and its subtitles to your Downloads folder and shows them there. |
+| `notifications` | Tells you when a video is saved or a download fails. |
+| Host access to `http://*/*` and `https://*/*` | Any site can play a video: the extension must see a page's media requests and fetch the video from the site that hosts it. |
+| Content script on http(s) pages | Reads the page title and the page's video, source and track elements so detected videos get a name, a duration and the right subtitles. It never runs page code and is not injected on YouTube. |
 
 ## Children
 

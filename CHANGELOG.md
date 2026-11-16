@@ -11,8 +11,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - The README installs from the Chrome Web Store first; the release ZIPs on GitHub are now real ZIP
   files (earlier ones were tar archives named `.zip`).
-- `npm run store:assets` uses the newest Chrome for Testing, adds a fifth screenshot (Settings),
-  and `node scripts/store-marquee.ts` draws the optional 1400x560 marquee tile.
+- The privacy policy lists each permission and why it is needed.
+
+### Removed
+
+- Chrome Web Store listing material (`docs/STORE.md`, `docs/store/`, the store screenshot
+  scripts and `npm run store:assets`): the repository keeps the app's source and documentation.
 
 ## [0.9.0] - 2026-11-13
 
@@ -45,9 +49,8 @@ Preparation for the Chrome Web Store.
   Donating is voluntary and unlocks nothing. GitHub shows a Sponsor button
   (`.github/FUNDING.yml`).
 - Privacy policy ([docs/PRIVACY.md](docs/PRIVACY.md)): StreamGrab collects no data.
-- Chrome Web Store listing text, single purpose and permission justifications
-  ([docs/STORE.md](docs/STORE.md)), with the store icon, four 1280×800 screenshots (an overview
-  first, added after the release) and the 440×280 promo tile in `docs/store/` (`npm run store:assets` photographs the real popup).
+- Chrome Web Store listing text, permission justifications, store icon, screenshots and promo
+  tile (removed from the repository later).
 
 ### Changed
 

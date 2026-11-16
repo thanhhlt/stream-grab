@@ -11,7 +11,7 @@ versions are not misrepresented as the original).
 ## Reserved
 
 - The name "StreamGrab" and any confusingly similar name
-- The StreamGrab icon, logo, claw artwork and store screenshots (`docs/store/`, `public/icons/`)
+- The StreamGrab icon, logo and claw artwork (`public/icons/`)
 - The Ko-fi link and the "official" listing of the author
 
 ## If you publish a modified version
