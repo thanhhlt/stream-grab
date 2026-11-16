@@ -1,5 +1,7 @@
 # Chrome Web Store listing
 
+Published (public) on 2026-11-16: https://chromewebstore.google.com/detail/mfdeanadgjolbgnbaimnbfohfgcldcok
+
 Everything the Chrome Web Store developer console asks for, ready to paste. The submission
 steps are in [ROADMAP.md](ROADMAP.md#publishing-on-the-chrome-web-store); the listing goes public
 in v0.9.0, after the self-test checklist.
@@ -71,9 +73,11 @@ The donation line stays voluntary: no feature behind it and no wording that sugg
 | Screenshot 2 | `screenshot-2-detected.png` | 1280×800 |
 | Screenshot 3 | `screenshot-3-queue.png` | 1280×800 |
 | Screenshot 4 | `screenshot-4-completed.png` | 1280×800 |
+| Screenshot 5 (settings) | `screenshot-5-settings.png` | 1280×800 |
 | Small promo tile | `promo-tile-440x280.png` | 440×280 |
+| Marquee promo tile (optional) | `promo-marquee-1400x560.png` | 1400×560, `node scripts/store-marquee.ts` |
 
-Upload the screenshots in file-name order: the store shows the first one first. The overview puts
+Upload the five screenshots in file-name order: the store shows the first one first. The overview puts
 the popup over a drawn browser window on the brand's tangerine. All screenshots show the real popup
 (built from `dist/`, at 2x) on a local demo page (`www.example.com` mapped to the fixture site);
 the media is synthetic.

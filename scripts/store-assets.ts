@@ -65,7 +65,10 @@ async function startSite(): Promise<{ origin: string; close: () => void }> {
 
 async function chromePath(): Promise<string> {
   const installed = await getInstalledBrowsers({ cacheDir: resolve(projectRoot, '.cache/chrome') });
-  const chrome = installed.find((candidate) => candidate.browser === BrowserKind.CHROME);
+  // The newest build: Extensions.loadUnpacked (enableExtensions) is missing from old ones.
+  const chrome = installed
+    .filter((candidate) => candidate.browser === BrowserKind.CHROME)
+    .sort((x, y) => y.buildId.localeCompare(x.buildId, 'en', { numeric: true }))[0];
   if (!chrome) throw new Error('Chrome for Testing is missing: run `npm run e2e:install` first.');
   return chrome.executablePath;
 }
@@ -109,7 +112,7 @@ async function photograph(popup: Page): Promise<string> {
   return Buffer.from(await popup.screenshot({ type: 'png' })).toString('base64');
 }
 
-async function capturePopup(): Promise<{ detected: string; queue: string; completed: string }> {
+async function capturePopup(): Promise<{ detected: string; queue: string; completed: string; settings: string }> {
   const site = await startSite();
   const profile = mkdtempSync(join(tmpdir(), 'streamgrab-store-'));
   const downloads = join(profile, 'Downloads');
@@ -169,7 +172,11 @@ async function capturePopup(): Promise<{ detected: string; queue: string; comple
     }
     await scheme(popup, 'light');
     const completed = await photograph(popup);
-    return { detected, queue, completed };
+
+    await scheme(popup, 'dark');
+    await clickTab(popup, 'Settings');
+    const settings = await photograph(popup);
+    return { detected, queue, completed, settings };
   } finally {
     await browser.close();
     site.close();
@@ -316,6 +323,13 @@ const frames: Frame[] = [
     headline: 'Saved to your Downloads folder',
     body: 'No server, no account, no tracking. StreamGrab collects no data.',
     shot: shots.completed,
+  },
+  {
+    file: 'screenshot-5-settings.png',
+    dark: true,
+    headline: 'Your files, your rules',
+    body: 'Set the default quality, the output format and how many downloads run in parallel. Everything stays in your browser.',
+    shot: shots.settings,
   },
 ];
 const browser = await puppeteer.launch({ executablePath: await chromePath(), headless: true });

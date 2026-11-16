@@ -7,6 +7,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- The README installs from the Chrome Web Store first; the release ZIPs on GitHub are now real ZIP
+  files (earlier ones were tar archives named `.zip`).
+- `npm run store:assets` uses the newest Chrome for Testing, adds a fifth screenshot (Settings),
+  and `node scripts/store-marquee.ts` draws the optional 1400x560 marquee tile.
+
 ## [0.9.0] - 2026-11-13
 
 First version submitted to the Chrome Web Store as a public listing.

@@ -63,7 +63,12 @@ and stay protocol-independent. See
 - Node.js ≥ 22.18 (build scripts are TypeScript run by Node's type stripping)
 - Chrome / Chromium ≥ 116
 
-## Installing a release
+## Installing
+
+**From the Chrome Web Store** (recommended): open the
+[StreamGrab listing](https://chromewebstore.google.com/detail/mfdeanadgjolbgnbaimnbfohfgcldcok) and choose **Add to Chrome**. Updates arrive automatically.
+
+**From a release ZIP:**
 
 1. Download `StreamGrab-v<version>.zip` from the
    [releases page](https://github.com/thanhhlt/stream-grab/releases) and extract it.
@@ -71,8 +76,8 @@ and stay protocol-independent. See
 3. Choose **Load unpacked** and select the extracted folder (the one that contains
    `manifest.json`).
 
-StreamGrab is not published on the Chrome Web Store yet; the listing, privacy policy and assets
-are ready in [docs/STORE.md](docs/STORE.md) and [docs/PRIVACY.md](docs/PRIVACY.md).
+The store listing text and the privacy policy are in [docs/STORE.md](docs/STORE.md) and
+[docs/PRIVACY.md](docs/PRIVACY.md).
 
 ## Building from source
 
